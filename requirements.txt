@@ -25,8 +25,7 @@ opencv-python>=4.8.0
 python-dateutil==2.8.2
 
 # Deep Learning & AI Models
-# Torch/torchvision will be installed via start-be.bat with the official CPU wheels for Windows
-ultralytics==8.3.23
+# Torch/torchvision + ultralytics will be installed via start-be.bat for correct Windows wheels
 onnxruntime>=1.18.0
 
 # YAML Configuration (v4.0)
