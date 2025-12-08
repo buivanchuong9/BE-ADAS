@@ -1,0 +1,58 @@
+# ============================================
+# ADAS Backend API - Docker Compose
+# FastAPI + WebSocket + YOLOv11 + Real-time ADAS
+# Production Ready Configuration with Camera Support
+# ============================================
+
+version: '3.8'
+
+services:
+  adas-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: adas-backend-api
+    
+    ports:
+      - "8000:8000"
+    
+    volumes:
+      # Persist YOLO models (avoid re-download)
+      - ./ai_models/weights:/app/ai_models/weights
+      # Persist database (use directory mount, not file mount)
+      - .:/app
+      # Persist logs
+      - ./logs:/app/logs
+      # Dataset for auto-learning
+      - ./dataset:/app/dataset
+    
+    # 🔧 Camera device access (Linux/macOS only - Windows uses different approach)
+    # Uncomment if using physical camera on Linux:
+    # devices:
+    #   - /dev/video0:/dev/video0
+    
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OPENCV_VIDEOIO_DEBUG=0
+      # For production, use environment variables
+      - DATABASE_URL=sqlite:///./adas.db
+      # Cross-platform host configuration
+      - HOST=0.0.0.0
+      - PORT=8000
+    
+    restart: unless-stopped
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    
+    networks:
+      - adas-network
+
+networks:
+  adas-network:
+    driver: bridge
+    name: adas-network

@@ -1,0 +1,368 @@
+# ADAS Core Configuration - Production Settings
+# Version: 4.0.0
+# ISO 26262 ASIL-B compliant
+
+# ========================================
+# SYSTEM CONFIGURATION
+# ========================================
+system:
+  name: "ADAS Platform"
+  version: "4.0.0"
+  environment: "production"  # development | testing | production
+  debug_mode: false
+  
+  # Performance targets
+  target_fps: 30
+  max_latency_ms: 50  # Critical path latency
+  
+  # Logging
+  log_level: "INFO"  # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  log_dir: "logs"
+  enable_telemetry: true
+
+# ========================================
+# SENSORS CONFIGURATION
+# ========================================
+sensors:
+  # Primary camera
+  camera_front:
+    type: "camera"
+    enabled: true
+    critical: true  # Critical for safety
+    source: 0  # Webcam index or RTSP URL
+    resolution: [1280, 720]
+    fps: 30
+    buffer_size: 3
+    enable_gpu: false
+    timeout_ms: 500
+    
+    # Calibration (intrinsic parameters)
+    calibration:
+      focal_length: [1000.0, 1000.0]  # fx, fy in pixels
+      principal_point: [640.0, 360.0]  # cx, cy
+      distortion_coeffs: [0.0, 0.0, 0.0, 0.0, 0.0]  # k1, k2, p1, p2, k3
+  
+  # LiDAR (optional)
+  lidar_front:
+    type: "lidar"
+    enabled: false
+    critical: false
+    port: "/dev/ttyUSB0"
+    baud_rate: 115200
+    scan_frequency_hz: 10
+    range_meters: 30.0
+    timeout_ms: 300
+  
+  # Radar (optional)
+  radar_front:
+    type: "radar"
+    enabled: false
+    critical: false
+    can_interface: "can0"
+    detection_range_m: 150.0
+    fov_degrees: 30.0
+    timeout_ms: 200
+  
+  # GPS + IMU
+  gps:
+    type: "gps"
+    enabled: false
+    port: "/dev/ttyUSB1"
+    baud_rate: 9600
+    timeout_ms: 1000
+  
+  imu:
+    type: "imu"
+    enabled: false
+    port: "/dev/ttyUSB2"
+    update_rate_hz: 100
+    timeout_ms: 100
+
+# ========================================
+# SENSOR FUSION CONFIGURATION
+# ========================================
+sensor_fusion:
+  enabled: true
+  update_rate_hz: 30
+  
+  # Extended Kalman Filter parameters
+  ekf:
+    process_noise_position: 0.1
+    process_noise_velocity: 0.5
+    process_noise_orientation: 0.05
+    process_noise_angular_vel: 0.3
+    
+    # Measurement noise (sensor-specific)
+    noise_camera: 0.5
+    noise_lidar: 0.1
+    noise_radar: 0.3
+    noise_gps: 2.0
+    noise_imu: 0.2
+  
+  # Outlier rejection
+  mahalanobis_threshold: 3.0  # Reject if > 3 std deviations
+
+# ========================================
+# PERCEPTION CONFIGURATION
+# ========================================
+perception:
+  # Object detection (YOLO)
+  object_detection:
+    enabled: true
+    model: "yolov8n"  # yolov8n | yolov8s | yolov8m
+    weights_path: "ai_models/weights/yolov8n.pt"
+    confidence_threshold: 0.35
+    iou_threshold: 0.45
+    max_detections: 100
+    target_latency_ms: 30
+    
+    # GPU acceleration
+    device: "cpu"  # cpu | cuda | mps
+    half_precision: false
+  
+  # Lane detection
+  lane_detection:
+    enabled: true
+    method: "edge_based"  # edge_based | deep_learning
+    roi_top_ratio: 0.5  # Only process bottom 50%
+    min_line_length: 50
+    max_line_gap: 150
+    confidence_threshold: 0.7
+  
+  # Pedestrian detection (enhanced)
+  pedestrian_detection:
+    enabled: true
+    model: "yolov8n"
+    confidence_threshold: 0.5  # Higher threshold for safety
+    min_height_pixels: 50
+  
+  # Traffic sign recognition
+  traffic_sign_recognition:
+    enabled: true
+    model: "yolo11n"
+    confidence_threshold: 0.6
+    classes: ["stop_sign", "traffic_light", "speed_limit"]
+  
+  # Driver Monitoring System (DMS) - NEW v4.0
+  driver_monitor:
+    enabled: true
+    enable_drowsiness: true
+    enable_distraction: true
+    enable_phone_detection: true
+    enable_emotion: true
+    
+    # Drowsiness thresholds (ISO/DIS 15005)
+    ear_threshold: 0.25      # Eye aspect ratio threshold
+    ear_critical: 0.20       # Critical drowsiness
+    perclos_threshold: 0.15  # PERCLOS (percentage eye closure)
+    yawn_threshold: 3        # Yawn count in 5 minutes
+    
+    # Distraction thresholds
+    distraction_time: 2.0    # Looking away time in seconds
+    
+    # Alert settings
+    voice_alerts: true
+    alert_cooldown: 5.0      # Seconds between alerts
+
+# ========================================
+# LOCALIZATION CONFIGURATION
+# ========================================
+localization:
+  gps_imu_fusion:
+    enabled: false
+    update_rate_hz: 10
+    
+  odometry:
+    enabled: false
+    wheel_base_m: 2.7
+    wheel_radius_m: 0.3
+    
+  slam:
+    enabled: false
+    map_resolution_m: 0.1
+    max_range_m: 30.0
+
+# ========================================
+# PLANNING CONFIGURATION
+# ========================================
+planning:
+  # Collision prediction
+  collision_prediction:
+    enabled: true
+    ttc_critical_s: 2.0  # Critical if TTC < 2 seconds
+    ttc_warning_s: 3.5   # Warning if TTC < 3.5 seconds
+    safety_margin_m: 2.0
+  
+  # Path planning
+  path_planning:
+    enabled: false
+    algorithm: "polynomial"  # polynomial | astar | rrt_star
+    planning_horizon_m: 50.0
+    waypoint_spacing_m: 5.0
+  
+  # Speed planning
+  speed_planning:
+    enabled: false
+    max_speed_kmh: 120.0
+    min_speed_kmh: 20.0
+    max_acceleration_ms2: 2.5
+    max_deceleration_ms2: 5.0
+  
+  # Adaptive Cruise Control
+  acc:
+    enabled: false
+    target_gap_s: 2.0  # 2 second gap
+    comfort_deceleration_ms2: 2.0
+
+# ========================================
+# CONTROL CONFIGURATION
+# ========================================
+control:
+  # Steering control
+  steering:
+    enabled: false
+    controller: "pid"  # pid | mpc
+    pid:
+      kp: 0.5
+      ki: 0.01
+      kd: 0.1
+    max_steering_angle_deg: 30.0
+  
+  # Throttle control
+  throttle:
+    enabled: false
+    controller: "pid"
+    pid:
+      kp: 0.3
+      ki: 0.05
+      kd: 0.05
+    max_throttle: 1.0
+  
+  # Brake control
+  brake:
+    enabled: false
+    controller: "pid"
+    pid:
+      kp: 0.8
+      ki: 0.1
+      kd: 0.2
+    max_brake_force: 1.0
+  
+  # Emergency override
+  emergency_override:
+    enabled: true
+    auto_brake_on_critical: true
+    max_brake_force: 1.0
+
+# ========================================
+# SAFETY CONFIGURATION (ISO 26262)
+# ========================================
+safety:
+  # System watchdog
+  watchdog:
+    enabled: true
+    check_interval_ms: 100
+    
+    # Component timeouts (critical components)
+    timeouts:
+      camera: 500
+      perception: 200
+      planning: 100
+      control: 50
+  
+  # Fail-safe manager
+  fail_safe:
+    enabled: true
+    health_threshold_degraded: 0.7
+    health_threshold_minimal: 0.4
+    health_threshold_emergency: 0.2
+    
+    # Actions
+    enable_emergency_brake: true
+    enable_driver_alerts: true
+    enable_black_box_logging: true
+  
+  # Redundancy
+  redundancy:
+    enable_sensor_redundancy: true
+    min_required_sensors: 1
+    enable_perception_redundancy: false
+
+# ========================================
+# OBJECT TRACKING CONFIGURATION
+# ========================================
+tracking:
+  enabled: true
+  iou_threshold: 0.15  # Lower = easier matching
+  max_age_frames: 30   # Keep tracks for 1 second @ 30fps
+  min_frames_to_show: 8  # Reduce flicker
+  smoothing_factor: 0.95  # 0.95 = very smooth
+  confidence_threshold: 0.35
+
+# ========================================
+# VOICE ALERTS CONFIGURATION
+# ========================================
+voice_alerts:
+  enabled: true
+  language: "vi-VN"  # Vietnamese
+  rate: 1.2
+  cooldown_seconds: 3.0
+  
+  # Alert priorities
+  alert_traffic_signs: true
+  alert_pedestrians: false  # Too noisy
+  alert_vehicles: false     # Too noisy
+
+# ========================================
+# AUTO-LEARNING CONFIGURATION
+# ========================================
+auto_learning:
+  enabled: true
+  collection_threshold: 0.8  # Collect if confidence > 0.8
+  max_samples_per_class: 1000
+  dataset_path: "dataset/auto_collected"
+  
+  # Training
+  auto_train_enabled: false
+  train_interval_hours: 24
+  min_samples_for_training: 100
+
+# ========================================
+# DATABASE CONFIGURATION
+# ========================================
+database:
+  type: "sqlite"  # sqlite | mssql
+  sqlite:
+    path: "adas_production.db"
+  mssql:
+    server: "localhost"
+    database: "ADAS_DB"
+    username: "sa"
+    password: ""
+    driver: "ODBC Driver 18 for SQL Server"
+
+# ========================================
+# API CONFIGURATION
+# ========================================
+api:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 4
+  reload: false
+  cors_origins: ["*"]
+  
+  # WebSocket
+  websocket:
+    max_connections: 10
+    heartbeat_interval_s: 30
+
+# ========================================
+# PATHS
+# ========================================
+paths:
+  weights_dir: "ai_models/weights"
+  dataset_raw: "dataset/raw"
+  dataset_labels: "dataset/labels"
+  dataset_auto_collected: "dataset/auto_collected"
+  logs_dir: "logs"
+  alerts_log_dir: "logs/alerts"

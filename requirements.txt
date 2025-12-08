@@ -1,0 +1,61 @@
+# Python Backend Dependencies for ADAS System v4.0
+# Python 3.13 compatible
+
+# Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# Database (latest version with Python 3.13 support)
+sqlalchemy>=2.0.36
+pyodbc>=5.0.0
+alembic>=1.13.0
+
+# Data Validation (latest with Python 3.13 wheels)
+pydantic>=2.10.0
+pydantic-settings==2.1.0
+
+# HTTP Client
+httpx==0.25.1
+requests>=2.31.0
+
+# Environment
+python-dotenv==1.0.0
+
+# WebSocket
+websockets==12.0
+
+# JSON
+orjson==3.9.10
+
+# Image Processing (for dataset collection)
+Pillow>=10.0.0
+opencv-python>=4.8.0
+
+# Date/Time
+python-dateutil==2.8.2
+
+# Deep Learning & AI Models
+torch>=2.0.0
+torchvision>=0.15.0
+ultralytics>=8.3.0  # YOLOv11 (bao gồm v8/v9/v10/v11)
+timm>=0.9.0  # PyTorch Image Models (for MiDaS)
+
+# YAML Configuration (v4.0)
+PyYAML>=6.0
+
+# Numerical Computing
+numpy>=1.24.0
+
+# NEW: v4.0 Architecture - Testing Framework
+pytest>=7.4.0          # Unit testing
+pytest-asyncio>=0.21.0 # Async test support
+pytest-cov>=4.1.0      # Code coverage
+
+# NEW: v4.0 Architecture - Scientific Computing (Sensor Fusion)
+scipy>=1.11.0          # Scientific computing (Kalman filter, optimization)
+
+# Voice/TTS
+pyttsx3>=2.90  # Text-to-Speech (offline)
+
+# uvloop - skip for now (not compatible with Python 3.13)
