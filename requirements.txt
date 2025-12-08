@@ -5,6 +5,7 @@
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
 python-multipart==0.0.6
+websockets==12.0
 
 # Database (latest version with Python 3.13 support)
 sqlalchemy>=2.0.36
@@ -40,6 +41,7 @@ torch>=2.0.0
 torchvision>=0.15.0
 ultralytics>=8.3.0  # YOLOv11 (bao gồm v8/v9/v10/v11)
 timm>=0.9.0  # PyTorch Image Models (for MiDaS)
+onnxruntime>=1.18.0
 
 # YAML Configuration (v4.0)
 PyYAML>=6.0
