@@ -7,27 +7,15 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 websockets==12.0
 
-# Database (latest version with Python 3.13 support)
-sqlalchemy>=2.0.36
-pyodbc>=5.0.0
-alembic>=1.13.0
-
-# Data Validation (latest with Python 3.13 wheels)
+# Data Validation
 pydantic>=2.10.0
-pydantic-settings==2.1.0
 
 # HTTP Client
 httpx==0.25.1
 requests>=2.31.0
 
-# Environment
+# Environment (optional)
 python-dotenv==1.0.0
-
-# WebSocket
-websockets==12.0
-
-# JSON
-orjson==3.9.10
 
 # Image Processing (for dataset collection)
 Pillow>=10.0.0
@@ -40,7 +28,6 @@ python-dateutil==2.8.2
 torch>=2.0.0
 torchvision>=0.15.0
 ultralytics>=8.3.0  # YOLOv11 (bao gồm v8/v9/v10/v11)
-timm>=0.9.0  # PyTorch Image Models (for MiDaS)
 onnxruntime>=1.18.0
 
 # YAML Configuration (v4.0)
