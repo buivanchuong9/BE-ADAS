@@ -66,7 +66,7 @@ def main():
     print("\n[3/3] Starting server...\n")
     print("="*60)
     print("📊 Server will be available at:")
-    print("   http://localhost:8000/docs")
+    print("   http://localhost:52000/docs")
     print("="*60)
     print("\nPress Ctrl+C to stop\n")
     

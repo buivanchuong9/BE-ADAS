@@ -29,8 +29,8 @@ def seed_cameras(db: Session):
             name="Smartphone (WebRTC)",
             type="smartphone",
             status="disconnected",
-            url="ws://localhost:8000/ws/camera",
-            instructions="1. Cài app WebRTC cho điện thoại\n2. Kết nối tới: ws://[YOUR_PC_IP]:8000/ws/camera",
+            url="ws://localhost:52000/ws/camera",
+            instructions="1. Cài app WebRTC cho điện thoại\n2. Kết nối tới: ws://[YOUR_PC_IP]:52000/ws/camera",
             created_at=datetime.utcnow()
         ),
         Camera(

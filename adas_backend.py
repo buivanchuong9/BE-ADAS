@@ -806,8 +806,8 @@ if __name__ == "__main__":
     print(f"💾 Database: {Config.DATABASE_URL}")
     print(f"🖥️  Device: {model_manager.device}")
     print("=" * 80)
-    print("📚 API Documentation: http://localhost:8000/docs")
-    print("💚 Health Check: http://localhost:8000/health")
+    print("📚 API Documentation: http://localhost:52000/docs")
+    print("💚 Health Check: http://localhost:52000/health")
     print("=" * 80)
     print("\nPress Ctrl+C to stop")
     print("=" * 80 + "\n")
@@ -815,7 +815,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "adas_backend:app",
         host="0.0.0.0",
-        port=8000,
+        port=52000,
         reload=False,
         log_level="info"
     )

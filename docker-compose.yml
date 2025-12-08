@@ -14,7 +14,7 @@ services:
     container_name: adas-backend-api
     
     ports:
-      - "8000:8000"
+      - "52000:52000"
     
     volumes:
       # Persist YOLO models (avoid re-download)
@@ -38,12 +38,12 @@ services:
       - DATABASE_URL=sqlite:///./adas.db
       # Cross-platform host configuration
       - HOST=0.0.0.0
-      - PORT=8000
+      - PORT=52000
     
     restart: unless-stopped
     
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:52000/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -206,9 +206,9 @@ def seed_data():
         print("="*50)
         print("✅ Demo data seeded successfully!")
         print("\nGiờ có thể test API với Postman:")
-        print("  GET http://localhost:8000/api/analytics/dashboard")
-        print("  GET http://localhost:8000/api/detections/stats")
-        print("  GET http://localhost:8000/api/detections/recent?limit=20")
+        print("  GET http://localhost:52000/api/analytics/dashboard")
+        print("  GET http://localhost:52000/api/detections/stats")
+        print("  GET http://localhost:52000/api/detections/recent?limit=20")
         
     except Exception as e:
         print(f"❌ Error seeding data: {e}")

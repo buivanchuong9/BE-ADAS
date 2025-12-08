@@ -6,7 +6,7 @@ import requests
 import time
 import json
 
-BASE_URL = "http://localhost:8000"
+BASE_URL = "http://localhost:52000"
 
 
 def test_upload_video():
@@ -158,7 +158,7 @@ def main():
     print("\n" + "=" * 60)
     print("✅ ALL TESTS COMPLETED")
     print("=" * 60)
-    print("\n📚 Full API documentation: http://localhost:8000/docs")
+    print("\n📚 Full API documentation: http://localhost:52000/docs")
 
 
 if __name__ == "__main__":
