@@ -1,48 +1,26 @@
-# Python Backend Dependencies for ADAS System v4.0
-# Python 3.13 compatible
+# Production-grade requirements
+# Windows Server compatible - Python 3.13
+# Pydantic V2 - NO deprecation warnings
 
-# Web Framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
-websockets==12.0
+# Core framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.6.1
 
-# Data Validation
-pydantic>=2.10.0
+# Database
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
 
-# HTTP Client
-httpx==0.25.1
-requests>=2.31.0
+# Computer vision
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+pillow==10.4.0
 
-# Environment (optional)
-python-dotenv==1.0.0
+# HTTP client
+httpx==0.27.2
+aiofiles==24.1.0
 
-# Image Processing (for dataset collection)
-Pillow>=10.0.0
-opencv-python>=4.8.0
-
-# Date/Time
-python-dateutil==2.8.2
-
-# Deep Learning & AI Models
-# Torch/torchvision + ultralytics will be installed via start-be.bat for correct Windows wheels
-onnxruntime>=1.18.0
-
-# YAML Configuration (v4.0)
-PyYAML>=6.0
-
-# Numerical Computing
-numpy>=1.24.0
-
-# NEW: v4.0 Architecture - Testing Framework
-pytest>=7.4.0          # Unit testing
-pytest-asyncio>=0.21.0 # Async test support
-pytest-cov>=4.1.0      # Code coverage
-
-# NEW: v4.0 Architecture - Scientific Computing (Sensor Fusion)
-scipy>=1.11.0          # Scientific computing (Kalman filter, optimization)
-
-# Voice/TTS
-pyttsx3>=2.90  # Text-to-Speech (offline)
-
-# uvloop - skip for now (not compatible with Python 3.13)
+# Utilities
+python-multipart==0.0.12
+python-dotenv==1.0.1

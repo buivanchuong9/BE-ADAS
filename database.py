@@ -4,15 +4,18 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy.ext.declarative import declarative_base
 import os
 from dotenv import load_dotenv
 import urllib
 
 load_dotenv()
 
-# Get database URL from environment or use in-memory SQLite
-# Use in-memory database to avoid file permission issues in Docker
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///:memory:")
+# Base class for models
+Base = declarative_base()
+
+# Get database URL from environment or use SQLite file
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./adas_backend.db")
 
 # Determine if using SQLite
 is_sqlite = DATABASE_URL.startswith("sqlite")

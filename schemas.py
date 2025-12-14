@@ -1,18 +1,21 @@
-# Pydantic schemas for request/response validation
+# Pydantic V2 Schemas - NO DEPRECATION WARNINGS
+# Production-grade validation models
 
-from pydantic import BaseModel, Field
-from typing import Optional, List
+from pydantic import BaseModel, Field, ConfigDict
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
-# ============ Camera Schemas ============
+
+# Camera Schemas
 class CameraBase(BaseModel):
     name: str
     type: str
     url: Optional[str] = None
-    status: Optional[str] = "disconnected"
+    status: Optional[str] = Field(default="disconnected")
     resolution: Optional[str] = None
     frame_rate: Optional[int] = None
     instructions: Optional[str] = None
+    model_config = ConfigDict()
 
 class CameraCreate(CameraBase):
     pass
@@ -21,11 +24,10 @@ class CameraResponse(CameraBase):
     id: int
     created_at: datetime
     last_active_at: Optional[datetime] = None
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# ============ Driver Schemas ============
+
+# Driver Schemas
 class DriverBase(BaseModel):
     name: str
     license_number: Optional[str] = None
@@ -33,6 +35,7 @@ class DriverBase(BaseModel):
     phone: Optional[str] = None
     date_of_birth: Optional[datetime] = None
     address: Optional[str] = None
+    model_config = ConfigDict()
 
 class DriverCreate(DriverBase):
     pass
@@ -45,15 +48,15 @@ class DriverResponse(DriverBase):
     status: str
     created_at: datetime
     last_active_at: Optional[datetime] = None
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# ============ Trip Schemas ============
+
+# Trip Schemas
 class TripBase(BaseModel):
     start_location: Optional[str] = None
     driver_id: Optional[int] = None
     camera_id: Optional[int] = None
+    model_config = ConfigDict()
 
 class TripCreate(TripBase):
     pass
@@ -70,11 +73,10 @@ class TripResponse(TripBase):
     status: str
     total_events: int = 0
     critical_events: int = 0
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# ============ Event Schemas ============
+
+# Event Schemas
 class EventBase(BaseModel):
     event_type: str
     description: Optional[str] = None
@@ -84,6 +86,7 @@ class EventBase(BaseModel):
     trip_id: Optional[int] = None
     camera_id: Optional[int] = None
     driver_id: Optional[int] = None
+    model_config = ConfigDict()
 
 class EventCreate(EventBase):
     timestamp: Optional[datetime] = None
@@ -91,18 +94,18 @@ class EventCreate(EventBase):
 class EventResponse(EventBase):
     id: int
     timestamp: datetime
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# ============ Detection Schemas ============
+
+# Detection Schemas
 class DetectionBase(BaseModel):
     class_name: str
     confidence: float
-    bounding_box: str  # JSON string
+    bounding_box: str
     distance_meters: Optional[float] = None
     trip_id: Optional[int] = None
     camera_id: Optional[int] = None
+    model_config = ConfigDict()
 
 class DetectionCreate(DetectionBase):
     pass
@@ -110,11 +113,10 @@ class DetectionCreate(DetectionBase):
 class DetectionResponse(DetectionBase):
     id: int
     timestamp: datetime
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# ============ AI Model Schemas ============
+
+# AI Model Schemas
 class AIModelBase(BaseModel):
     model_id: str
     name: str
@@ -123,6 +125,7 @@ class AIModelBase(BaseModel):
     url: Optional[str] = None
     version: Optional[str] = None
     description: Optional[str] = None
+    model_config = ConfigDict()
 
 class AIModelCreate(AIModelBase):
     pass
@@ -134,11 +137,10 @@ class AIModelResponse(AIModelBase):
     created_at: datetime
     last_used_at: Optional[datetime] = None
     is_active: bool = False
-    
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
-# ============ Analytics Schemas ============
+
+# Analytics Schemas
 class AnalyticsBase(BaseModel):
     metric_type: str
     value: float
@@ -147,6 +149,7 @@ class AnalyticsBase(BaseModel):
     metadata: Optional[str] = None
     trip_id: Optional[int] = None
     driver_id: Optional[int] = None
+    model_config = ConfigDict()
 
 class AnalyticsCreate(AnalyticsBase):
     pass
@@ -154,27 +157,10 @@ class AnalyticsCreate(AnalyticsBase):
 class AnalyticsResponse(AnalyticsBase):
     id: int
     timestamp: datetime
-    
-    class Config:
-        from_attributes = True
-
-# ============ WebSocket Schemas ============
-class InferenceRequest(BaseModel):
-    frameB64: str
-
-class DetectionDto(BaseModel):
-    className: str
-    confidence: float
-    boundingBox: List[float]
-    distanceMeters: Optional[float] = None
-
-class InferenceResponse(BaseModel):
-    detections: List[DetectionDto]
-    ttc: float
-    stats: dict
+    model_config = ConfigDict(from_attributes=True)
 
 
-# ============ Dataset & Training Schemas ============
+# Dataset Schemas
 class DatasetResponse(BaseModel):
     id: int
     filename: str
@@ -189,23 +175,16 @@ class DatasetResponse(BaseModel):
     status: str
     created_at: datetime
     processed_at: Optional[datetime] = None
-    
-    class Config:
-        from_attributes = True
-
+    model_config = ConfigDict(from_attributes=True)
 
 class LabelResponse(BaseModel):
     id: int
     video_id: int
     frame_number: int
-    label_data: str  # JSON string
+    label_data: str
     has_vehicle: bool
     has_lane: bool
     auto_labeled: bool
     verified: bool
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
-
-
+    model_config = ConfigDict(from_attributes=True)
