@@ -1,331 +1,324 @@
 @echo off
 REM =============================================================================
-REM ADAS Backend - Production Auto-Start for Windows Server
-REM One-click solution: Auto-install, Auto-fix, Auto-restart
-REM Runs forever until manually stopped
+REM ADAS Backend - Production Windows Server Startup Script
+REM Professional FastAPI + AI Backend System
+REM Version 5.0 - Production Mode
 REM =============================================================================
-setlocal enabledelayedexpansion
+setlocal EnableDelayedExpansion
 
-title ADAS Backend Server
+REM Set UTF-8 encoding for proper character display
+chcp 65001 >nul 2>&1
 
+title ADAS Backend - Production Server
+
+REM Create logs directory
+if not exist logs mkdir logs
+if not exist logs\alerts mkdir logs\alerts
+
+REM Initialize variables
+set PYTHON_OK=0
+set PROJECT_OK=0
+set VENV_OK=0
+set DEPS_OK=0
+set EXIT_CODE=0
+
+REM ============================================================================
+REM MAIN ENTRY POINT
+REM ============================================================================
+cls
 echo.
 echo ================================================================================
-echo           ADAS Backend - Production Auto-Start System
+echo            ADAS BACKEND SYSTEM - PRODUCTION MODE
 echo ================================================================================
-echo  Features: Auto-install, Auto-restart, Port management, Health monitoring
+echo  FastAPI + AI Models Backend
+echo  Production-Ready Windows Server Edition
+echo  Host: 0.0.0.0 ^| Port: 52000
 echo ================================================================================
-echo.
-echo Starting in 2 seconds... (this window will stay open)
-timeout /t 2 /nobreak >nul
 echo.
 
-REM Check if Python is installed
-echo [Diagnostic] Checking Python installation...
+call :LOG INFO "Starting ADAS Backend initialization..."
+echo.
+
+REM ============================================================================
+REM STEP 1: CHECK PYTHON INSTALLATION
+REM ============================================================================
+call :LOG INFO "Step 1/5: Checking Python installation..."
+
 python --version >nul 2>&1
 if errorlevel 1 (
+    call :LOG ERROR "Python not found in system PATH"
     echo.
-    echo ===============================================================================
-    echo  [ERROR] PYTHON NOT FOUND!
-    echo ===============================================================================
+    echo  ❌ CRITICAL ERROR: Python is not installed or not accessible
     echo.
-    echo Python is not installed or not in PATH.
+    echo  Required: Python 3.10 or higher
+    echo  Download: https://www.python.org/downloads/
     echo.
-    echo Solution:
-    echo  1. Download Python 3.10+ from: https://www.python.org/downloads/
-    echo  2. During installation, CHECK the box: "Add Python to PATH"
-    echo  3. After installation, RESTART this script
+    echo  IMPORTANT: During installation, check "Add Python to PATH"
     echo.
-    echo ===============================================================================
-    echo.
-    pause
-    exit /b 1
+    set PYTHON_OK=0
+    goto :ERROR_HALT
 )
 
-echo [Step 1/7] Python version detected:
-python --version
-echo.
+for /f "tokens=2" %%i in ('python --version 2^>^&1') do set PY_VERSION=%%i
+call :LOG INFO "Found Python %PY_VERSION%"
 
-REM Kill any existing process on port 52000
-echo [Step 2/7] Checking port 52000...
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :52000 ^| findstr LISTENING') do (
-    echo   - Killing process PID %%a on port 52000
-    taskkill /F /PID %%a >nul 2>&1
+REM Check Python version >= 3.10
+python -c "import sys; exit(0 if sys.version_info >= (3,10) else 1)" 2>nul
+if errorlevel 1 (
+    call :LOG ERROR "Python version too old: %PY_VERSION%"
+    echo.
+    echo  ❌ ERROR: Python version too old
+    echo.
+    echo  Required: Python 3.10 or higher
+    echo  Current: %PY_VERSION%
+    echo  Download: https://www.python.org/downloads/
+    echo.
+    set PYTHON_OK=0
+    goto :ERROR_HALT
 )
-timeout /t 2 /nobreak >nul
-echo   - Port 52000 is now free
+
+python -c "import sys; print('  → Python executable: ' + sys.executable)"
+set PYTHON_OK=1
 echo.
 
-REM Create logs directory if not exists
-if not exist logs mkdir logs
+REM ============================================================================
+REM STEP 2: VERIFY PROJECT STRUCTURE
+REM ============================================================================
+call :LOG INFO "Step 2/5: Verifying project structure..."
 
-REM Verify main.py exists
+echo   → Current directory: %CD%
+
 if not exist main.py (
+    call :LOG ERROR "main.py not found in current directory"
     echo.
-    echo ===============================================================================
-    echo  [ERROR] main.py not found!
-    echo ===============================================================================
+    echo  ❌ ERROR: main.py not found
     echo.
     echo  Current directory: %CD%
+    echo  Required files: main.py, requirements.txt
     echo.
-    echo  Solution:
-    echo    - Make sure you're running start-be.bat from the project root folder
-    echo    - The folder should contain: main.py, requirements.txt, etc.
-    echo    - Do NOT move start-be.bat to another location
+    echo  Please ensure start-be.bat is in the project root folder.
     echo.
-    pause
-    exit /b 1
+    set PROJECT_OK=0
+    goto :ERROR_HALT
 )
 
-REM Verify requirements.txt exists
 if not exist requirements.txt (
+    call :LOG ERROR "requirements.txt not found"
     echo.
-    echo ===============================================================================
-    echo  [ERROR] requirements.txt not found!
-    echo ===============================================================================
+    echo  ❌ ERROR: requirements.txt not found
     echo.
-    echo  Current directory: %CD%
+    echo  This file is required for dependency installation.
+    echo  Please ensure you have the complete project files.
     echo.
-    echo  This file is required for installation.
-    echo  Make sure you have the complete project files.
-    echo.
-    pause
-    exit /b 1
+    set PROJECT_OK=0
+    goto :ERROR_HALT
 )
 
-REM Create virtual environment if it doesn't exist
-if not exist venv (
-    echo [Step 3/7] Creating virtual environment...
-    echo   This may take 30-60 seconds, please wait...
-    python -m venv venv
-    if errorlevel 1 (
-        echo.
-        echo   [ERROR] Failed to create virtual environment!
-        echo   Possible causes:
-        echo     - Insufficient disk space (need ~500MB)
-        echo     - Antivirus software blocking Python
-        echo     - Corrupted Python installation
-        echo.
-        echo   Attempting cleanup and retry in 3 seconds...
-        timeout /t 3 /nobreak
-        rmdir /s /q venv 2>nul
-        python -m venv venv
-        if errorlevel 1 (
-            echo.
-            echo   [FATAL] Cannot create virtual environment after retry!
-            echo   Please check the errors above and try again.
-            echo.
-            pause
-            exit /b 1
-        )
-    )
-    echo   - Virtual environment created successfully
-) else (
-    echo [Step 3/7] Virtual environment already exists (reusing)
-)
+echo   → main.py: Found
+echo   → requirements.txt: Found
+if exist config.py echo   → config.py: Found
+if exist vision echo   → vision/: Found
+if exist ai_models echo   → ai_models/: Found
+
+call :LOG INFO "Project structure validated"
+set PROJECT_OK=1
 echo.
 
-REM Activate virtual environment
-echo [Step 4/7] Activating virtual environment...
+REM ============================================================================
+REM STEP 3: VIRTUAL ENVIRONMENT SETUP
+REM ============================================================================
+call :LOG INFO "Step 3/5: Setting up virtual environment..."
+
+if exist venv (
+    call :LOG INFO "Virtual environment exists, activating..."
+    goto :ACTIVATE_VENV
+)
+
+call :LOG INFO "Creating virtual environment..."
+echo   → This may take 30-60 seconds...
+
+python -m venv venv 2>nul
+if errorlevel 1 (
+    call :LOG ERROR "Failed to create virtual environment"
+    echo.
+    echo  ❌ ERROR: Cannot create virtual environment
+    echo.
+    echo  Possible causes:
+    echo    - Insufficient disk space (need ~500MB free)
+    echo    - Permission issues (try running as Administrator)
+    echo    - Antivirus blocking (disable temporarily)
+    echo.
+    set VENV_OK=0
+    goto :ERROR_HALT
+)
+
+call :LOG INFO "Virtual environment created successfully"
+
+:ACTIVATE_VENV
 if not exist venv\Scripts\activate.bat (
+    call :LOG ERROR "Virtual environment corrupted (activate.bat missing)"
     echo.
-    echo   [ERROR] Virtual environment is corrupted!
-    echo   File missing: venv\Scripts\activate.bat
+    echo  ❌ ERROR: Virtual environment is corrupted
     echo.
-    echo   Deleting corrupted venv and recreating in 3 seconds...
-    timeout /t 3 /nobreak
-    rmdir /s /q venv 2>nul
-    python -m venv venv
+    echo  Solution: Delete 'venv' folder and restart this script
+    echo.
+    set VENV_OK=0
+    goto :ERROR_HALT
+)
+
+call venv\Scripts\activate 2>nul
+if errorlevel 1 (
+    call :LOG ERROR "Failed to activate virtual environment"
+    echo.
+    echo  ❌ ERROR: Cannot activate virtual environment
+    echo.
+    echo  Solution: Delete 'venv' folder and restart this script
+    echo.
+    set VENV_OK=0
+    goto :ERROR_HALT
+)
+
+echo   → Virtual environment: Active
+python -c "import sys; print('  → Python location: ' + sys.executable)"
+call :LOG INFO "Virtual environment ready"
+set VENV_OK=1
+echo.
+
+REM ============================================================================
+REM STEP 4: INSTALL DEPENDENCIES
+REM ============================================================================
+call :LOG INFO "Step 4/5: Installing dependencies..."
+
+echo   → Upgrading pip...
+python -m pip install --upgrade pip --quiet --disable-pip-version-check 2>nul
+if errorlevel 1 (
+    call :LOG WARN "Pip upgrade failed, continuing..."
+)
+
+echo   → Installing requirements.txt...
+echo   → This may take 5-10 minutes on first run...
+echo.
+
+pip install -r requirements.txt --quiet --disable-pip-version-check 2>nul
+if errorlevel 1 (
+    call :LOG WARN "Silent install failed, retrying with output..."
+    echo.
+    
+    pip install -r requirements.txt 2>&1
     if errorlevel 1 (
-        echo   [FATAL] Cannot recreate virtual environment
-        pause
-        exit /b 1
+        call :LOG ERROR "Failed to install dependencies"
+        echo.
+        echo  ❌ ERROR: Dependency installation failed
+        echo.
+        echo  Try manually:
+        echo    venv\Scripts\activate
+        echo    pip install -r requirements.txt
+        echo.
+        set DEPS_OK=0
+        goto :ERROR_HALT
     )
 )
 
-call venv\Scripts\activate
+echo.
+echo   → Verifying critical imports...
+python -c "import fastapi, uvicorn, cv2, numpy" 2>nul
 if errorlevel 1 (
+    call :LOG ERROR "Import verification failed"
     echo.
-    echo   [ERROR] Failed to activate virtual environment!
-    echo   This should rarely happen. Attempting to recreate...
+    echo  ❌ ERROR: Some critical packages are not importable
     echo.
-    timeout /t 3 /nobreak
-    rmdir /s /q venv 2>nul
-    python -m venv venv
-    call venv\Scripts\activate
-    if errorlevel 1 (
-        echo   [FATAL] Activation failed even after recreation
-        pause
-        exit /b 1
-    )
-)
-echo   - Virtual environment activated successfully
-echo.
-
-REM Upgrade pip
-echo [Step 5/7] Upgrading pip and core packages...
-python -m pip install --upgrade pip setuptools wheel --quiet --disable-pip-version-check
-if errorlevel 1 (
-    echo   [WARNING] Pip upgrade failed, continuing anyway...
-)
-echo   - Pip upgraded
-echo.
-
-REM Install dependencies
-echo [Step 6/7] Installing dependencies (first-time: 5-10 minutes)...
-echo   Progress: [1/3] PyTorch  [2/3] Packages  [3/3] YOLO
-echo.
-
-REM Install PyTorch
-echo   [1/3] Installing PyTorch (CPU version) - Large download...
-echo         This step alone may take 3-5 minutes
-pip install --no-cache-dir --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu --quiet --disable-pip-version-check
-if errorlevel 1 (
+    echo  Missing: FastAPI, Uvicorn, OpenCV, or NumPy
+    echo  Try: pip install fastapi uvicorn opencv-python numpy
     echo.
-    echo   [WARNING] PyTorch installation failed, retrying with output...
-    pip install --no-cache-dir --pre torch torchvision --index-url https://download.pytorch.org/whl/nightly/cpu --disable-pip-version-check
-    if errorlevel 1 (
-        echo.
-        echo   [ERROR] PyTorch installation failed!
-        echo   Possible solutions:
-        echo     - Check internet connection
-        echo     - Run as Administrator
-        echo     - Check disk space (need ~2GB free)
-        echo     - Disable antivirus temporarily
-        echo.
-        pause
-        exit /b 1
-    )
-)
-echo   - PyTorch installed successfully
-echo.
-
-REM Install other packages
-echo   [2/3] Installing FastAPI, OpenCV, and other packages...
-pip install --no-cache-dir -r requirements.txt --quiet --disable-pip-version-check
-if errorlevel 1 (
-    echo.
-    echo   [WARNING] Some packages failed, retrying with output...
-    pip install --no-cache-dir -r requirements.txt --disable-pip-version-check
-    if errorlevel 1 (
-        echo.
-        echo   [WARNING] Bulk install failed, trying core packages individually...
-        pip install fastapi uvicorn[standard] opencv-python numpy sqlalchemy pydantic --disable-pip-version-check
-    )
-)
-echo   - Core packages installed successfully
-echo.
-
-REM Install Ultralytics
-echo   [3/3] Installing Ultralytics YOLO...
-pip install --no-cache-dir ultralytics==8.3.23 --no-deps --quiet --disable-pip-version-check
-if errorlevel 1 (
-    pip install ultralytics==8.3.23 --no-deps --disable-pip-version-check
-)
-echo   - Ultralytics installed successfully
-echo.
-
-echo ================================================================================
-echo  Installation Complete!
-echo ================================================================================
-echo  Server Configuration:
-echo    - Host: 0.0.0.0 (accessible from network)
-echo    - Port: 52000
-echo    - API: POST /vision/frame
-echo    - Health: GET /health
-echo    - Docs: http://localhost:52000/docs
-echo.
-echo  Auto-Features:
-echo    - Auto-restart on crash (infinite loop)
-echo    - Auto-kill port conflicts
-echo    - Error logging to logs/backend.log
-echo ================================================================================
-echo.
-
-REM Start infinite restart loop
-set RESTART_COUNT=0
-set MAX_FAST_RESTARTS=5
-
-:START_LOOP
-set /a RESTART_COUNT+=1
-
-echo [Step 7/7] Starting ADAS Backend (attempt #%RESTART_COUNT%)...
-echo   - Time: %date% %time%
-echo   - Log: logs/backend.log
-echo.
-echo ================================================================================
-echo  SERVER IS RUNNING - Press Ctrl+C to stop
-echo ================================================================================
-echo.
-
-REM Check if restarting too frequently
-if %RESTART_COUNT% GTR 1 (
-    if %RESTART_COUNT% LEQ %MAX_FAST_RESTARTS% (
-        echo   [INFO] Quick restart #%RESTART_COUNT% - monitoring for crash loop...
-        echo.
-    )
-    if %RESTART_COUNT% EQU %MAX_FAST_RESTARTS% (
-        echo.
-        echo ========================================================================
-        echo  [WARNING] Server has crashed %MAX_FAST_RESTARTS% times in a row!
-        echo ========================================================================
-        echo.
-        echo  This indicates a serious problem. Possible causes:
-        echo    - Missing dependencies (delete venv folder and restart)
-        echo    - Corrupted model files in ai_models/weights/
-        echo    - Port 52000 still in use by another program
-        echo    - Python syntax error in main.py or imported modules
-        echo    - Missing Python packages
-        echo.
-        echo  Actions taken:
-        echo    - Waiting 30 seconds before next restart
-        echo    - Check logs/backend.log for detailed error messages
-        echo.
-        echo  To fix:
-        echo    1. Close this window
-        echo    2. Delete the 'venv' folder
-        echo    3. Run start-be.bat again for fresh installation
-        echo.
-        timeout /t 30 /nobreak
-        set RESTART_COUNT=0
-        echo  Retrying now...
-        echo.
-    )
+    set DEPS_OK=0
+    goto :ERROR_HALT
 )
 
-REM Start the server
+call :LOG INFO "Dependencies installed successfully"
+set DEPS_OK=1
+echo.
+
+REM ============================================================================
+REM STEP 5: START SERVER
+REM ============================================================================
+echo ================================================================================
+echo  🚀 ADAS API is LIVE at https://adas-api.aiotlab.edu.vn
+echo  📚 Swagger Documentation: /docs
+echo  🔧 Host: 0.0.0.0
+echo  🔌 Port: 52000
+echo ================================================================================
+echo.
+
+call :LOG INFO "Step 5/5: Starting FastAPI server..."
+echo.
+echo   Press Ctrl+C to stop the server
+echo   Server output:
+echo.
+echo ================================================================================
+echo.
+
 python main.py
-
-REM Capture exit code
-set EXIT_CODE=%errorlevel%
+set EXIT_CODE=!errorlevel!
 
 echo.
 echo ================================================================================
-echo  Server stopped with exit code: %EXIT_CODE%
-echo  Time: %date% %time%
-echo ================================================================================
-echo.
-
-if %EXIT_CODE% EQU 0 (
-    echo Server stopped gracefully (normal shutdown).
-    echo Restarting in 5 seconds...
-    timeout /t 5 /nobreak
+if !EXIT_CODE! EQU 0 (
+    call :LOG INFO "Server stopped gracefully"
+    echo  ℹ️  SERVER STOPPED - Normal shutdown
 ) else (
-    echo [ERROR] Server crashed with error code %EXIT_CODE%
-    echo Check logs/backend.log for details
-    echo Auto-restarting in 10 seconds...
-    timeout /t 10 /nobreak
+    call :LOG ERROR "Server crashed with exit code !EXIT_CODE!"
+    echo  ❌ SERVER CRASHED - Exit code: !EXIT_CODE!
 )
+echo ================================================================================
+echo.
 
-REM Kill any lingering processes on port 52000
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr :52000 ^| findstr LISTENING') do (
-    echo Cleaning up process PID %%a on port 52000...
-    taskkill /F /PID %%a >nul 2>&1
+goto :SERVER_STOPPED
+
+REM ============================================================================
+REM ERROR HANDLER
+REM ============================================================================
+:ERROR_HALT
+echo.
+echo ================================================================================
+echo  ❌ INITIALIZATION FAILED
+echo ================================================================================
+echo.
+echo  Please resolve the errors above and restart this script.
+echo.
+echo  Window will remain open for review.
+echo  Press any key to exit...
+echo.
+echo ================================================================================
+echo.
+pause >nul
+goto :END
+
+REM ============================================================================
+REM SERVER STOPPED HANDLER
+REM ============================================================================
+:SERVER_STOPPED
+echo.
+echo  Window will remain open for review.
+echo  Press any key to exit...
+echo.
+pause >nul
+goto :END
+
+REM ============================================================================
+REM LOGGING FUNCTION
+REM ============================================================================
+:LOG
+set LOG_LEVEL=%~1
+set LOG_MSG=%~2
+for /f "tokens=1-3 delims=:." %%a in ("%time: =0%") do (
+    set TIMESTAMP=%%a:%%b:%%c
 )
-timeout /t 2 /nobreak >nul
+echo [!TIMESTAMP!] [%LOG_LEVEL%] %LOG_MSG%
+goto :EOF
 
-REM Restart the loop
-goto START_LOOP
-
-REM This line should never be reached
+REM ============================================================================
+REM SCRIPT END
+REM ============================================================================
+:END
 endlocal
 
