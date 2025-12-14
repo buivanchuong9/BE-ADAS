@@ -239,6 +239,30 @@ set DEPS_OK=1
 echo.
 
 REM ============================================================================
+REM PRE-FLIGHT: VALIDATE PYTHON CODE
+REM ============================================================================
+call :LOG INFO "Pre-flight: Validating Python code syntax..."
+
+python -m py_compile main.py 2>nul
+if errorlevel 1 (
+    call :LOG ERROR "Syntax error detected in main.py"
+    echo.
+    echo  ❌ Python syntax validation failed!
+    echo.
+    echo  Running detailed syntax check...
+    echo.
+    python -m py_compile main.py
+    echo.
+    echo  Please fix the syntax errors above before starting the server.
+    echo.
+    goto :ERROR_HALT
+)
+
+echo   → main.py: Syntax OK
+call :LOG INFO "Python code validation passed"
+echo.
+
+REM ============================================================================
 REM STEP 5: START SERVER
 REM ============================================================================
 echo.

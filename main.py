@@ -52,9 +52,6 @@ REQUEST_TIMEOUT = 60.0  # seconds
 # Global state
 is_shutting_down = False
 
-    expose_headers=["x-correlation-id", "x-processing-time"]
-)
-
 
 # Global Exception Handlers
 @app.exception_handler(Exception)
