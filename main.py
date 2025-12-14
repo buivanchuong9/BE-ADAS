@@ -445,7 +445,14 @@ async def get_charts(
 def main():
     """Main entry point with safe exception handling"""
     try:
-        logger.info("Starting ADAS Backend Server...")
+        logger.info("=" * 80)
+        logger.info("ADAS Backend Server - Starting...")
+        logger.info("=" * 80)
+        logger.info("Public URL: https://adas-api.aiotlab.edu.vn")
+        logger.info("Local URL:  http://localhost:52000")
+        logger.info("API Docs:   http://localhost:52000/docs")
+        logger.info("Health:     http://localhost:52000/health")
+        logger.info("=" * 80)
         
         # Production uvicorn configuration
         uvicorn.run(
@@ -456,15 +463,21 @@ def main():
             log_level="info",
             access_log=True,
             workers=1,
-            timeout_keep_alive=30
+            timeout_keep_alive=30,
+            limit_concurrency=100,
+            limit_max_requests=1000
         )
     except KeyboardInterrupt:
-        logger.info("Server stopped by user")
+        logger.info("Server stopped by user (Ctrl+C)")
+        sys.exit(0)
     except Exception as e:
-        logger.error(f"Server error: {e}")
+        logger.error("=" * 80)
+        logger.error("CRITICAL ERROR - Server cannot start!")
+        logger.error("=" * 80)
+        logger.error(f"Error: {e}")
         logger.error(traceback.format_exc())
-        # DO NOT exit - log and continue
-        logger.info("Server will attempt to continue...")
+        logger.error("=" * 80)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
