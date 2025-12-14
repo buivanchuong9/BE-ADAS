@@ -1,19 +1,13 @@
 # Video Processor - Frame-by-frame ADAS analysis
 # All metrics computed from REAL inference results
 
+import cv2
+import numpy as np
 import logging
 import json
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
-
-try:
-    import cv2
-    import numpy as np
-    CV2_AVAILABLE = True
-except ImportError:
-    CV2_AVAILABLE = False
-    print("WARNING: OpenCV not available - video processing disabled")
 
 from models import VideoDataset, ADASEvent, Detection
 from services.adas_pipeline import ADASPipeline
@@ -55,10 +49,7 @@ class VideoProcessor:
         Process video frame by frame.
         Returns real metrics from inference.
         """
-        if not CV2_AVAILABLE:
-            logger.error("OpenCV not available - cannot process video")
-            raise RuntimeError("Video processing requires OpenCV. Install with: pip install opencv-python-headless")
-        
+
         logger.info(f"Processing video: {video_id}")
         
         # Open video

@@ -189,6 +189,12 @@ REM STEP 4: INSTALL DEPENDENCIES
 REM ============================================================================
 call :LOG INFO "Step 4/5: Installing dependencies..."
 
+REM Create necessary directories
+if not exist uploads\videos mkdir uploads\videos >nul 2>&1
+if not exist ai_models\weights mkdir ai_models\weights >nul 2>&1
+if not exist dataset\raw mkdir dataset\raw >nul 2>&1
+if not exist dataset\labels mkdir dataset\labels >nul 2>&1
+
 echo   → Upgrading pip...
 python -m pip install --upgrade pip --quiet --disable-pip-version-check 2>nul
 if errorlevel 1 (
@@ -206,33 +212,59 @@ if errorlevel 1 (
     
     pip install -r requirements.txt 2>&1
     if errorlevel 1 (
-        call :LOG ERROR "Failed to install dependencies"
+        call :LOG WARN "Some packages failed, installing core dependencies manually..."
         echo.
-        echo  ❌ ERROR: Dependency installation failed
+        echo   → Installing core framework...
+        pip install fastapi==0.115.0 uvicorn==0.32.0 pydantic==2.9.2 pydantic-settings==2.6.1
+        echo   → Installing database...
+        pip install sqlalchemy==2.0.36
+        echo   → Installing video processing (REQUIRED)...
+        pip install opencv-python-headless==4.10.0.84 numpy==1.26.4
+        echo   → Installing utilities...
+        pip install python-multipart python-dotenv httpx aiofiles pillow
         echo.
-        echo  Try manually:
-        echo    venv\Scripts\activate
-        echo    pip install -r requirements.txt
-        echo.
-        set DEPS_OK=0
-        goto :ERROR_HALT
+        call :LOG INFO "Manual installation complete"
     )
 )
 
 echo.
 echo   → Verifying critical imports...
-python -c "import fastapi, uvicorn, cv2, numpy" 2>nul
+python -c "import fastapi, uvicorn" 2>nul
 if errorlevel 1 (
-    call :LOG ERROR "Import verification failed"
+    call :LOG WARN "FastAPI/Uvicorn missing, installing now..."
+    pip install fastapi==0.115.0 uvicorn==0.32.0 --quiet --disable-pip-version-check
+)
+
+python -c "import cv2, numpy" 2>nul
+if errorlevel 1 (
+    call :LOG WARN "OpenCV/NumPy missing, installing now..."
+    echo   → Installing opencv-python-headless (REQUIRED for video processing)...
+    pip install opencv-python-headless==4.10.0.84 numpy==1.26.4 --quiet --disable-pip-version-check
+    if errorlevel 1 (
+        call :LOG ERROR "OpenCV installation failed - trying without version pin..."
+        pip install opencv-python-headless numpy
+    )
+)
+
+python -c "import fastapi, uvicorn, cv2, numpy, sqlalchemy, pydantic" 2>nul
+if errorlevel 1 (
+    call :LOG ERROR "Critical packages still missing after installation"
     echo.
-    echo  ❌ ERROR: Some critical packages are not importable
+    echo  ❌ ERROR: Required packages not available
     echo.
-    echo  Missing: FastAPI, Uvicorn, OpenCV, or NumPy
-    echo  Try: pip install fastapi uvicorn opencv-python numpy
+    echo  Running diagnostic...
+    python -c "import fastapi; print('  ✓ FastAPI OK')" 2>nul || echo   ✗ FastAPI MISSING
+    python -c "import uvicorn; print('  ✓ Uvicorn OK')" 2>nul || echo   ✗ Uvicorn MISSING
+    python -c "import cv2; print('  ✓ OpenCV OK')" 2>nul || echo   ✗ OpenCV MISSING
+    python -c "import numpy; print('  ✓ NumPy OK')" 2>nul || echo   ✗ NumPy MISSING
+    python -c "import sqlalchemy; print('  ✓ SQLAlchemy OK')" 2>nul || echo   ✗ SQLAlchemy MISSING
+    python -c "import pydantic; print('  ✓ Pydantic OK')" 2>nul || echo   ✗ Pydantic MISSING
     echo.
     set DEPS_OK=0
     goto :ERROR_HALT
 )
+
+echo   → ✓ All critical packages verified
 
 call :LOG INFO "Dependencies installed successfully"
 set DEPS_OK=1
@@ -431,11 +463,11 @@ set LOG_MSG=%~2
 for /f "tokens=1-3 delims=:." %%a in ("%time: =0%") do set TIMESTAMP=%%a:%%b:%%c
 
 if "%LOG_LEVEL%"=="INFO" (
-    echo [!TIMESTAMP!] [ℹ️  INFO] %LOG_MSG%
+    echo [!TIMESTAMP!] [INFO] %LOG_MSG%
 ) else if "%LOG_LEVEL%"=="ERROR" (
-    echo [!TIMESTAMP!] [❌ ERROR] %LOG_MSG%
+    echo [!TIMESTAMP!] [ERROR] %LOG_MSG%
 ) else if "%LOG_LEVEL%"=="WARN" (
-    echo [!TIMESTAMP!] [⚠️  WARN] %LOG_MSG%
+    echo [!TIMESTAMP!] [WARN] %LOG_MSG%
 ) else (
     echo [!TIMESTAMP!] [%LOG_LEVEL%] %LOG_MSG%
 )
