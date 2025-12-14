@@ -1,42 +1,42 @@
 @echo off
 REM =============================================================================
-REM ADAS Backend - Production Windows Server Startup Script
-REM Professional FastAPI + AI Backend System
-REM Version 5.0 - Production Mode
+REM ADAS Backend - Professional Production Server
+REM FastAPI + AI Models System
+REM Version 6.0 - Enterprise Edition
 REM =============================================================================
 setlocal EnableDelayedExpansion
 
-REM Set UTF-8 encoding for proper character display
 chcp 65001 >nul 2>&1
-
 title ADAS Backend - Production Server
 
-REM Create logs directory
-if not exist logs mkdir logs
-if not exist logs\alerts mkdir logs\alerts
+REM ============================================================================
+REM CONFIGURATION
+REM ============================================================================
+set SERVER_HOST=0.0.0.0
+set SERVER_PORT=52000
+set API_URL=https://adas-api.aiotlab.edu.vn
+set MAX_RETRY_ATTEMPTS=3
+set RETRY_DELAY=5
 
-REM Initialize variables
+REM Create directories
+if not exist logs mkdir logs >nul 2>&1
+if not exist logs\alerts mkdir logs\alerts >nul 2>&1
+
+REM Initialize status flags
 set PYTHON_OK=0
 set PROJECT_OK=0
 set VENV_OK=0
 set DEPS_OK=0
-set EXIT_CODE=0
+set SERVER_RUNNING=0
 
 REM ============================================================================
 REM MAIN ENTRY POINT
 REM ============================================================================
 cls
-echo.
-echo ================================================================================
-echo            ADAS BACKEND SYSTEM - PRODUCTION MODE
-echo ================================================================================
-echo  FastAPI + AI Models Backend
-echo  Production-Ready Windows Server Edition
-echo  Host: 0.0.0.0 ^| Port: 52000
-echo ================================================================================
+call :PRINT_BANNER
 echo.
 
-call :LOG INFO "Starting ADAS Backend initialization..."
+call :LOG INFO "Initializing ADAS Backend System..."
 echo.
 
 REM ============================================================================
@@ -241,84 +241,191 @@ echo.
 REM ============================================================================
 REM STEP 5: START SERVER
 REM ============================================================================
-echo ================================================================================
-echo  🚀 ADAS API is LIVE at https://adas-api.aiotlab.edu.vn
-echo  📚 Swagger Documentation: /docs
-echo  🔧 Host: 0.0.0.0
-echo  🔌 Port: 52000
-echo ================================================================================
+echo.
+call :PRINT_SERVER_INFO
 echo.
 
 call :LOG INFO "Step 5/5: Starting FastAPI server..."
 echo.
-echo   Press Ctrl+C to stop the server
-echo   Server output:
+
+:SERVER_START
+set SERVER_RUNNING=1
+call :LOG INFO "Launching Python main.py..."
 echo.
-echo ================================================================================
+echo ┌────────────────────────────────────────────────────────────────────────────┐
+echo │                        SERVER OUTPUT                                       │
+echo └────────────────────────────────────────────────────────────────────────────┘
 echo.
 
 python main.py
 set EXIT_CODE=!errorlevel!
+set SERVER_RUNNING=0
 
 echo.
-echo ================================================================================
+echo ┌────────────────────────────────────────────────────────────────────────────┐
+echo │                        SERVER STOPPED                                      │
+echo └────────────────────────────────────────────────────────────────────────────┘
+echo.
+
 if !EXIT_CODE! EQU 0 (
-    call :LOG INFO "Server stopped gracefully"
-    echo  ℹ️  SERVER STOPPED - Normal shutdown
+    call :LOG INFO "Server stopped gracefully (Exit code: 0)"
+    echo  ✅ Normal shutdown - User requested stop
+    echo.
+    goto :GRACEFUL_STOP
 ) else (
     call :LOG ERROR "Server crashed with exit code !EXIT_CODE!"
-    echo  ❌ SERVER CRASHED - Exit code: !EXIT_CODE!
+    call :HANDLE_CRASH !EXIT_CODE!
+    goto :END
 )
-echo ================================================================================
-echo.
-
-goto :SERVER_STOPPED
 
 REM ============================================================================
-REM ERROR HANDLER
+REM ERROR HANDLERS
 REM ============================================================================
 :ERROR_HALT
 echo.
-echo ================================================================================
-echo  ❌ INITIALIZATION FAILED
-echo ================================================================================
+echo ╔════════════════════════════════════════════════════════════════════════════╗
+echo ║                        ❌ INITIALIZATION FAILED                            ║
+echo ╚════════════════════════════════════════════════════════════════════════════╝
 echo.
-echo  Please resolve the errors above and restart this script.
+echo  ⚠️  Please resolve the errors above and restart this script.
 echo.
-echo  Window will remain open for review.
+echo  💡 Common solutions:
+echo     1. Ensure Python 3.10+ is installed
+echo     2. Check internet connection for dependency downloads
+echo     3. Run as Administrator if permission errors occur
+echo     4. Verify project files exist (main.py, requirements.txt)
+echo.
+echo ────────────────────────────────────────────────────────────────────────────
 echo  Press any key to exit...
-echo.
-echo ================================================================================
-echo.
+echo ────────────────────────────────────────────────────────────────────────────
 pause >nul
 goto :END
 
-REM ============================================================================
-REM SERVER STOPPED HANDLER
-REM ============================================================================
-:SERVER_STOPPED
+:GRACEFUL_STOP
+echo  ℹ️  Server has been stopped normally.
 echo.
-echo  Window will remain open for review.
+echo  To restart the server, simply run this script again.
+echo.
+echo ────────────────────────────────────────────────────────────────────────────
 echo  Press any key to exit...
-echo.
+echo ────────────────────────────────────────────────────────────────────────────
 pause >nul
 goto :END
 
+:HANDLE_CRASH
+set CRASH_EXIT_CODE=%~1
+echo.
+echo ╔════════════════════════════════════════════════════════════════════════════╗
+echo ║                           ❌ SERVER CRASHED                                ║
+echo ╚════════════════════════════════════════════════════════════════════════════╝
+echo.
+echo  Exit Code: !CRASH_EXIT_CODE!
+echo  Time: %date% %time%
+echo.
+
+REM Diagnose common errors
+if !CRASH_EXIT_CODE! EQU 1 (
+    echo  🔍 Diagnosis: Python execution error
+    echo.
+    echo  Common causes:
+    echo     • Syntax error in Python code (IndentationError, SyntaxError)
+    echo     • Missing import or module not found
+    echo     • Runtime exception in application code
+    echo.
+    echo  💡 Solutions:
+    echo     1. Check the error message above
+    echo     2. Fix Python syntax errors in main.py or imported modules
+    echo     3. Verify all required packages are installed
+    echo     4. Run: python -m py_compile main.py
+    echo.
+)
+
+if !CRASH_EXIT_CODE! EQU 3 (
+    echo  🔍 Diagnosis: Port conflict
+    echo.
+    echo  💡 Solution:
+    echo     Port %SERVER_PORT% may be in use by another process
+    echo     Run: netstat -ano ^| findstr :%SERVER_PORT%
+    echo.
+)
+
+echo ────────────────────────────────────────────────────────────────────────────
+echo  Options:
+echo    [R] Retry now
+echo    [Q] Quit
+echo ────────────────────────────────────────────────────────────────────────────
+echo.
+choice /C RQ /N /M "Select option (R/Q): "
+set USER_CHOICE=!errorlevel!
+
+if !USER_CHOICE! EQU 1 (
+    echo.
+    call :LOG INFO "User requested retry..."
+    echo  🔄 Restarting server...
+    echo.
+    timeout /t 2 /nobreak >nul
+    goto :SERVER_START
+) else (
+    echo.
+    call :LOG INFO "User chose to exit"
+    goto :END
+)
+
 REM ============================================================================
-REM LOGGING FUNCTION
+REM UTILITY FUNCTIONS
 REM ============================================================================
+:PRINT_BANNER
+echo ╔════════════════════════════════════════════════════════════════════════════╗
+echo ║                                                                            ║
+echo ║                   ADAS BACKEND SYSTEM - PRODUCTION MODE                   ║
+echo ║                                                                            ║
+echo ║                    FastAPI + AI Models Backend                            ║
+echo ║               Production-Ready Windows Server Edition                     ║
+echo ║                                                                            ║
+echo ╚════════════════════════════════════════════════════════════════════════════╝
+goto :EOF
+
+:PRINT_SERVER_INFO
+echo ╔════════════════════════════════════════════════════════════════════════════╗
+echo ║                      🚀 SERVER CONFIGURATION                               ║
+echo ╚════════════════════════════════════════════════════════════════════════════╝
+echo.
+echo   🌐 Public URL:  %API_URL%
+echo   📚 API Docs:    %API_URL%/docs
+echo   🔧 Host:        %SERVER_HOST%
+echo   🔌 Port:        %SERVER_PORT%
+echo   ❤️  Health:      http://localhost:%SERVER_PORT%/health
+echo.
+echo ╔════════════════════════════════════════════════════════════════════════════╗
+echo ║                      Press Ctrl+C to stop the server                      ║
+echo ╚════════════════════════════════════════════════════════════════════════════╝
+goto :EOF
+
 :LOG
 set LOG_LEVEL=%~1
 set LOG_MSG=%~2
-for /f "tokens=1-3 delims=:." %%a in ("%time: =0%") do (
-    set TIMESTAMP=%%a:%%b:%%c
+for /f "tokens=1-3 delims=:." %%a in ("%time: =0%") do set TIMESTAMP=%%a:%%b:%%c
+
+if "%LOG_LEVEL%"=="INFO" (
+    echo [!TIMESTAMP!] [ℹ️  INFO] %LOG_MSG%
+) else if "%LOG_LEVEL%"=="ERROR" (
+    echo [!TIMESTAMP!] [❌ ERROR] %LOG_MSG%
+) else if "%LOG_LEVEL%"=="WARN" (
+    echo [!TIMESTAMP!] [⚠️  WARN] %LOG_MSG%
+) else (
+    echo [!TIMESTAMP!] [%LOG_LEVEL%] %LOG_MSG%
 )
-echo [!TIMESTAMP!] [%LOG_LEVEL%] %LOG_MSG%
 goto :EOF
 
 REM ============================================================================
 REM SCRIPT END
 REM ============================================================================
 :END
+echo.
+echo ════════════════════════════════════════════════════════════════════════════
+echo  ADAS Backend System - Session ended
+echo  Thank you for using ADAS Backend!
+echo ════════════════════════════════════════════════════════════════════════════
+echo.
 endlocal
 
