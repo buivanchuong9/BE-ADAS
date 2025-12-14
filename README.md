@@ -4,46 +4,67 @@
 ### Overview
 Production-ready ADAS backend for national-level academic competition. Processes uploaded driving videos with real-time ADAS features.
 
-**Status:** ✓ PRODUCTION READY
+**Status:** ✓ PRODUCTION READY - Windows Server Compatible
 
 ### Critical Features
 - ✓ Server NEVER exits on startup
-- ✓ Windows Server compatible (NO Unicode)
+- ✓ Windows Server compatible (NO compilation required)
 - ✓ Pydantic V2 compliant (ZERO warnings)
 - ✓ Robust API with safe error handling
+- ✓ Pre-built wheels only (no Visual Studio needed)
 
 ### Technology Stack
-- Python 3.13
+- Python 3.10+ (3.10, 3.11, 3.12 recommended)
 - FastAPI 0.115.0
 - Pydantic 2.9.2
 - SQLAlchemy 2.0.36
-- OpenCV 4.10.0
+- OpenCV 4.10.0 (optional)
 
-### Quick Start
+### Windows Server Installation
 
-**1. Install Dependencies**
-```bash
+**Option 1: Automatic (Recommended)**
+```batch
+install_windows.bat
+```
+
+**Option 2: Manual**
+```batch
+REM 1. Install Python 3.10+ from python.org
+REM 2. Upgrade pip
+python -m pip install --upgrade pip
+
+REM 3. Install dependencies
 pip install -r requirements.txt
 ```
 
-**2. Start Server**
-```bash
-# Linux/Mac
-./start_server.sh
+**Option 3: Minimal (Without OpenCV)**
+```batch
+pip install -r requirements_minimal.txt
+```
 
-# Windows
+### Quick Start
+
+**1. Windows Server**
+```batch
 start_server.bat
+```
 
-# Or directly
+**2. Linux/Mac**
+```bash
+./start_server.sh
+```
+
+**3. Direct**
+```bash
 python main.py
 ```
 
-**3. Verify**
+**4. Verify**
 ```bash
 curl http://localhost:52000/health
 ```
 
-**4. Access Docs**
+**5. Access Docs**
 ```
 http://localhost:52000/docs
 ```
@@ -73,7 +94,7 @@ GET /health                      - Health check
 
 **Offline Video Processing**
 - Upload .mp4 files via multipart/form-data
-- Frame-by-frame analysis with OpenCV
+- Frame-by-frame analysis with OpenCV (optional)
 - Real metrics from inference (NO mock data)
 - Feature flags control which modules execute
 
@@ -86,14 +107,15 @@ GET /health                      - Health check
 Each module is plug-and-play, executed only if enabled.
 
 **Database**
-- SQLite (default) or PostgreSQL
+- SQLite (default) - no configuration needed
+- PostgreSQL (optional) - for production
 - VideoDataset: Video metadata
 - ADASEvent: Events during processing
 - Detection: Frame detections
 
 ### Configuration
 
-Create `.env` file:
+Create `.env` file (optional):
 ```env
 DATABASE_URL=sqlite:///./adas_backend.db
 SERVER_HOST=0.0.0.0
@@ -109,7 +131,11 @@ backend-python/
 ├── database.py                  # Database configuration
 ├── models.py                    # SQLAlchemy models
 ├── schemas.py                   # Pydantic V2 schemas
-├── requirements.txt             # Dependencies
+├── requirements.txt             # Full dependencies
+├── requirements_minimal.txt     # Minimal (no OpenCV)
+├── install_windows.bat          # Windows installer
+├── start_server.bat             # Windows startup
+├── start_server.sh              # Linux/Mac startup
 ├── core/
 │   ├── config.py               # Configuration
 │   ├── logging_config.py       # ASCII-safe logging
@@ -122,20 +148,36 @@ backend-python/
 └── logs/                       # Application logs
 ```
 
-### Docker Deployment
+### Troubleshooting
 
-**Build:**
-```bash
-docker build -t adas-backend .
+**Windows Server: NumPy/OpenCV Build Error**
+```batch
+REM Solution 1: Use pre-built wheels
+pip install --only-binary :all: numpy opencv-python-headless
+
+REM Solution 2: Use minimal requirements
+pip install -r requirements_minimal.txt
+
+REM Solution 3: Install Visual C++ Build Tools (not recommended)
+REM Download from: https://visualstudio.microsoft.com/downloads/
 ```
 
-**Run:**
-```bash
-docker run -p 52000:52000 \
-  -v $(pwd)/uploads:/app/uploads \
-  -v $(pwd)/logs:/app/logs \
-  adas-backend
-```
+**Server won't start:**
+- Check Python version: `python --version` (3.10+)
+- Verify dependencies: `pip list`
+- Check logs: `type logs\adas_backend_*.log`
+
+**Import errors:**
+- Reinstall: `pip install --force-reinstall -r requirements.txt`
+- Try minimal: `pip install -r requirements_minimal.txt`
+
+**Permission errors (Windows):**
+- Run as Administrator
+- Check firewall settings for port 52000
+
+**Database errors:**
+- Delete adas_backend.db and restart
+- Server will auto-create tables
 
 ### Testing
 
@@ -162,6 +204,10 @@ curl http://localhost:52000/health
 
 **Logs:**
 ```bash
+# Windows
+type logs\adas_backend_*.log
+
+# Linux/Mac
 tail -f logs/adas_backend_*.log
 ```
 
@@ -170,20 +216,6 @@ tail -f logs/adas_backend_*.log
 sqlite3 adas_backend.db "SELECT COUNT(*) FROM VideoDatasets;"
 ```
 
-### Troubleshooting
-
-**Server won't start:**
-- Check Python version: `python3 --version` (3.13+)
-- Verify dependencies: `pip list`
-- Check logs: `cat logs/adas_backend_*.log`
-
-**Import errors:**
-- Activate venv: `source venv/bin/activate`
-- Reinstall: `pip install -r requirements.txt`
-
-**Unicode errors (Windows):**
-- Set code page: `chcp 65001`
-
 ### Performance
 
 - Processing: 1.0x real-time for 30 FPS
@@ -191,12 +223,34 @@ sqlite3 adas_backend.db "SELECT COUNT(*) FROM VideoDatasets;"
 - Memory: 2-4 GB typical
 - CPU: Scales with cores (1-16 workers)
 
+### Windows Server Deployment
+
+**IIS Reverse Proxy:**
+```xml
+<rewrite>
+  <rules>
+    <rule name="ADAS Backend">
+      <match url="(.*)" />
+      <action type="Rewrite" url="http://localhost:52000/{R:1}" />
+    </rule>
+  </rules>
+</rewrite>
+```
+
+**Windows Service (NSSM):**
+```batch
+nssm install AdasBackend python.exe
+nssm set AdasBackend AppDirectory "C:\path\to\backend-python"
+nssm set AdasBackend AppParameters "main.py"
+nssm start AdasBackend
+```
+
 ### Security Checklist
 
-- [ ] Configure DATABASE_URL
+- [ ] Configure DATABASE_URL (not default)
 - [ ] Set CORS_ORIGINS (not *)
 - [ ] Enable HTTPS/SSL
-- [ ] Configure firewall
+- [ ] Configure Windows Firewall
 - [ ] Set rate limiting
 - [ ] Enable database backups
 

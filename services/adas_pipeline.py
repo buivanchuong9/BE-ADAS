@@ -1,10 +1,15 @@
 # ADAS Pipeline - Modular processing with feature flags
 # Each module is plug-and-play, executed only if enabled
 
-import cv2
-import numpy as np
 import logging
 from typing import List, Dict, Any, Optional
+
+try:
+    import cv2
+    import numpy as np
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
 
 logger = logging.getLogger("adas-backend")
 

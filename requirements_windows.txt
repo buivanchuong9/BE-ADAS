@@ -1,0 +1,21 @@
+# Windows Server - Pre-built wheels only
+# No compilation required
+
+# Core framework
+fastapi==0.115.0
+uvicorn==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.6.1
+
+# Database (SQLite only - no PostgreSQL)
+sqlalchemy==2.0.36
+
+# Utilities
+python-multipart==0.0.12
+python-dotenv==1.0.1
+httpx==0.27.2
+aiofiles==24.1.0
+
+# Optional: Install separately if needed
+# pip install opencv-python==4.10.0.84
+# pip install numpy==1.26.4

@@ -1,0 +1,21 @@
+# Minimal requirements for Windows Server
+# Only pre-built wheels - NO compilation required
+
+# Core framework
+fastapi==0.115.0
+uvicorn==0.30.0
+pydantic==2.9.2
+
+# Database
+sqlalchemy==2.0.36
+
+# Utilities
+python-multipart==0.0.12
+python-dotenv==1.0.1
+httpx==0.27.2
+aiofiles==24.1.0
+
+# Optional: Computer vision (install separately if needed)
+# opencv-python-headless==4.10.0.84
+# numpy>=1.24.0
+# pillow>=10.0.0

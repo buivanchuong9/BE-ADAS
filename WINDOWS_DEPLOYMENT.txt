@@ -1,0 +1,120 @@
+================================================================================
+                    WINDOWS SERVER DEPLOYMENT GUIDE
+================================================================================
+
+SYSTEM REQUIREMENTS:
+- Windows Server 2016+
+- Python 3.10+ (64-bit)
+- 2GB+ RAM
+- 5GB+ disk space
+
+QUICK START (RECOMMENDED):
+1. Copy project folder to Windows Server
+2. Run: install_windows.bat
+3. Run: start_server.bat
+4. Test: http://localhost:52000/health
+
+MANUAL INSTALLATION:
+1. Install Python 3.10+ from https://www.python.org
+2. Open Command Prompt as Administrator
+3. Navigate to project folder
+4. Run: python -m pip install --upgrade pip
+5. Run: pip install -r requirements_windows.txt
+6. Run: python main.py
+
+TROUBLESHOOTING:
+
+Problem: "Python not found"
+Solution: 
+  - Install Python 3.10+ (64-bit)
+  - Check "Add Python to PATH" during installation
+  - Restart Command Prompt
+
+Problem: "numpy compilation error"
+Solution:
+  - Use requirements_windows.txt (no numpy)
+  - Or install pre-built: pip install numpy==1.26.4
+
+Problem: "opencv error"
+Solution:
+  - OpenCV is optional for this deployment
+  - Video processing will be disabled but API still works
+  - Install later: pip install opencv-python-headless==4.10.0.84
+
+Problem: "psycopg2 error"
+Solution:
+  - PostgreSQL not needed - SQLite is default
+  - requirements_windows.txt does not include psycopg2
+
+Problem: "Port 52000 already in use"
+Solution:
+  - Change port in .env file
+  - Or kill process: netstat -ano | findstr :52000
+  - Then: taskkill /PID <PID> /F
+
+Problem: "Server won't start"
+Solution:
+  - Check logs: logs\adas_backend_*.log
+  - Check dependencies: pip list
+  - Test imports: python -c "import main"
+
+CONFIGURATION:
+
+Create .env file:
+DATABASE_URL=sqlite:///./adas_backend.db
+SERVER_HOST=0.0.0.0
+SERVER_PORT=52000
+DEBUG=False
+
+FIREWALL:
+Open port 52000:
+  netsh advfirewall firewall add rule name="ADAS Backend" dir=in action=allow protocol=TCP localport=52000
+
+RUNNING AS SERVICE:
+
+Use NSSM (Non-Sucking Service Manager):
+1. Download NSSM from nssm.cc
+2. Run: nssm install ADASBackend
+3. Set path: C:\path\to\python.exe
+4. Set arguments: C:\path\to\main.py
+5. Set startup directory: C:\path\to\backend-python
+6. Click Install service
+7. Start: nssm start ADASBackend
+
+MONITORING:
+
+Health check:
+  curl http://localhost:52000/health
+
+View logs:
+  type logs\adas_backend_*.log
+
+Check database:
+  sqlite3 adas_backend.db "SELECT COUNT(*) FROM VideoDatasets;"
+
+PERFORMANCE:
+
+For production:
+- Use SSD for database
+- Increase RAM to 4GB+
+- Use dedicated CPU cores
+- Enable Windows performance mode
+
+SECURITY:
+
+1. Change default ports
+2. Configure firewall rules
+3. Use HTTPS with reverse proxy (IIS/Nginx)
+4. Enable Windows Defender
+5. Regular Windows Updates
+
+SUPPORT:
+
+If issues persist:
+1. Check Python version: python --version
+2. Check pip version: pip --version
+3. List installed packages: pip list
+4. Test imports: python -c "import fastapi; import uvicorn; import pydantic"
+5. Check logs: logs\adas_backend_*.log
+
+================================================================================
