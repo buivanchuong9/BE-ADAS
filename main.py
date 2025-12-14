@@ -1,5 +1,6 @@
 # ADAS Backend - Production Ready FastAPI
 # Version 3.0.0 - Competition Build
+# Cloudflare Tunnel Compatible
 
 import asyncio
 import json
@@ -24,8 +25,6 @@ logging.basicConfig(
     format='{"time":"%(asctime)s","level":"%(levelname)s","message":"%(message)s","module":"%(module)s"}',
 )
 logger = logging.getLogger("vision-backend")
-
-API_PREFIX = "/api/v1"
 
 # Thread pool for CPU-bound inference
 executor = ThreadPoolExecutor(max_workers=max(os.cpu_count() or 4, 4))
@@ -70,12 +69,30 @@ async def add_correlation_id(request: Request, call_next):
     return response
 
 
-@app.get(f"{API_PREFIX}/health")
+@app.on_event("startup")
+async def startup_event():
+    """Log all registered routes on startup for debugging"""
+    logger.info("=" * 80)
+    logger.info("🚀 ADAS Vision Backend Starting...")
+    logger.info(f"   Host: 0.0.0.0")
+    logger.info(f"   Port: 52000")
+    logger.info(f"   Cloudflare Tunnel Compatible: ✅")
+    logger.info("=" * 80)
+    logger.info("📍 Registered Routes:")
+    for route in app.routes:
+        if hasattr(route, "methods"):
+            methods = ",".join(route.methods)
+            logger.info(f"   {methods:8} {route.path}")
+    logger.info("=" * 80)
+
+
+@app.get("/health")
 async def health():
+    """Health check endpoint"""
     return {"status": "ok"}
 
 
-@app.post(f"{API_PREFIX}/vision/frame", response_model=FrameResponse)
+@app.post("/vision/frame", response_model=FrameResponse)
 async def vision_frame(payload: FrameRequest):
     image = decode_base64_image(payload.frame)
     loop = asyncio.get_running_loop()
@@ -100,7 +117,7 @@ async def vision_frame(payload: FrameRequest):
     }
 
 
-@app.websocket(f"{API_PREFIX}/vision/stream")
+@app.websocket("/vision/stream")
 async def vision_stream(ws: WebSocket):
     await ws.accept()
     try:
@@ -134,4 +151,5 @@ async def vision_stream(ws: WebSocket):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=52000, reload=False)
+    logger.info("🔥 Starting ADAS Backend on 0.0.0.0:52000")
+    uvicorn.run("main:app", host="0.0.0.0", port=52000, reload=False, log_level="info")
