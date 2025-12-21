@@ -29,8 +29,9 @@ python main.py
 ```
 
 **Server will start on:**
-- URL: `http://localhost:52000`
-- Docs: `http://localhost:52000/docs`
+- Production: `https://adas-api.aiotlab.edu.vn/`
+- Port: `52000`
+- Docs: `https://adas-api.aiotlab.edu.vn/docs`
 
 ### Step 4: Upload Test Video
 

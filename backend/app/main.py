@@ -12,6 +12,7 @@ Date: 2025-12-21
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 import sys
@@ -31,7 +32,28 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-# Create FastAPI app
+# Lifespan event handler (replaces deprecated on_event)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("=" * 80)
+    logger.info("ADAS Video Analysis API Starting...")
+    logger.info("=" * 80)
+    logger.info("FastAPI application initialized")
+    logger.info("Perception modules ready")
+    logger.info("Storage directories configured")
+    logger.info("API Documentation: https://adas-api.aiotlab.edu.vn/docs")
+    logger.info("=" * 80)
+    
+    yield
+    
+    # Shutdown
+    logger.info("=" * 80)
+    logger.info("ADAS Video Analysis API Shutting Down...")
+    logger.info("=" * 80)
+
+
+# Create FastAPI app with lifespan
 app = FastAPI(
     title="ADAS Video Analysis API",
     description="""
@@ -67,7 +89,8 @@ app = FastAPI(
     """,
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Configure CORS (allow frontend to call API)
@@ -112,38 +135,10 @@ async def health_check():
     }
 
 
-# Startup event
-@app.on_event("startup")
-async def startup_event():
-    """
-    Run on application startup.
-    """
-    logger.info("=" * 80)
-    logger.info("ADAS Video Analysis API Starting...")
-    logger.info("=" * 80)
-    logger.info("FastAPI application initialized")
-    logger.info("Perception modules ready")
-    logger.info("Storage directories configured")
-    logger.info("API Documentation: https://adas-api.aiotlab.edu.vn/docs")
-    logger.info("=" * 80)
-
-
-# Shutdown event
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Run on application shutdown.
-    """
-    logger.info("=" * 80)
-    logger.info("ADAS Video Analysis API Shutting Down...")
-    logger.info("=" * 80)
-
-
 if __name__ == "__main__":
     import uvicorn
     
-    # Run server on port 52000
-    # Production domain: https://adas-api.aiotlab.edu.vn/
+    # Production: https://adas-api.aiotlab.edu.vn/ on port 52000
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
