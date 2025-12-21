@@ -17,13 +17,13 @@ opencv-python==4.10.0.84
 numpy==1.26.4
 mediapipe==0.10.14
 
-# PyTorch CPU (Windows pre-built)
+# PyTorch CPU (Let pip resolve compatible versions)
 --extra-index-url https://download.pytorch.org/whl/cpu
-torch==2.4.0
-torchvision==0.19.0
+torch>=2.0.0,<2.4.0
+torchvision>=0.15.0,<0.19.0
 
-# YOLOv11
-ultralytics==8.3.0
+# YOLOv11 (will auto-select compatible torch version)
+ultralytics>=8.0.0
 
 # ================================================
 # Utilities
