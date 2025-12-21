@@ -4,6 +4,13 @@
 
 ### Step 1: Install Dependencies
 
+**IMPORTANT for Windows Server (Python 3.13):**
+```bash
+# First, upgrade pip and setuptools
+python -m pip install --upgrade pip setuptools wheel
+```
+
+**Then install requirements:**
 ```bash
 cd backend
 pip install -r requirements.txt
@@ -272,6 +279,40 @@ A: System detects no lane points and handles gracefully (returns None, no crash)
 ---
 
 ## 🐛 Common Issues
+
+### Issue: `AttributeError: module 'pkgutil' has no attribute 'ImpImporter'` (Windows Python 3.13)
+**Cause:** Python 3.13 removed deprecated modules that old setuptools needs
+
+**Fix Option 1 (Recommended):**
+```bash
+# Upgrade pip, setuptools, wheel first
+python -m pip install --upgrade pip setuptools wheel
+
+# Then install requirements
+pip install -r requirements.txt
+```
+
+**Fix Option 2 (Alternative):**
+```bash
+# Install packages one by one with --no-build-isolation
+pip install --upgrade pip setuptools wheel
+pip install numpy opencv-python mediapipe
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install ultralytics fastapi uvicorn python-multipart pydantic pydantic-settings
+```
+
+**Fix Option 3 (Use Python 3.11):**
+- Uninstall Python 3.13
+- Install Python 3.11.x from python.org
+- Run `pip install -r requirements.txt`
+
+### Issue: `ERROR: Failed to build 'numpy'`
+**Fix:** Use prebuilt wheels
+```bash
+pip install --upgrade pip
+pip install numpy --only-binary :all:
+pip install -r requirements.txt
+```
 
 ### Issue: `ModuleNotFoundError: No module named 'ultralytics'`
 **Fix:** `pip install ultralytics`

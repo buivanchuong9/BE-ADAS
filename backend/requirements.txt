@@ -1,5 +1,6 @@
 # ADAS Backend Service - Requirements
-# Python 3.9+
+# Python 3.9+ (Recommended: 3.11 for Windows)
+# For Python 3.13: Upgrade pip first - see QUICKSTART.md
 
 # ================================================
 # Core Framework
@@ -14,15 +15,15 @@ pydantic-settings==2.1.0
 # Computer Vision & AI
 # ================================================
 opencv-python==4.8.1.78
-numpy==1.24.3
-torch==2.1.1
-torchvision==0.16.1
+numpy>=1.24.3,<2.0.0
+torch>=2.1.0
+torchvision>=0.16.0
 
 # YOLOv11/v8 detection
-ultralytics==8.0.227
+ultralytics>=8.0.227
 
 # MediaPipe for driver monitoring
-mediapipe==0.10.8
+mediapipe>=0.10.8
 
 # ================================================
 # Backend & Storage
