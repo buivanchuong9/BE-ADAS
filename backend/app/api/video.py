@@ -18,9 +18,13 @@ from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
 from pathlib import Path
+import sys
 
-# Import service layer
-from ..services.analysis_service import get_analysis_service
+# Add parent directory to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Import service layer (absolute import)
+from app.services.analysis_service import get_analysis_service
 
 logger = logging.getLogger(__name__)
 

@@ -14,9 +14,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import logging
 from pathlib import Path
+import sys
 
-# Import API routers
-from .api.video import router as video_router
+# Add parent directory to path for absolute imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Import API routers (absolute import)
+from app.api.video import router as video_router
 
 # Configure logging
 logging.basicConfig(
