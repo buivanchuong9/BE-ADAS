@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Application
+*.db
+*.sqlite
+*.sqlite3
+app/storage/raw/*.mp4
+app/storage/raw/*.avi
+app/storage/raw/*.mov
+app/storage/result/*.mp4
+app/storage/result/*.avi
+
+# Keep directory structure
+!app/storage/raw/.gitkeep
+!app/storage/result/.gitkeep
+
+# AI Models
+*.pt
+*.onnx
+*.weights
+yolo*.pt
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.local
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution
+dist/
+build/
+*.egg-info/

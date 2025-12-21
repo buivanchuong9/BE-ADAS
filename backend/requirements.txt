@@ -1,0 +1,42 @@
+# ADAS Backend Service - Requirements
+# Python 3.9+
+
+# ================================================
+# Core Framework
+# ================================================
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# ================================================
+# Computer Vision & AI
+# ================================================
+opencv-python==4.8.1.78
+numpy==1.24.3
+torch==2.1.1
+torchvision==0.16.1
+
+# YOLOv11/v8 detection
+ultralytics==8.0.227
+
+# MediaPipe for driver monitoring
+mediapipe==0.10.8
+
+# ================================================
+# Backend & Storage
+# ================================================
+# SQLite is built-in to Python
+
+# ================================================
+# Optional: GPU Support (CUDA)
+# ================================================
+# If CUDA is available, PyTorch will automatically use it
+# For CUDA installation, visit: https://pytorch.org/get-started/locally/
+
+# ================================================
+# Development & Testing
+# ================================================
+pytest==7.4.3
+httpx==0.25.2
