@@ -1,42 +1,36 @@
-# QUICK START GUIDE
+# ADAS Backend - Quick Start
 
-## 🚀 Getting Started (5 Minutes)
+## 🚀 Windows Server Python 3.13 - Installation
 
-### Step 1: Install Dependencies
+### Step 1: Install All Packages (One Command)
 
-**IMPORTANT for Windows Server (Python 3.13):**
-```bash
-# First, upgrade pip and setuptools
-python -m pip install --upgrade pip setuptools wheel
-```
+```cmd
+cd C:\Users\Administrator\Desktop\ADAS\BE-TEST-AI\backend
 
-**Then install requirements:**
-```bash
-cd backend
 pip install -r requirements.txt
 ```
 
-**Expected time:** 2-3 minutes
+**That's it!** All packages have pre-built wheels for Python 3.13 Windows.
 
-### Step 2: Start Server
+**Expected time:** 3-5 minutes
 
-**Windows Server:**
-```bash
+### Step 2: Verify Installation
+
+```cmd
+cd app
+python -c "import cv2, mediapipe, ultralytics, fastapi; print('SUCCESS: All modules installed')"
+```
+
+### Step 3: Start Server
+
+```cmd
 cd app
 python main.py
 ```
 
-**Or with uvicorn:**
-```bash
-cd app
-python -m uvicorn main:app --reload --host 0.0.0.0 --port 52000
-```
-
-### Step 3: Test API
-
-Open browser: `https://adas-api.aiotlab.edu.vn/docs`
-
-You should see the interactive API documentation.
+**Server will start on:**
+- URL: `http://localhost:52000`
+- Docs: `http://localhost:52000/docs`
 
 ### Step 4: Upload Test Video
 
