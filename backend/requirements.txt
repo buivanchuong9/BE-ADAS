@@ -1,4 +1,4 @@
-# ADAS Backend - Windows Server Python 3.13
+# ADAS Backend - Windows Server Python 3.11
 # ALL packages use pre-built wheels - NO compilation needed
 
 # ================================================

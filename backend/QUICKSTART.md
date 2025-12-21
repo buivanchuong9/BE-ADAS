@@ -1,6 +1,6 @@
 # ADAS Backend - Quick Start
 
-## 🚀 Windows Server Python 3.13 - Installation
+## 🚀 Windows Server Python 3.11 - Installation
 
 ### Step 1: Install All Packages (One Command)
 
