@@ -22,6 +22,18 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Import API routers (absolute import)
 from app.api.video import router as video_router
+from app.api.dataset import router as dataset_router
+from app.api.detections import router as detections_router
+from app.api.models_api import router as models_router
+from app.api.streaming import router as streaming_router
+from app.api.events_alerts import router as events_alerts_router
+from app.api.videos_api import router as videos_router
+from app.api.driver_monitor import router as driver_monitor_router
+from app.api.trips_stats import router as trips_stats_router
+from app.api.ai_chat import router as ai_chat_router
+from app.api.settings import router as settings_router
+from app.api.upload_storage import router as upload_storage_router
+from app.api.auth import router as auth_router
 
 # Configure logging
 logging.basicConfig(
@@ -104,6 +116,18 @@ app.add_middleware(
 
 # Include routers
 app.include_router(video_router)
+app.include_router(dataset_router)
+app.include_router(detections_router)
+app.include_router(models_router)
+app.include_router(streaming_router)
+app.include_router(events_alerts_router)
+app.include_router(videos_router)
+app.include_router(driver_monitor_router)
+app.include_router(trips_stats_router)
+app.include_router(ai_chat_router)
+app.include_router(settings_router)
+app.include_router(upload_storage_router)
+app.include_router(auth_router)
 
 
 @app.get("/")
