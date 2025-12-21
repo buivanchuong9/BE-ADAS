@@ -1,3 +1,0 @@
-"""
-Alerts API Module
-"""
