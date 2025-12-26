@@ -16,7 +16,7 @@ Environment variables:
 """
 
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 from functools import lru_cache
 import os
 
@@ -63,13 +63,15 @@ class Settings(BaseSettings):
     MAX_VIDEO_SIZE_MB: int = 500
     MAX_CONCURRENT_JOBS: int = 2
     
-    # CORS
-    CORS_ORIGINS: list[str] = [
-        "https://adas-api.aiotlab.edu.vn",
-        "https://adas-api.aiotlab.edu.vn:52000",
-        "http://localhost:3000",  # Development only
-        "http://localhost:8080",  # Development only
-    ]
+    # CORS - Can be set as comma-separated string in .env or as list
+    CORS_ORIGINS: str = "https://adas-api.aiotlab.edu.vn,https://adas-api.aiotlab.edu.vn:52000,http://localhost:3000,http://localhost:8080"
+    
+    @property
+    def cors_origins_list(self) -> List[str]:
+        """Parse CORS_ORIGINS string into list"""
+        if isinstance(self.CORS_ORIGINS, str):
+            return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+        return self.CORS_ORIGINS
     
     class Config:
         env_file = ".env"
