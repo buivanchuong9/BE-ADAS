@@ -27,28 +27,48 @@ echo ✓ Thu muc storage da duoc tao
 
 echo.
 echo [2/5] Copy file cau hinh production...
-copy /Y .env.production backend\.env
-echo ✓ File .env da duoc tao
+echo.
+echo Chon cach chay SQL Server:
+echo   1. SQL Server Native (cai tren Windows)
+echo   2. SQL Server Docker (chay trong container)
+echo.
+set /p SQL_TYPE="Nhap 1 hoac 2: "
+
+if "%SQL_TYPE%"=="2" (
+    echo.
+    echo ✓ Su dung SQL Server Docker config
+    copy /Y .env.production.docker backend\.env
+    echo.
+    echo TAT CA THONG TIN DA DUOC CAU HINH SAN!
+    echo   - DB_PASSWORD: 123456aA@$
+    echo   - SECRET_KEY: adas-prod-2025-k8s9m2n4p6q7r1s3t5v8w0x2y4z6a1b3c5d7e9f
+    echo   - Port: 52000
+    echo.
+    echo KHONG CAN SUA GI THEM!
+    echo.
+    echo Chay Docker SQL Server:
+    echo   docker run -d --name sql_server_demo -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=123456aA@$" -p 1433:1433 mcr.microsoft.com/mssql/server:2019-latest
+    echo.
+) else (
+    echo.
+    echo ✓ Su dung SQL Server Native config
+    copy /Y .env.production.native backend\.env
+    echo.
+    echo DA CAU HINH:
+    echo   - SECRET_KEY: adas-prod-2025-k8s9m2n4p6q7r1s3t5v8w0x2y4z6a1b3c5d7e9f
+    echo   - Port: 52000
+    echo.
+    echo CAN SUA:
+    echo   - DB_PASSWORD: password SQL Server cua ban
+    echo.
+    pause
+    echo.
+    echo Mo file .env de sua DB_PASSWORD...
+    notepad backend\.env
+)
 
 echo.
-echo [3/5] QUAN TRONG - Can sua thong tin sau:
-echo.
-echo Mo file: backend\.env
-echo.
-echo Tim dong: DB_PASSWORD=THAY_PASSWORD_SQL_SERVER_O_DAY
-echo Sua thanh: DB_PASSWORD=your_actual_password
-echo.
-echo Tim dong: SECRET_KEY=...
-echo Sua thanh: SECRET_KEY=your-random-32-character-secret-key
-echo.
-pause
-
-echo.
-echo [4/5] Mo file .env de ban sua...
-notepad backend\.env
-
-echo.
-echo [5/5] Kiem tra cau hinh...
+echo [3/5] Kiem tra cau hinh...
 echo.
 type backend\.env | findstr /C:"DB_PASSWORD" /C:"SECRET_KEY" /C:"PORT"
 echo.
