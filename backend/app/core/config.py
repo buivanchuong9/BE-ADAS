@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = "development"  # development or production
     
     # API
+    API_BASE_URL: str = "http://localhost:52000"  # Base URL for API
     API_V1_PREFIX: str = "/api/v1"
     HOST: str = "0.0.0.0"
     PORT: int = 52000
@@ -46,22 +47,35 @@ class Settings(BaseSettings):
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False  # Set True for SQL query logging
     
-    # Security
+    # Security & Authentication
     SECRET_KEY: str = "your-secret-key-change-in-production-min-32-characters-long"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
-    # Storage
-    STORAGE_ROOT: str = "./backend/app/storage"
-    RAW_VIDEO_DIR: str = "./backend/app/storage/videos/raw"
-    PROCESSED_VIDEO_DIR: str = "./backend/app/storage/videos/processed"
-    SNAPSHOT_DIR: str = "./backend/app/storage/snapshots"
-    LOG_DIR: str = "./backend/app/storage/logs"
+    # Storage Paths
+    STORAGE_ROOT: str = "./backend/storage"
+    RAW_VIDEO_DIR: str = "./backend/storage/raw"
+    PROCESSED_VIDEO_DIR: str = "./backend/storage/result"
+    SNAPSHOT_DIR: str = "./backend/storage/snapshots"
+    AUDIO_CACHE_DIR: str = "./backend/storage/audio_cache"
+    LOG_DIR: str = "./backend/logs"
     
-    # AI/Processing
+    # AI Models
+    YOLO_MODEL_PATH: str = "./backend/models/yolov11n.pt"
+    MEDIAPIPE_MODEL_PATH: str = "./backend/models"
     DEFAULT_DEVICE: str = "cpu"  # cpu or cuda
+    
+    # Processing Configuration
     MAX_VIDEO_SIZE_MB: int = 500
     MAX_CONCURRENT_JOBS: int = 2
+    VIDEO_CHUNK_SIZE_MB: int = 10
+    
+    # Logging
+    LOG_LEVEL: str = "INFO"
+    LOG_FORMAT: str = "json"  # json or console
+    LOG_ROTATION: str = "daily"
+    LOG_RETENTION_DAYS: int = 30
     
     # CORS - Can be set as comma-separated string in .env or as list
     CORS_ORIGINS: str = "https://adas-api.aiotlab.edu.vn,https://adas-api.aiotlab.edu.vn:52000,http://localhost:3000,http://localhost:8080"
