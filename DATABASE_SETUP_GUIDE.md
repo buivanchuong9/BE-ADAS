@@ -254,7 +254,7 @@ After database is set up:
 
 2. **Test authentication:**
    ```bash
-   curl -X POST http://localhost:52000/api/v1/auth/login \
+   curl -X POST https://adas-api.aiotlab.edu.vn:52000/api/v1/auth/login \
      -H "Content-Type: application/json" \
      -d '{"username": "admin", "password": "admin123"}'
    ```

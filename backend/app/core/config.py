@@ -64,10 +64,10 @@ class Settings(BaseSettings):
     
     # CORS
     CORS_ORIGINS: list[str] = [
-        "http://localhost:3000",
-        "http://localhost:8080",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8080",
+        "https://adas-api.aiotlab.edu.vn",
+        "https://adas-api.aiotlab.edu.vn:52000",
+        "http://localhost:3000",  # Development only
+        "http://localhost:8080",  # Development only
     ]
     
     class Config:

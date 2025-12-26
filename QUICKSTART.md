@@ -80,9 +80,10 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Truy cập:**
-- API: http://localhost:8000
-- Docs: http://localhost:8000/docs
-- Health: http://localhost:8000/health
+- API: https://adas-api.aiotlab.edu.vn:52000
+- Docs: https://adas-api.aiotlab.edu.vn:52000/docs
+- Health: https://adas-api.aiotlab.edu.vn:52000/health
+- Development: http://localhost:8000
 
 ---
 
@@ -147,7 +148,7 @@ cd backend
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Mở trình duyệt: http://localhost:8000/docs
+Mở trình duyệt: https://adas-api.aiotlab.edu.vn:52000/docs (hoặc http://localhost:8000/docs cho development)
 
 ### Bước 8: Setup IIS (Production)
 Chi tiết xem file [WINDOWS_SERVER_DEPLOYMENT.md](WINDOWS_SERVER_DEPLOYMENT.md)
@@ -176,6 +177,10 @@ python test_all_phases.py
 
 ### Test 4: API Health Check
 ```bash
+# Production
+curl https://adas-api.aiotlab.edu.vn:52000/health
+
+# Development
 curl http://localhost:8000/health
 ```
 
@@ -278,7 +283,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
 - `GET /api/models/list` - Danh sách models
 - `POST /api/models/update` - Cập nhật model
 
-Chi tiết: http://localhost:8000/docs
+Chi tiết: https://adas-api.aiotlab.edu.vn:52000/docs
 
 ---
 
