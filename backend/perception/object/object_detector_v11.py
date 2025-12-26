@@ -1,23 +1,22 @@
 """
-OBJECT DETECTION MODULE - YOLOv11
-==================================
-Detects vehicles and pedestrians from dashcam video using YOLOv11.
+OBJECT DETECTION MODULE - YOLOv11 with Tracking
+================================================
+Detects and tracks vehicles and pedestrians from dashcam video using YOLOv11.
+Integrated with ByteTrack for persistent object IDs.
 
 Supported classes:
-- car
-- truck
-- motorcycle
-- bicycle
-- person
+- car, truck, bus (vehicles)
+- motorcycle, bicycle (two-wheelers)
+- person (pedestrians)
 
 Features:
-- CPU/GPU inference
+- CPU/GPU inference with automatic device selection
+- Multi-object tracking with persistent IDs
 - Confidence filtering
-- Bounding box extraction
-- Class-specific detection
+- Vietnamese traffic optimized
 
 Author: Senior ADAS Engineer
-Date: 2025-12-21
+Date: 2025-12-26 (Production Enhancement)
 """
 
 import cv2
@@ -25,13 +24,15 @@ import numpy as np
 from typing import List, Dict, Optional
 import logging
 
+from .object_tracker import ByteTracker
+
 logger = logging.getLogger(__name__)
 
 
 class ObjectDetectorV11:
     """
-    YOLOv11-based object detector for ADAS applications.
-    Detects vehicles and pedestrians from road-facing dashcam video.
+    YOLOv11-based object detector with ByteTrack integration.
+    Production-grade tracking for Vietnamese traffic conditions.
     """
     
     # COCO class IDs for relevant objects
@@ -44,18 +45,47 @@ class ObjectDetectorV11:
         'truck': 7
     }
     
-    def __init__(self, model_path: str = None, device: str = "cpu", conf_threshold: float = 0.25):
+    # Class names mapping
+    CLASS_NAMES = {
+        0: 'person',
+        1: 'bicycle',
+        2: 'car',
+        3: 'motorcycle',
+        5: 'bus',
+        7: 'truck'
+    }
+    
+    def __init__(
+        self, 
+        model_path: str = None, 
+        device: str = "cpu", 
+        conf_threshold: float = 0.25,
+        enable_tracking: bool = True
+    ):
         """
-        Initialize object detector.
+        Initialize object detector with tracking.
         
         Args:
             model_path: Path to YOLOv11 weights (.pt file)
             device: "cuda" or "cpu" for inference
             conf_threshold: Confidence threshold for detections
+            enable_tracking: Enable ByteTrack multi-object tracking
         """
         self.device = device
         self.conf_threshold = conf_threshold
+        self.enable_tracking = enable_tracking
         self.model = None
+        
+        # Initialize tracker
+        if self.enable_tracking:
+            self.tracker = ByteTracker(
+                track_thresh=0.5,
+                match_thresh=0.8,
+                track_buffer=30,
+                frame_rate=30
+            )
+        else:
+            self.tracker = None
         
         # Try to load YOLOv11 model
         try:
@@ -144,6 +174,50 @@ class ObjectDetectorV11:
         except Exception as e:
             logger.error(f"Detection failed: {e}")
             return []
+    
+    def detect_and_track(self, frame: np.ndarray) -> List[Dict]:
+        """
+        Detect and track objects with persistent IDs.
+        PRODUCTION METHOD: Use this for real ADAS processing.
+        
+        Args:
+            frame: RGB frame from video
+            
+        Returns:
+            List of tracked objects with:
+                - id: Persistent track ID
+                - class_id: Object class ID
+                - class_name: Object class name
+                - confidence: Detection confidence
+                - bbox: [x1, y1, x2, y2] bounding box
+                - center: [cx, cy] center point
+                - velocity: [vx, vy] in pixels/frame
+                - speed: Scalar speed in pixels/frame
+                - hits: Number of times detected
+                - age: Track age in frames
+        """
+        # Get detections
+        detections = self.detect(frame)
+        
+        if not self.enable_tracking or self.tracker is None:
+            # Return detections without tracking
+            return detections
+        
+        # Update tracker
+        tracked_objects = self.tracker.update(detections)
+        
+        # Add class names to tracked objects
+        for obj in tracked_objects:
+            obj['class_name'] = self.CLASS_NAMES.get(obj['class_id'], 'unknown')
+            
+            # Calculate center from bbox
+            bbox = obj['bbox']
+            obj['center'] = [
+                int((bbox[0] + bbox[2]) / 2),
+                int((bbox[1] + bbox[3]) / 2)
+            ]
+        
+        return tracked_objects
     
     def filter_front_vehicles(self, detections: List[Dict], frame_height: int) -> List[Dict]:
         """

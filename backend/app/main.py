@@ -1,13 +1,16 @@
 """
-MAIN FASTAPI APPLICATION
-=========================
+MAIN FASTAPI APPLICATION - Version 2.0
+========================================
 Entry point for ADAS Video Analysis Backend.
 
-This is the ONLY file that knows about FastAPI.
-All AI logic is isolated in perception/ module.
+Version 2.0 Changes:
+- Microsoft SQL Server database
+- Async job processing
+- Repository pattern for data access
+- Proper separation of concerns
 
 Author: Senior ADAS Engineer
-Date: 2025-12-21
+Date: 2025-12-26
 """
 
 from fastapi import FastAPI
@@ -19,6 +22,12 @@ import sys
 
 # Add parent directory to path for absolute imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+# Import core configuration
+from app.core.config import settings
+from app.core.logging import setup_logging
+from app.db.session import init_db, close_db
+from app.services.job_service import get_job_service
 
 # Import API routers (absolute import)
 from app.api.video import router as video_router
@@ -34,13 +43,10 @@ from app.api.ai_chat import router as ai_chat_router
 from app.api.settings import router as settings_router
 from app.api.upload_storage import router as upload_storage_router
 from app.api.auth import router as auth_router
+from app.api.websocket_alerts import router as websocket_alerts_router  # Phase 6: WebSocket streaming
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
+# Setup structured logging
+setup_logging(log_level="INFO" if not settings.DEBUG else "DEBUG")
 logger = logging.getLogger(__name__)
 
 
@@ -49,66 +55,100 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # Startup
     logger.info("=" * 80)
-    logger.info("ADAS Video Analysis API Starting...")
+    logger.info(f"{settings.APP_NAME} v{settings.APP_VERSION} Starting...")
     logger.info("=" * 80)
-    logger.info("FastAPI application initialized")
+    
+    # Initialize database
+    try:
+        logger.info("Initializing database connection...")
+        await init_db()
+        logger.info("✓ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"✗ Database initialization failed: {e}")
+        logger.error("Please check database configuration and ensure SQL Server is running")
+        raise
+    
+    # Initialize job service
+    logger.info("Initializing job service...")
+    job_service = get_job_service()
+    logger.info(f"✓ Job service initialized with {settings.MAX_CONCURRENT_JOBS} workers")
+    
     logger.info("Perception modules ready")
     logger.info("Storage directories configured")
-    logger.info("API Documentation: https://adas-api.aiotlab.edu.vn/docs")
+    logger.info(f"API Documentation: http://{settings.HOST}:{settings.PORT}/docs")
     logger.info("=" * 80)
     
     yield
     
     # Shutdown
     logger.info("=" * 80)
-    logger.info("ADAS Video Analysis API Shutting Down...")
+    logger.info(f"{settings.APP_NAME} Shutting Down...")
+    logger.info("=" * 80)
+    
+    # Shutdown job service
+    logger.info("Shutting down job service...")
+    job_service.shutdown()
+    logger.info("✓ Job service shutdown complete")
+    
+    # Close database connections
+    logger.info("Closing database connections...")
+    await close_db()
+    logger.info("✓ Database connections closed")
+    
+    logger.info("=" * 80)
+    logger.info("Shutdown complete")
     logger.info("=" * 80)
 
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="ADAS Video Analysis API",
+    title=settings.APP_NAME,
     description="""
-    Scientific ADAS Demo System for Research Council Evaluation
+    Production-Grade ADAS Backend System for Research and Commercial Use
     
-    ## Features
+    ## Version 2.0 Features
     
-    ### Dashcam Video Analysis
-    - **Curved Lane Detection**: Real geometry-based lane detection with polynomial fitting
+    ### Database
+    - **Microsoft SQL Server** for production-grade data persistence
+    - **Async SQLAlchemy** for efficient database operations
+    - **Alembic migrations** for schema version control
+    
+    ### Video Processing
+    - **Non-blocking uploads** - API returns immediately
+    - **Background processing** with ThreadPoolExecutor
+    - **Job status tracking** with progress updates
+    - **Event logging** to database
+    
+    ### ADAS Analysis
+    - **Lane Detection**: Real geometry-based curved lane detection
     - **Object Detection**: YOLOv11-based vehicle and pedestrian detection
-    - **Distance Estimation**: Monocular distance estimation with risk classification
+    - **Distance Estimation**: Monocular distance with risk classification
     - **Lane Departure Warning**: Real-time LDW based on vehicle offset
     - **Forward Collision Warning**: TTC-based collision risk assessment
-    - **Traffic Sign Recognition**: Detection of stop signs, speed limits, warning signs
+    - **Traffic Sign Recognition**: Speed limits, stop signs, warnings
+    - **Driver Monitoring**: MediaPipe Face Mesh for fatigue detection
     
-    ### In-Cabin Video Analysis
-    - **Driver Monitoring**: MediaPipe Face Mesh for facial analysis
-    - **Drowsiness Detection**: EAR, MAR, and head pose-based drowsiness detection
+    ### Architecture
+    - **Repository Pattern**: Clean data access layer
+    - **Service Layer**: Business logic separation
+    - **Pydantic Schemas**: Request/response validation
+    - **Structured Logging**: JSON logs with request_id tracking
     
-    ## Architecture
+    ## Deployment
     
-    - **Frontend**: Upload video, poll for results, display annotated video
-    - **Backend API** (FastAPI): REST endpoints for upload/results
-    - **Service Layer**: Job management and orchestration
-    - **Perception Layer**: Isolated AI modules (NO FastAPI dependency)
-    
-    ## Endpoints
-    
-    - `POST /api/video/upload`: Upload video for analysis
-    - `GET /api/video/result/{job_id}`: Get analysis results
-    - `GET /api/video/download/{job_id}/{filename}`: Download processed video
-    
+    Designed for Windows Server with SQL Server Developer Edition.
+    Suitable for scientific research (NCKH) and commercial deployment.
     """,
-    version="1.0.0",
+    version=settings.APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
 )
 
-# Configure CORS (allow frontend to call API)
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this properly in production
+    allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -128,6 +168,7 @@ app.include_router(ai_chat_router)
 app.include_router(settings_router)
 app.include_router(upload_storage_router)
 app.include_router(auth_router)
+app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
 
 
 @app.get("/")

@@ -1,28 +1,35 @@
 """
-Upload and Storage API endpoints - Phase 4 Low Priority
-Handles file uploads and storage management
+Upload and Storage API endpoints - Enterprise Production
+Handles file uploads and storage management with SQL Server persistence
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from typing import List
-from datetime import datetime
-import os
+from datetime import datetime, timedelta
+from pathlib import Path
+import aiofiles
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import storage
+from app.db.session import get_db
+from app.db.repositories.video_job_repo import VideoJobRepository
+from app.core.config import settings
 
 router = APIRouter(prefix="/api", tags=["upload", "storage"])
 
 
 @router.post("/upload/image")
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Upload a single image (not part of dataset)
+    Upload a single image (for annotations, datasets, or reference images)
     
     FormData:
     - file: Image file (jpg, png, etc.)
     
     Returns:
     - file_path: Path where image is stored
-    - url: URL to access the image
+    - url: URL to access the image on production domain
     """
     # Validate file type
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -35,14 +42,38 @@ async def upload_image(file: UploadFile = File(...)):
     content = await file.read()
     file_size_mb = len(content) / (1024 * 1024)
     
-    # Mock storage path
+    # Check file size (max 50MB for images)
+    if file_size_mb > 50:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Image too large ({file_size_mb:.1f}MB). Maximum is 50MB."
+        )
+    
+    # Create storage directory
     year_month = datetime.now().strftime("%Y/%m")
-    file_path = f"/storage/images/{year_month}/{file.filename}"
-    url = f"/api/files/images/{year_month}/{file.filename}"
+    storage_dir = Path(f"backend/storage/images/{year_month}")
+    storage_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Generate unique filename
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename_parts = file.filename.rsplit('.', 1)
+    if len(filename_parts) == 2:
+        new_filename = f"{filename_parts[0]}_{timestamp}.{filename_parts[1]}"
+    else:
+        new_filename = f"{file.filename}_{timestamp}"
+    
+    file_path = storage_dir / new_filename
+    
+    # Save file asynchronously
+    async with aiofiles.open(file_path, 'wb') as f:
+        await f.write(content)
+    
+    # Production URL
+    url = f"https://adas-api.aiotlab.edu.vn:52000/api/files/images/{year_month}/{new_filename}"
     
     return {
         "success": True,
-        "file_path": file_path,
+        "file_path": str(file_path),
         "url": url,
         "file_size_mb": round(file_size_mb, 2),
         "uploaded_at": datetime.now().isoformat()
@@ -50,9 +81,12 @@ async def upload_image(file: UploadFile = File(...)):
 
 
 @router.post("/upload/batch")
-async def upload_batch(files: List[UploadFile] = File(...)):
+async def upload_batch(
+    files: List[UploadFile] = File(...),
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Upload multiple files at once
+    Upload multiple files at once with real file system persistence
     
     FormData:
     - files: Array of files to upload
@@ -64,7 +98,7 @@ async def upload_batch(files: List[UploadFile] = File(...)):
     uploaded = []
     failed = []
     
-    for idx, file in enumerate(files):
+    for file in files:
         try:
             # Read file
             content = await file.read()
@@ -78,32 +112,45 @@ async def upload_batch(files: List[UploadFile] = File(...)):
                 })
                 continue
             
-            # Mock storage
-            year_month = datetime.now().strftime("%Y/%m")
-            
             # Determine type
             is_video = file.content_type and file.content_type.startswith("video/")
             is_image = file.content_type and file.content_type.startswith("image/")
             
+            # Create storage directory
+            year_month = datetime.now().strftime("%Y/%m")
             if is_video:
-                file_path = f"/storage/videos/{year_month}/{file.filename}"
-                url = f"/api/files/videos/{year_month}/{file.filename}"
+                storage_dir = Path(f"backend/storage/videos/{year_month}")
+                file_type = "videos"
             elif is_image:
-                file_path = f"/storage/images/{year_month}/{file.filename}"
-                url = f"/api/files/images/{year_month}/{file.filename}"
+                storage_dir = Path(f"backend/storage/images/{year_month}")
+                file_type = "images"
             else:
-                file_path = f"/storage/files/{year_month}/{file.filename}"
-                url = f"/api/files/misc/{year_month}/{file.filename}"
+                storage_dir = Path(f"backend/storage/files/{year_month}")
+                file_type = "misc"
             
-            # Create ID
-            file_id = storage.dataset_counter
-            storage.dataset_counter += 1
+            storage_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Generate unique filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename_parts = file.filename.rsplit('.', 1)
+            if len(filename_parts) == 2:
+                new_filename = f"{filename_parts[0]}_{timestamp}.{filename_parts[1]}"
+            else:
+                new_filename = f"{file.filename}_{timestamp}"
+            
+            file_path = storage_dir / new_filename
+            
+            # Save file asynchronously
+            async with aiofiles.open(file_path, 'wb') as f:
+                await f.write(content)
+            
+            # Production URL
+            url = f"https://adas-api.aiotlab.edu.vn:52000/api/files/{file_type}/{year_month}/{new_filename}"
             
             uploaded.append({
                 "filename": file.filename,
                 "url": url,
-                "id": file_id,
-                "file_path": file_path,
+                "file_path": str(file_path),
                 "file_size_mb": round(file_size_mb, 2)
             })
             
@@ -123,33 +170,56 @@ async def upload_batch(files: List[UploadFile] = File(...)):
 
 
 @router.get("/storage/info")
-async def get_storage_info():
+async def get_storage_info(db: AsyncSession = Depends(get_db)):
     """
-    Get storage information
+    Get REAL storage information from database and file system
     
     Returns:
     - total_gb: Total storage capacity
-    - used_gb: Used storage space
+    - used_gb: Used storage space from actual video jobs
     - available_gb: Available storage space
-    - files_count: Total number of files
+    - files_count: Total number of files in database
     - videos_count: Number of video files
-    - images_count: Number of image files
+    - processing_gb: Storage used by videos currently processing
     """
-    # Calculate storage from existing data
-    total_videos_size = sum(v.file_size_mb for v in storage.videos.values()) / 1024
-    total_datasets_size = sum(d.file_size_mb for d in storage.datasets.values()) / 1024
+    # Get actual storage usage from database
+    repo = VideoJobRepository(db)
+    all_jobs = await repo.get_all()
     
-    used_gb = total_videos_size + total_datasets_size
+    # Calculate real storage from video jobs
+    total_videos_size_bytes = sum(job.file_size for job in all_jobs if job.file_size)
+    used_gb = total_videos_size_bytes / (1024 * 1024 * 1024)
     
-    # Mock total capacity
-    total_gb = 1000.0  # 1TB
+    # Get storage directory usage
+    storage_path = Path("backend/storage")
+    if storage_path.exists():
+        # Calculate actual disk usage
+        disk_usage_bytes = sum(
+            f.stat().st_size for f in storage_path.rglob('*') if f.is_file()
+        )
+        disk_used_gb = disk_usage_bytes / (1024 * 1024 * 1024)
+    else:
+        disk_used_gb = 0
+    
+    # Use the larger of database size or actual disk usage
+    used_gb = max(used_gb, disk_used_gb)
+    
+    # Total capacity (configurable)
+    total_gb = 1000.0  # 1TB - should be from config
     available_gb = total_gb - used_gb
     
-    # Count files
-    videos_count = len(storage.videos)
-    images_count = len([d for d in storage.datasets.values() 
-                       if d.metadata and d.metadata.get("type") == "image"])
-    files_count = len(storage.datasets)
+    # Count files by status
+    videos_count = len(all_jobs)
+    completed_count = len([j for j in all_jobs if j.status == 'completed'])
+    processing_count = len([j for j in all_jobs if j.status == 'processing'])
+    failed_count = len([j for j in all_jobs if j.status == 'failed'])
+    
+    # Calculate processing storage
+    processing_bytes = sum(
+        job.file_size for job in all_jobs 
+        if job.status == 'processing' and job.file_size
+    )
+    processing_gb = processing_bytes / (1024 * 1024 * 1024)
     
     return {
         "success": True,
@@ -157,43 +227,77 @@ async def get_storage_info():
         "used_gb": round(used_gb, 2),
         "available_gb": round(available_gb, 2),
         "usage_percentage": round((used_gb / total_gb) * 100, 1),
-        "files_count": files_count,
+        "files_count": videos_count,
         "videos_count": videos_count,
-        "images_count": images_count
+        "completed_count": completed_count,
+        "processing_count": processing_count,
+        "failed_count": failed_count,
+        "processing_gb": round(processing_gb, 2)
     }
 
 
 @router.delete("/storage/cleanup")
-async def cleanup_old_files(days_old: int = 90):
+async def cleanup_old_files(
+    days_old: int = 90,
+    db: AsyncSession = Depends(get_db)
+):
     """
-    Cleanup old files (dummy implementation)
+    Cleanup old files from REAL file system and database
     
     Query Params:
     - days_old: Delete files older than this many days (default: 90)
     
     Returns count of deleted files
     """
-    from datetime import timedelta
+    cutoff_date = datetime.now() - timedelta(days=days_old)
     
-    cutoff_date = (datetime.now() - timedelta(days=days_old)).isoformat()
+    # Get old jobs from database
+    repo = VideoJobRepository(db)
+    all_jobs = await repo.get_all()
     
-    # Mock cleanup - in real implementation, would delete actual files
-    initial_count = len(storage.datasets)
-    
-    # Remove old datasets
-    old_datasets = [
-        d_id for d_id, d in storage.datasets.items()
-        if d.uploaded_at < cutoff_date
+    old_jobs = [
+        job for job in all_jobs
+        if job.created_at < cutoff_date
     ]
     
-    for d_id in old_datasets:
-        storage.datasets.pop(d_id)
+    deleted_count = 0
+    deleted_size_bytes = 0
     
-    deleted_count = len(old_datasets)
+    for job in old_jobs:
+        try:
+            # Delete input file
+            if job.input_path:
+                input_path = Path(job.input_path)
+                if input_path.exists():
+                    file_size = input_path.stat().st_size
+                    input_path.unlink()
+                    deleted_size_bytes += file_size
+            
+            # Delete output file
+            if job.output_path:
+                output_path = Path(job.output_path)
+                if output_path.exists():
+                    file_size = output_path.stat().st_size
+                    output_path.unlink()
+                    deleted_size_bytes += file_size
+            
+            # Delete from database
+            await repo.delete(job.id)
+            deleted_count += 1
+            
+        except Exception as e:
+            # Log error but continue cleanup
+            print(f"Error deleting job {job.job_id}: {e}")
+            continue
+    
+    await db.commit()
+    
+    deleted_size_gb = deleted_size_bytes / (1024 * 1024 * 1024)
     
     return {
         "success": True,
         "message": f"Deleted {deleted_count} files older than {days_old} days",
         "deleted_count": deleted_count,
-        "remaining_count": len(storage.datasets)
+        "deleted_size_gb": round(deleted_size_gb, 2),
+        "remaining_count": len(all_jobs) - deleted_count
     }
