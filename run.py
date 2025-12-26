@@ -22,30 +22,17 @@ sys.path.insert(0, str(backend_dir))
 
 
 def check_environment_file(is_production=False):
-    """Kiểm tra và setup file .env"""
+    """Kiểm tra file .env đã tồn tại"""
     root_dir = Path(__file__).parent
     env_file = root_dir / ".env"
     
-    if is_production:
-        env_template = root_dir / ".env.production.docker"
-        env_name = "production (Docker SQL Server)"
+    if env_file.exists():
+        print(f"✅ File .env đã sẵn sàng")
+        return True
     else:
-        env_template = root_dir / ".env.development"
-        env_name = "development"
-    
-    # Nếu .env chưa tồn tại, copy từ template
-    if not env_file.exists():
-        if env_template.exists():
-            print(f"📋 Tạo file .env từ template {env_name}...")
-            shutil.copy(env_template, env_file)
-            print("✅ File .env đã được tạo")
-        else:
-            print(f"⚠️  Không tìm thấy template: {env_template}")
-            return False
-    else:
-        print(f"✅ File .env đã tồn tại")
-    
-    return True
+        print(f"❌ Không tìm thấy file .env")
+        print("💡 Pull code từ GitHub để có file .env")
+        return False
 
 
 def check_dependencies():
