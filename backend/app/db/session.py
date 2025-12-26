@@ -56,7 +56,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 async def init_db():
     """Initialize database (create tables if not exist)"""
     from .base import Base
-    from .models import *  # Import all models
+    # Import all models to register them with SQLAlchemy
+    from .models.user import User
+    from .models.vehicle import Vehicle
+    from .models.trip import Trip
+    from .models.video_job import VideoJob
+    from .models.safety_event import SafetyEvent
+    from .models.driver_state import DriverState
+    from .models.traffic_sign import TrafficSign
+    from .models.alert import Alert
+    from .models.model_version import ModelVersion
     
     async with engine.begin() as conn:
         # In production, use Alembic migrations instead
