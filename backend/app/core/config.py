@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "ADAS Backend API"
     APP_VERSION: str = "2.0.0"
     DEBUG: bool = False
+    ENVIRONMENT: str = "development"  # development or production
     
     # API
     API_V1_PREFIX: str = "/api/v1"
@@ -92,14 +93,20 @@ class Settings(BaseSettings):
     
     @property
     def async_database_url(self) -> str:
-        """Generate async database URL for aiodbc"""
+        """Generate async database URL - Use SQLite for development, SQL Server for production"""
+        # For development: use SQLite (no SQL Server needed)
+        if self.ENVIRONMENT == "development" or not self.DB_HOST or self.DB_HOST == "localhost":
+            return "sqlite+aiosqlite:///./backend/adas.db"
+        
+        # For production: use SQL Server with pyodbc (sync driver works with async)
         from urllib.parse import quote_plus
         
         password_encoded = quote_plus(self.DB_PASSWORD)
         driver_encoded = quote_plus(self.DB_DRIVER)
         
+        # Use mssql+pyodbc instead of mssql+aiodbc (more stable)
         return (
-            f"mssql+aiodbc://{self.DB_USER}:{password_encoded}"
+            f"mssql+pyodbc://{self.DB_USER}:{password_encoded}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
             f"?driver={driver_encoded}"
             f"&TrustServerCertificate=yes"

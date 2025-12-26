@@ -8,9 +8,10 @@ uvicorn==0.30.0
 pydantic==2.9.2
 pydantic-settings==2.5.2
 
-# Database - Microsoft SQL Server
+# Database - SQL Server + SQLite
 sqlalchemy==2.0.25
 pyodbc==5.1.0
+aiosqlite==0.20.0  # For async SQLite (development)
 alembic==1.13.1
 greenlet==3.0.3
 
