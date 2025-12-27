@@ -44,45 +44,30 @@ class SafetyEvent(Base):
     
     # Foreign keys
     trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
-    video_job_id = Column(Integer, ForeignKey("video_jobs.id", ondelete="CASCADE"), nullable=True, index=True)
-    vehicle_id = Column(Integer, ForeignKey("vehicles.id", ondelete="SET NULL"), nullable=True, index=True)
+    video_job_id = Column(Integer, ForeignKey("video_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Event details
-    event_type = Column(Enum(EventType), nullable=False, index=True)
-    severity = Column(Enum(EventSeverity), nullable=False, default=EventSeverity.WARNING, index=True)
-    
-    # Risk assessment
-    risk_score = Column(Float, nullable=False, default=0.0)  # 0.0-1.0
-    time_to_event = Column(Float, nullable=True)  # seconds (predictive)
-    
-    # Timing
+    event_type = Column(String(50), nullable=False, index=True)
+    severity = Column(String(20), nullable=False, index=True)  # CRITICAL, WARNING, INFO
     timestamp = Column(DateTime, nullable=False, index=True)
     frame_number = Column(Integer, nullable=True)
+    description = Column(Text, nullable=True)
     
-    # Description
-    description = Column(Text, nullable=False)
-    explanation = Column(Text, nullable=True)  # Why this event was triggered
+    # Location
+    location_lat = Column(Float, nullable=True)
+    location_lng = Column(Float, nullable=True)
+    speed_kmh = Column(Float, nullable=True)
     
-    # Context data (JSON)
-    # Example: {"lane_quality": 0.85, "traffic_density": "medium", "closest_vehicle_distance": 15.0}
-    context_data = Column(JSON, nullable=True)
-    
-    # Media
+    # Metadata (JSON string)
+    metadata = Column(Text, nullable=True)
     snapshot_path = Column(String(500), nullable=True)
-    video_clip_path = Column(String(500), nullable=True)
-    
-    # Location (if available)
-    latitude = Column(Float, nullable=True)
-    longitude = Column(Float, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
     trip = relationship("Trip", back_populates="safety_events")
-    video_job = relationship("VideoJob", back_populates="safety_events")
-    vehicle = relationship("Vehicle", back_populates="safety_events")
-    alerts = relationship("Alert", back_populates="safety_event", cascade="all, delete-orphan")
+    video_job = relationship("VideoJob")
     
     def __repr__(self):
         return f"<SafetyEvent(id={self.id}, type='{self.event_type}', severity='{self.severity}')>"

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from datetime import datetime
 
 from .base import BaseRepository
-from ..models.video_job import VideoJob, JobStatus
+from ..models.video_job import VideoJob
 
 
 class VideoJobRepository(BaseRepository[VideoJob]):
@@ -28,7 +28,7 @@ class VideoJobRepository(BaseRepository[VideoJob]):
     
     async def get_by_status(
         self,
-        status: JobStatus,
+        status: str,
         limit: int = 10
     ) -> List[VideoJob]:
         """Get jobs by status"""
@@ -42,12 +42,12 @@ class VideoJobRepository(BaseRepository[VideoJob]):
     
     async def get_pending_jobs(self, limit: int = 10) -> List[VideoJob]:
         """Get pending jobs for processing"""
-        return await self.get_by_status(JobStatus.PENDING, limit)
+        return await self.get_by_status("pending", limit)
     
     async def update_status(
         self,
         job_id: str,
-        status: JobStatus,
+        status: str,
         error_message: Optional[str] = None
     ) -> Optional[VideoJob]:
         """Update job status"""
@@ -57,11 +57,11 @@ class VideoJobRepository(BaseRepository[VideoJob]):
         
         update_data = {"status": status}
         
-        if status == JobStatus.PROCESSING and not job.started_at:
+        if status == "processing" and not job.started_at:
             update_data["started_at"] = datetime.utcnow()
-        elif status == JobStatus.COMPLETED:
+        elif status == "completed":
             update_data["completed_at"] = datetime.utcnow()
-        elif status == JobStatus.FAILED:
+        elif status == "failed":
             update_data["completed_at"] = datetime.utcnow()
             if error_message:
                 update_data["error_message"] = error_message

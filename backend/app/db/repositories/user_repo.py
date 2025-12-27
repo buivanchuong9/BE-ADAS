@@ -45,7 +45,7 @@ class UserRepository(BaseRepository[User]):
         return await self.create(
             username=username,
             email=email,
-            password_hash=password_hash,
+            hashed_password=password_hash,
             role=role,
             is_active=1,
             **kwargs

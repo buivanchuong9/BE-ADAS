@@ -95,22 +95,29 @@ class VideoService:
             Created job
         """
         # Generate job ID
-        job_id = str(uuid.uuid4())
+        job_id_uuid = str(uuid.uuid4())
         
-        # Create job in database
+        # Prepare paths
+        input_path = str(self.raw_dir / f"{job_id_uuid}_{filename}")
+        output_path = str(self.processed_dir / f"{job_id_uuid}_result.mp4")
+        
+        # Create job record
         repo = VideoJobRepository(session)
-        job = await repo.create(
-            job_id=job_id,
-            filename=filename,
-            video_type=VideoType(video_type),
-            trip_id=trip_id,
-            device=device,
-            status=JobStatus.PENDING
-        )
+        job_data = {
+            "job_id": job_id_uuid,
+            "trip_id": trip_id,
+            "video_filename": filename,
+            "video_path": input_path,
+            "result_path": output_path,
+            "status": "pending",
+            "progress_percent": 0,
+        }
         
-        logger.info(f"Created job {job_id} for video: {filename}")
+        job = await repo.create(**job_data)
         
-        return VideoJobResponse.model_validate(job)
+        logger.info(f"Created job {job_id_uuid} for video: {filename}")
+        
+        return job
     
     async def save_uploaded_video(
         self,

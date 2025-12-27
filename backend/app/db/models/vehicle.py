@@ -19,20 +19,16 @@ class Vehicle(Base):
     id = Column(Integer, primary_key=True, index=True)
     
     # Vehicle identification
-    plate_number = Column(String(20), unique=True, nullable=False, index=True)
-    vin = Column(String(17), unique=True, nullable=True)  # Vehicle Identification Number
+    license_plate = Column(String(20), unique=True, nullable=False, index=True)
     
     # Vehicle details
-    make = Column(String(50), nullable=True)  # Toyota, Honda, etc.
-    model = Column(String(50), nullable=True)  # Camry, Civic, etc.
+    vehicle_type = Column(String(50), nullable=True)  # car, truck, bus, motorcycle
+    manufacturer = Column(String(100), nullable=True)  # Toyota, Honda, etc.
+    model = Column(String(100), nullable=True)  # Camry, Civic, etc.
     year = Column(Integer, nullable=True)
-    color = Column(String(30), nullable=True)
     
     # Owner
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True)
-    
-    # Additional info
-    notes = Column(Text, nullable=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
@@ -44,4 +40,4 @@ class Vehicle(Base):
     safety_events = relationship("SafetyEvent", back_populates="vehicle", cascade="all, delete-orphan")
     
     def __repr__(self):
-        return f"<Vehicle(id={self.id}, plate='{self.plate_number}', model='{self.model}')>"
+        return f"<Vehicle(id={self.id}, plate='{self.license_plate}', model='{self.model}')>"

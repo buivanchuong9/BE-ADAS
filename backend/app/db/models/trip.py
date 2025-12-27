@@ -14,7 +14,7 @@ from ..base import Base
 
 class TripStatus(str, enum.Enum):
     """Trip status"""
-    ONGOING = "ongoing"
+    ACTIVE = "active"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
 
@@ -33,29 +33,21 @@ class Trip(Base):
     # Trip details
     start_time = Column(DateTime, nullable=False, index=True)
     end_time = Column(DateTime, nullable=True)
-    status = Column(Enum(TripStatus), nullable=False, default=TripStatus.ONGOING, index=True)
+    status = Column(String(20), nullable=False, default="active", index=True)
     
     # Location
-    start_location = Column(String(200), nullable=True)
-    end_location = Column(String(200), nullable=True)
-    start_lat = Column(Float, nullable=True)
-    start_lon = Column(Float, nullable=True)
-    end_lat = Column(Float, nullable=True)
-    end_lon = Column(Float, nullable=True)
+    start_location = Column(String(255), nullable=True)
+    end_location = Column(String(255), nullable=True)
     
     # Metrics
-    distance_km = Column(Float, nullable=False, default=0.0)
-    duration_minutes = Column(Integer, nullable=False, default=0)
-    avg_speed_kmh = Column(Float, nullable=True)
-    max_speed_kmh = Column(Float, nullable=True)
+    distance_km = Column(Float, nullable=True)
+    duration_minutes = Column(Integer, nullable=True)
+    avg_speed = Column(Float, nullable=True)
+    max_speed = Column(Float, nullable=True)
     
     # Safety
-    safety_score = Column(Float, nullable=False, default=100.0)  # 0-100
-    events_count = Column(Integer, nullable=False, default=0)
-    critical_events_count = Column(Integer, nullable=False, default=0)
-    
-    # Additional info
-    notes = Column(Text, nullable=True)
+    total_alerts = Column(Integer, nullable=False, default=0)
+    critical_alerts = Column(Integer, nullable=False, default=0)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

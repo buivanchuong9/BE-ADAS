@@ -18,34 +18,22 @@ class ModelVersion(Base):
     id = Column(Integer, primary_key=True, index=True)
     
     # Model identification
-    model_name = Column(String(100), nullable=False, index=True)  # e.g., "yolo11n", "lane_detector"
-    version = Column(String(50), nullable=False)  # e.g., "1.0.0", "v11"
-    model_type = Column(String(50), nullable=False)  # detection, segmentation, classification
-    
-    # Model details
-    framework = Column(String(50), nullable=True)  # pytorch, tensorflow, onnx
-    architecture = Column(String(100), nullable=True)  # YOLOv11, ResNet50, etc.
+    model_name = Column(String(100), nullable=False, index=True)
+    model_type = Column(String(50), nullable=False)  # YOLO, MEDIAPIPE, LANE, etc.
+    version = Column(String(50), nullable=False)
     
     # File info
-    file_path = Column(String(500), nullable=True)
+    file_path = Column(String(500), nullable=False)
     file_size_mb = Column(Float, nullable=True)
-    checksum = Column(String(64), nullable=True)  # MD5 or SHA256
     
-    # Performance metrics
+    # Performance
     accuracy = Column(Float, nullable=True)
-    precision = Column(Float, nullable=True)
-    recall = Column(Float, nullable=True)
-    f1_score = Column(Float, nullable=True)
-    inference_time_ms = Column(Float, nullable=True)  # Average inference time
-    
-    # Training info
-    training_dataset = Column(String(200), nullable=True)
-    training_date = Column(DateTime, nullable=True)
-    epochs = Column(Integer, nullable=True)
     
     # Status
-    is_active = Column(Integer, default=1, nullable=False)  # Boolean as Integer
-    is_production = Column(Integer, default=0, nullable=False)  # Boolean as Integer
+    is_active = Column(Integer, default=1, nullable=False)  # BIT in SQL Server
+    
+    # Description
+    description = Column(Text, nullable=True)
     
     # Description
     description = Column(Text, nullable=True)

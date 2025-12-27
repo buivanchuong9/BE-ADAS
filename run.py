@@ -112,7 +112,9 @@ def init_database():
         from app.core.config import settings
         import pyodbc
         import asyncio
-        from app.db.session import init_db
+        from app.db.session import init_db, async_session_maker
+        from sqlalchemy import select, text
+        from app.db.models import User
         
         # Kết nối master database để tạo database
         conn_str_master = (
@@ -142,15 +144,40 @@ def init_database():
         cursor.close()
         conn.close()
         
-        # Khởi tạo tables (chạy init_db.py logic)
-        print("📋 Đang tạo tables và seed data...")
+        # Khởi tạo tables
+        print("📋 Đang tạo tables...")
         asyncio.run(init_db())
         print("✅ Database tables đã sẵn sàng")
+        
+        # Kiểm tra và seed data nếu cần
+        async def check_and_seed():
+            async with async_session_maker() as session:
+                # Kiểm tra có user nào chưa
+                result = await session.execute(select(User).limit(1))
+                has_users = result.scalar_one_or_none() is not None
+                
+                if not has_users:
+                    print("📦 Đang seed initial data...")
+                    # Import và chạy seed functions
+                    sys.path.insert(0, str(Path(__file__).parent / "backend" / "scripts"))
+                    from seed_data import seed_users, seed_vehicles, seed_model_versions
+                    
+                    await seed_users(session)
+                    await seed_vehicles(session)
+                    await seed_model_versions(session)
+                    print("✅ Initial data đã được seed")
+                    print("   🔑 Admin: admin / Admin123!@#")
+                else:
+                    print("✅ Database đã có data")
+        
+        asyncio.run(check_and_seed())
         
         return True
         
     except Exception as e:
         print(f"❌ Lỗi khởi tạo database: {e}")
+        import traceback
+        traceback.print_exc()
         print("\n💡 Gợi ý:")
         print("  1. Kiểm tra SQL Server đang chạy")
         print("  2. Kiểm tra thông tin đăng nhập trong .env")

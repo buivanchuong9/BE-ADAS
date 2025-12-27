@@ -96,6 +96,7 @@ IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'video_jobs')
 BEGIN
     CREATE TABLE video_jobs (
         id INT IDENTITY(1,1) PRIMARY KEY,
+        job_id NVARCHAR(36) UNIQUE NULL,  -- UUID for API compatibility
         trip_id INT FOREIGN KEY REFERENCES trips(id) ON DELETE SET NULL,
         video_filename NVARCHAR(255) NOT NULL,
         video_path NVARCHAR(500) NOT NULL,
@@ -254,6 +255,7 @@ CREATE INDEX idx_trips_start_time ON trips(start_time);
 CREATE INDEX idx_trips_status ON trips(status);
 
 -- Video Jobs
+CREATE INDEX idx_video_jobs_job_id ON video_jobs(job_id);
 CREATE INDEX idx_video_jobs_trip_id ON video_jobs(trip_id);
 CREATE INDEX idx_video_jobs_status ON video_jobs(status);
 CREATE INDEX idx_video_jobs_created_at ON video_jobs(created_at);

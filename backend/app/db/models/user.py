@@ -29,13 +29,12 @@ class User(Base):
     
     # User details
     username = Column(String(50), unique=True, nullable=False, index=True)
-    email = Column(String(100), unique=True, nullable=True, index=True)
-    password_hash = Column(String(255), nullable=False)
-    role = Column(Enum(UserRole), nullable=False, default=UserRole.DRIVER)
+    email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=False)
+    role = Column(String(20), nullable=False, default="viewer")
     
     # Profile
-    full_name = Column(String(100), nullable=True)
-    phone = Column(String(20), nullable=True)
+    full_name = Column(String(255), nullable=True)
     
     # Status
     is_active = Column(Integer, default=1, nullable=False)  # Use Integer for SQL Server

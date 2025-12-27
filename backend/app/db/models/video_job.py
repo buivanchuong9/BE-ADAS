@@ -34,48 +34,35 @@ class VideoJob(Base):
     # Primary key
     id = Column(Integer, primary_key=True, index=True)
     
-    # Job identification
-    job_id = Column(String(36), unique=True, nullable=False, index=True)  # UUID
+    # Job identification (for API compatibility)
+    job_id = Column(String(36), unique=True, nullable=True, index=True)  # UUID for legacy API
     
     # Foreign keys
-    trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
+    trip_id = Column(Integer, ForeignKey("trips.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Video details
-    filename = Column(String(255), nullable=False)
-    video_type = Column(Enum(VideoType), nullable=False, default=VideoType.DASHCAM)
-    
-    # Paths
-    input_path = Column(String(500), nullable=True)
-    output_path = Column(String(500), nullable=True)
+    video_filename = Column(String(255), nullable=False)
+    video_path = Column(String(500), nullable=False)
+    video_size_mb = Column(Float, nullable=True)
+    duration_seconds = Column(Integer, nullable=True)
+    fps = Column(Float, nullable=True)
+    resolution = Column(String(50), nullable=True)  # e.g., 1920x1080
     
     # Processing
-    status = Column(Enum(JobStatus), nullable=False, default=JobStatus.PENDING, index=True)
-    device = Column(String(10), nullable=False, default="cpu")  # cpu or cuda
-    
-    # Progress
-    total_frames = Column(Integer, nullable=True)
-    processed_frames = Column(Integer, nullable=False, default=0)
-    progress_percent = Column(Float, nullable=False, default=0.0)
-    
-    # Results
-    events_detected = Column(Integer, nullable=False, default=0)
-    processing_time_seconds = Column(Float, nullable=True)
-    
-    # Error handling
+    status = Column(String(20), nullable=False, default="pending", index=True)  # pending, processing, completed, failed
+    progress_percent = Column(Integer, nullable=False, default=0)
+    result_path = Column(String(500), nullable=True)
     error_message = Column(Text, nullable=True)
-    retry_count = Column(Integer, nullable=False, default=0)
     
     # Timestamps
-    created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    processing_time_seconds = Column(Integer, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now(), nullable=False)
     
     # Relationships
     trip = relationship("Trip", back_populates="video_jobs")
-    safety_events = relationship("SafetyEvent", back_populates="video_job", cascade="all, delete-orphan")
-    traffic_signs = relationship("TrafficSign", back_populates="video_job", cascade="all, delete-orphan")
-    driver_states = relationship("DriverState", back_populates="video_job", cascade="all, delete-orphan")
     
     def __repr__(self):
-        return f"<VideoJob(id={self.id}, job_id='{self.job_id}', status='{self.status}')>"
+        return f"<VideoJob(id={self.id}, status='{self.status}')>"

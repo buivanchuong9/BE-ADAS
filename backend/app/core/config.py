@@ -109,12 +109,8 @@ class Settings(BaseSettings):
     
     @property
     def async_database_url(self) -> str:
-        """Generate async database URL - Use SQLite for development, SQL Server for production"""
-        # For development: use SQLite (no SQL Server needed)
-        if self.ENVIRONMENT == "development" or not self.DB_HOST or self.DB_HOST == "localhost":
-            return "sqlite+aiosqlite:///./backend/adas.db"
-        
-        # For production: use SQL Server with pyodbc (sync driver works with async)
+        """Generate async database URL - Use SQL Server for production"""
+        # Always use SQL Server with pyodbc (sync driver works with async)
         from urllib.parse import quote_plus
         
         password_encoded = quote_plus(self.DB_PASSWORD)

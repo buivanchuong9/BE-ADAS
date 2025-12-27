@@ -20,42 +20,24 @@ class DriverState(Base):
     
     # Foreign keys
     trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
-    video_job_id = Column(Integer, ForeignKey("video_jobs.id", ondelete="CASCADE"), nullable=True, index=True)
     
     # Timing
     timestamp = Column(DateTime, nullable=False, index=True)
-    frame_number = Column(Integer, nullable=True)
     
-    # Fatigue indicators
-    fatigue_score = Column(Float, nullable=False, default=0.0)  # 0.0-1.0
-    eyes_closed = Column(Integer, default=0, nullable=False)  # Boolean as Integer
-    yawning = Column(Integer, default=0, nullable=False)  # Boolean as Integer
-    eye_aspect_ratio = Column(Float, nullable=True)  # EAR metric
-    mouth_aspect_ratio = Column(Float, nullable=True)  # MAR metric
-    
-    # Distraction indicators
-    distraction_score = Column(Float, nullable=False, default=0.0)  # 0.0-1.0
-    looking_away = Column(Integer, default=0, nullable=False)  # Boolean as Integer
-    phone_usage = Column(Integer, default=0, nullable=False)  # Boolean as Integer
-    
-    # Head pose
-    head_pose_yaw = Column(Float, nullable=True)  # degrees
-    head_pose_pitch = Column(Float, nullable=True)  # degrees
-    head_pose_roll = Column(Float, nullable=True)  # degrees
-    
-    # Additional metrics (JSON)
-    # Example: {"blink_rate": 15, "gaze_direction": "forward"}
-    metrics = Column(JSON, nullable=True)
-    
-    # Notes
-    notes = Column(Text, nullable=True)
+    # Drowsiness detection
+    is_drowsy = Column(Integer, default=0, nullable=False)  # BIT in SQL Server
+    drowsy_confidence = Column(Float, nullable=True)
+    drowsy_reason = Column(String(50), nullable=True)  # EYE_CLOSED, YAWNING, HEAD_TILT
+    ear_value = Column(Float, nullable=True)  # Eye Aspect Ratio
+    mar_value = Column(Float, nullable=True)  # Mouth Aspect Ratio
+    head_pose = Column(String(100), nullable=True)
+    snapshot_path = Column(String(500), nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
     trip = relationship("Trip", back_populates="driver_states")
-    video_job = relationship("VideoJob", back_populates="driver_states")
     
     def __repr__(self):
-        return f"<DriverState(id={self.id}, fatigue={self.fatigue_score:.2f}, distraction={self.distraction_score:.2f})>"
+        return f"<DriverState(id={self.id}, is_drowsy={self.is_drowsy})>"

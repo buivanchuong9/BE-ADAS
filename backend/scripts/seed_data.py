@@ -33,24 +33,23 @@ async def seed_users(session):
         {
             "username": "admin",
             "email": "admin@adas.com",
-            "password": "admin123",
-            "role": UserRole.ADMIN,
+            "password": "Admin123!@#",
+            "role": "admin",
             "full_name": "System Administrator",
         },
         {
             "username": "analyst",
             "email": "analyst@adas.com",
             "password": "analyst123",
-            "role": UserRole.ANALYST,
+            "role": "analyst",
             "full_name": "Data Analyst",
         },
         {
             "username": "driver1",
             "email": "driver1@adas.com",
             "password": "driver123",
-            "role": UserRole.DRIVER,
+            "role": "driver",
             "full_name": "Nguyễn Văn A",
-            "phone": "0901234567",
         },
     ]
     
@@ -58,7 +57,7 @@ async def seed_users(session):
         password = user_data.pop("password")
         user = User(
             **user_data,
-            password_hash=get_password_hash(password),
+            hashed_password=get_password_hash(password),
             is_active=1,
         )
         session.add(user)
@@ -84,20 +83,20 @@ async def seed_vehicles(session):
     
     vehicles_data = [
         {
-            "plate_number": "29A-12345",
-            "make": "Toyota",
+            "license_plate": "29A-12345",
+            "vehicle_type": "car",
+            "manufacturer": "Toyota",
             "model": "Camry",
-            "year": 2022,
-            "color": "Trắng",
-            "user_id": driver.id,
+            "year": 2023,
+            "owner_id": driver.id,
         },
         {
-            "plate_number": "30B-67890",
-            "make": "Honda",
+            "license_plate": "30B-67890",
+            "vehicle_type": "car",
+            "manufacturer": "Honda",
             "model": "Civic",
             "year": 2023,
-            "color": "Đen",
-            "user_id": driver.id,
+            "owner_id": driver.id,
         },
     ]
     
@@ -115,36 +114,28 @@ async def seed_model_versions(session):
     
     models_data = [
         {
-            "model_name": "yolo11n",
-            "version": "11.0.0",
-            "model_type": "detection",
-            "framework": "pytorch",
-            "architecture": "YOLOv11",
-            "file_path": "./models/yolo11n.pt",
+            "model_name": "YOLOv11",
+            "model_type": "OBJECT_DETECTION",
+            "version": "v11.0",
+            "file_path": "models/yolov11n.pt",
             "is_active": 1,
-            "is_production": 1,
-            "description": "YOLOv11 Nano - Object detection for vehicles, pedestrians",
-            "inference_time_ms": 15.0,
+            "description": "YOLOv11 nano for object detection",
         },
         {
-            "model_name": "lane_detector",
-            "version": "1.0.0",
-            "model_type": "segmentation",
-            "framework": "opencv",
-            "architecture": "Classical CV",
+            "model_name": "MediaPipe",
+            "model_type": "FACE_MESH",
+            "version": "v0.10.14",
+            "file_path": "models/mediapipe",
             "is_active": 1,
-            "is_production": 1,
-            "description": "Classical computer vision lane detection",
+            "description": "MediaPipe for driver monitoring",
         },
         {
-            "model_name": "driver_monitor",
-            "version": "1.0.0",
-            "model_type": "detection",
-            "framework": "mediapipe",
-            "architecture": "Face Mesh",
+            "model_name": "LaneNet",
+            "model_type": "LANE_DETECTION",
+            "version": "v1.0",
+            "file_path": "models/lanenet",
             "is_active": 1,
-            "is_production": 1,
-            "description": "MediaPipe Face Mesh for driver monitoring",
+            "description": "Custom lane detection model",
         },
     ]
     
