@@ -4,7 +4,7 @@ DriverState Model
 Represents driver monitoring states (fatigue, distraction, etc.).
 """
 
-from sqlalchemy import Column, Integer, Float, DateTime, ForeignKey, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
