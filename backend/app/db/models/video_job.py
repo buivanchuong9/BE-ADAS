@@ -20,6 +20,12 @@ class JobStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class VideoType(str, enum.Enum):
+    """Video type classification"""
+    DASHCAM = "dashcam"
+    IN_CABIN = "in_cabin"
+
+
 class VideoJob(Base):
     """Video job table"""
     __tablename__ = "video_jobs"
