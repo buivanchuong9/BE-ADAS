@@ -132,7 +132,21 @@ class VideoService:
             "progress_percent": 0,
         }
         
-        job = await repo.create(**job_data)
+        try:
+            job = await repo.create(**job_data)
+        except Exception as e:
+            error_msg = str(e).lower()
+            if "invalid column name" in error_msg or "column" in error_msg:
+                logger.error(f"Database schema mismatch: {e}")
+                raise ValidationError(
+                    "Database schema is outdated. Please run: python apply_migration.py",
+                    details={
+                        "error": str(e),
+                        "solution": "Run migration script to update database schema",
+                        "command": "python apply_migration.py"
+                    }
+                )
+            raise
         
         logger.info(f"Created job {job_id_uuid} for video: {filename}")
         
