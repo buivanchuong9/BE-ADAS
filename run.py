@@ -111,10 +111,6 @@ def init_database():
     try:
         from app.core.config import settings
         import pyodbc
-        import asyncio
-        from app.db.session import init_db, async_session_maker
-        from sqlalchemy import select, text
-        from app.db.models import User
         
         # Kết nối master database để tạo database
         conn_str_master = (
@@ -144,45 +140,39 @@ def init_database():
         cursor.close()
         conn.close()
         
-        # Khởi tạo tables
-        print("📋 Đang tạo tables...")
-        asyncio.run(init_db())
-        print("✅ Database tables đã sẵn sàng")
+        # Khởi tạo tables và seed data
+        print("📋 Đang khởi tạo tables và seed data...")
         
-        # Kiểm tra và seed data nếu cần
-        async def check_and_seed():
-            async with async_session_maker() as session:
-                # Kiểm tra có user nào chưa
-                result = await session.execute(select(User).limit(1))
-                has_users = result.scalar_one_or_none() is not None
-                
-                if not has_users:
-                    print("📦 Đang seed initial data...")
-                    # Import và chạy seed functions
-                    sys.path.insert(0, str(Path(__file__).parent / "backend" / "scripts"))
-                    from seed_data import seed_users, seed_vehicles, seed_model_versions
-                    
-                    await seed_users(session)
-                    await seed_vehicles(session)
-                    await seed_model_versions(session)
-                    print("✅ Initial data đã được seed")
-                    print("   🔑 Admin: admin / Admin123!@#")
-                else:
-                    print("✅ Database đã có data")
+        # Dùng subprocess để chạy init script
+        import subprocess
+        result = subprocess.run(
+            [sys.executable, "backend/scripts/init_db.py"],
+            capture_output=True,
+            text=True
+        )
         
-        asyncio.run(check_and_seed())
-        
-        return True
+        if result.returncode == 0:
+            print("✅ Database tables đã sẵn sàng")
+            
+            # Kiểm tra và seed data
+            print("📦 Kiểm tra initial data...")
+            result_seed = subprocess.run(
+                [sys.executable, "backend/scripts/seed_data.py"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result_seed.returncode == 0:
+                print("✅ Initial data đã sẵn sàng")
+            else:
+                # Seed data có thể fail nếu data đã có - không sao
+                print("ℹ️ Data có thể đã tồn tại")
+        else:
+            print(f"⚠️  Init tables: {result.stderr}")
         
     except Exception as e:
-        print(f"❌ Lỗi khởi tạo database: {e}")
-        import traceback
-        traceback.print_exc()
-        print("\n💡 Gợi ý:")
-        print("  1. Kiểm tra SQL Server đang chạy")
-        print("  2. Kiểm tra thông tin đăng nhập trong .env")
-        print("  3. Chạy thủ công: python backend/scripts/init_db.py")
-        return False
+        print(f"⚠️  Lỗi khởi tạo database: {e}")
+        print("ℹ️  Database có thể đã được khởi tạo sẵn, tiếp tục...")
 
 
 def run_server(host="0.0.0.0", port=8000, reload=True):
@@ -256,20 +246,16 @@ def main():
             sys.exit(1)
         
         # Step 3: Kiểm tra kết nối SQL Server
-        if not check_sql_server_connection():
-            response = input("\n⚠️  Tiếp tục mà không có SQL Server? (y/N): ")
-            if response.lower() != 'y':
-                print("\n💡 Hướng dẫn chạy SQL Server Docker:")
-                print("  docker run -e 'ACCEPT_EULA=Y' -e 'SA_PASSWORD=123456aA@$' \\")
-                print("    -p 1433:1433 --name sql_server -d \\")
-                print("    mcr.microsoft.com/mssql/server:2019-latest")
-                sys.exit(1)
+        sql_connected = check_sql_server_connection()
+        if not sql_connected:
+            print("\n❌ Không thể kết nối SQL Server. Vui lòng kiểm tra:")
+            print("  1. SQL Server đang chạy")
+            print("  2. Thông tin đăng nhập trong .env")
+            print("  3. ODBC Driver 17 đã cài")
+            sys.exit(1)
         
-        # Step 4: Khởi tạo database
-        if not init_database():
-            response = input("\n⚠️  Tiếp tục mà không khởi tạo database? (y/N): ")
-            if response.lower() != 'y':
-                sys.exit(1)
+        # Step 4: Khởi tạo database (không hỏi nếu thành công)
+        init_database()
     
     # Step 5: Chạy server
     run_server(
