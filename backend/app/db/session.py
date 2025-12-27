@@ -1,54 +1,88 @@
 """
 Database Session Management
 ============================
-Async SQLAlchemy session configuration and dependency injection.
+Async SQLAlchemy session configuration with sync driver (pyodbc).
+Uses run_sync to execute sync operations in async context.
 """
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import sessionmaker
 from typing import AsyncGenerator
 import logging
+import asyncio
 
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Create async engine
-engine = create_async_engine(
-    settings.async_database_url,
+# Create sync engine (pyodbc is sync driver)
+sync_engine = create_engine(
+    settings.database_url,  # Use sync URL
     echo=settings.DB_ECHO,
-    # Use NullPool for better compatibility with SQL Server
-    # NullPool không dùng pool_size và max_overflow
-    poolclass=NullPool,
+    pool_pre_ping=True,
 )
 
-# Create async session factory
-async_session_maker = async_sessionmaker(
-    engine,
-    class_=AsyncSession,
+# Create sync session factory
+sync_session_factory = sessionmaker(
+    sync_engine,
     expire_on_commit=False,
     autocommit=False,
     autoflush=False,
 )
 
 
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+# Async wrapper for sync session
+class AsyncSessionWrapper:
+    """Wraps sync session to work with async code"""
+    
+    def __init__(self, sync_session):
+        self.sync_session = sync_session
+    
+    async def execute(self, statement):
+        """Execute statement in thread pool"""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.sync_session.execute, statement)
+    
+    async def commit(self):
+        """Commit in thread pool"""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.sync_session.commit)
+    
+    async def rollback(self):
+        """Rollback in thread pool"""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.sync_session.rollback)
+    
+    async def close(self):
+        """Close in thread pool"""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.sync_session.close)
+    
+    def add(self, instance):
+        """Add instance (sync operation)"""
+        return self.sync_session.add(instance)
+    
+    async def refresh(self, instance):
+        """Refresh in thread pool"""
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.sync_session.refresh, instance)
+
+
+async def get_db() -> AsyncGenerator[AsyncSessionWrapper, None]:
     """
     Dependency for database sessions.
-    
-    Usage in FastAPI:
-        @app.get("/items")
-        async def get_items(db: AsyncSession = Depends(get_db)):
-            ...
+    Returns async wrapper around sync session.
     """
-    async with async_session_maker() as session:
-        try:
-            yield session
-        except Exception:
-            await session.rollback()
-            raise
-        finally:
-            await session.close()
+    session = sync_session_factory()
+    async_wrapper = AsyncSessionWrapper(session)
+    try:
+        yield async_wrapper
+    except Exception:
+        await async_wrapper.rollback()
+        raise
+    finally:
+        await async_wrapper.close()
 
 
 async def init_db():
@@ -65,15 +99,15 @@ async def init_db():
     from .models.alert import Alert
     from .models.model_version import ModelVersion
     
-    async with engine.begin() as conn:
-        # In production, use Alembic migrations instead
-        # This is for development/testing
-        await conn.run_sync(Base.metadata.create_all)
+    # Use sync engine to create tables
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, Base.metadata.create_all, sync_engine)
     
     logger.info("Database initialized successfully")
 
 
 async def close_db():
     """Close database connections"""
-    await engine.dispose()
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, sync_engine.dispose)
     logger.info("Database connections closed")

@@ -15,9 +15,8 @@ from datetime import datetime, timedelta
 # Add backend directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from app.db.session import async_session_maker
+from app.db.session import sync_session_factory
 from app.db.models import User, Vehicle, ModelVersion
-from app.db.models.user import UserRole
 from app.core.security import get_password_hash
 from app.core.logging import setup_logging, get_logger
 
@@ -25,7 +24,7 @@ setup_logging()
 logger = get_logger(__name__)
 
 
-async def seed_users(session):
+def seed_users(session):
     """Create initial users"""
     logger.info("Seeding users...")
     
@@ -62,17 +61,17 @@ async def seed_users(session):
         )
         session.add(user)
     
-    await session.commit()
+    session.commit()
     logger.info(f"  ✓ Created {len(users_data)} users")
 
 
-async def seed_vehicles(session):
+def seed_vehicles(session):
     """Create test vehicles"""
     logger.info("Seeding vehicles...")
     
     # Get driver user
     from sqlalchemy import select
-    result = await session.execute(
+    result = session.execute(
         select(User).where(User.username == "driver1")
     )
     driver = result.scalar_one_or_none()
@@ -104,11 +103,11 @@ async def seed_vehicles(session):
         vehicle = Vehicle(**vehicle_data)
         session.add(vehicle)
     
-    await session.commit()
+    session.commit()
     logger.info(f"  ✓ Created {len(vehicles_data)} vehicles")
 
 
-async def seed_model_versions(session):
+def seed_model_versions(session):
     """Create AI model version records"""
     logger.info("Seeding AI model versions...")
     
@@ -143,38 +142,40 @@ async def seed_model_versions(session):
         model = ModelVersion(**model_data)
         session.add(model)
     
-    await session.commit()
+    session.commit()
     logger.info(f"  ✓ Created {len(models_data)} model versions")
 
 
-async def main():
+def main():
     """Main seed function"""
     logger.info("=" * 80)
     logger.info("ADAS Database Seeding")
     logger.info("=" * 80)
     
-    async with async_session_maker() as session:
-        try:
-            await seed_users(session)
-            await seed_vehicles(session)
-            await seed_model_versions(session)
-            
-            logger.info("")
-            logger.info("=" * 80)
-            logger.info("Database seeding complete!")
-            logger.info("=" * 80)
-            logger.info("")
-            logger.info("Test credentials:")
-            logger.info("  Admin:   admin / admin123")
-            logger.info("  Analyst: analyst / analyst123")
-            logger.info("  Driver:  driver1 / driver123")
-            logger.info("")
-            
-        except Exception as e:
-            logger.error(f"✗ Seeding failed: {e}")
-            await session.rollback()
-            raise
+    session = sync_session_factory()
+    try:
+        seed_users(session)
+        seed_vehicles(session)
+        seed_model_versions(session)
+        
+        logger.info("")
+        logger.info("=" * 80)
+        logger.info("Database seeding complete!")
+        logger.info("=" * 80)
+        logger.info("")
+        logger.info("Test credentials:")
+        logger.info("  Admin:   admin / Admin123!@#")
+        logger.info("  Analyst: analyst / analyst123")
+        logger.info("  Driver:  driver1 / driver123")
+        logger.info("")
+        
+    except Exception as e:
+        logger.error(f"✗ Seeding failed: {e}")
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
