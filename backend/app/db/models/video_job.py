@@ -4,11 +4,20 @@ VideoJob Model
 Represents video processing jobs.
 """
 
+import enum
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Text
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 
 from ..base import Base
+
+
+class JobStatus(str, enum.Enum):
+    """Video job processing status"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class VideoJob(Base):
