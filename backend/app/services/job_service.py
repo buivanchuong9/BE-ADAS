@@ -186,17 +186,19 @@ class JobService:
                     # Success
                     await repo.update_status(job_id, JobStatus.COMPLETED)
                     
-                    # Update additional fields
+                    # Update additional fields that exist in the model
                     job = await repo.get_by_job_id(job_id)
                     if job:
-                        await repo.update(
-                            job.id,
-                            output_path=result.get('output_path'),
-                            events_detected=len(result.get('events', [])),
-                            processing_time_seconds=result.get('processing_time'),
-                            total_frames=result.get('stats', {}).get('total_frames'),
-                            processed_frames=result.get('stats', {}).get('processed_frames')
-                        )
+                        update_data = {}
+                        
+                        if result.get('output_path'):
+                            update_data['result_path'] = result.get('output_path')
+                        
+                        if result.get('processing_time'):
+                            update_data['processing_time_seconds'] = int(result.get('processing_time'))
+                        
+                        if update_data:
+                            await repo.update(job.id, **update_data)
                     
                     # Store events in database
                     await self._store_events(session, job_id, result.get('events', []))

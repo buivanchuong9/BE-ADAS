@@ -74,17 +74,15 @@ class VideoJobRepository(BaseRepository[VideoJob]):
         processed_frames: int,
         total_frames: int
     ) -> Optional[VideoJob]:
-        """Update job progress"""
+        """Update job progress - simplified to only update progress_percent"""
         job = await self.get_by_job_id(job_id)
         if not job:
             return None
         
-        progress_percent = (processed_frames / total_frames * 100) if total_frames > 0 else 0
+        progress_percent = int((processed_frames / total_frames * 100)) if total_frames > 0 else 0
         
         return await self.update(
             job.id,
-            processed_frames=processed_frames,
-            total_frames=total_frames,
             progress_percent=progress_percent
         )
     

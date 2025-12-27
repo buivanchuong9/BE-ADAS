@@ -30,34 +30,30 @@ class VideoJobResponse(BaseModel):
     """Schema for video job response"""
     id: int
     job_id: str
-    filename: str
-    video_type: str
+    
+    # Video details
+    video_filename: str
+    video_path: str
+    video_size_mb: Optional[float] = None
+    duration_seconds: Optional[int] = None
+    fps: Optional[float] = None
+    resolution: Optional[str] = None
+    
+    # Processing
     status: str
-    device: str
-    trip_id: Optional[int] = None
-    
-    # Progress
-    total_frames: Optional[int] = None
-    processed_frames: int
-    progress_percent: float
-    
-    # Results
-    events_detected: int
-    processing_time_seconds: Optional[float] = None
-    
-    # Paths
-    input_path: Optional[str] = None
-    output_path: Optional[str] = None
-    
-    # Error
+    progress_percent: int = 0
+    result_path: Optional[str] = None
     error_message: Optional[str] = None
-    retry_count: int
+    processing_time_seconds: Optional[int] = None
+    
+    # Foreign keys
+    trip_id: Optional[int] = None
     
     # Timestamps
     created_at: datetime
+    updated_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    updated_at: datetime
     
     class Config:
         from_attributes = True

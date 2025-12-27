@@ -85,6 +85,28 @@ async def get_db() -> AsyncGenerator[AsyncSessionWrapper, None]:
         await async_wrapper.close()
 
 
+def async_session_maker():
+    """
+    Create a new async session wrapper.
+    Use this for background tasks that need their own session.
+    
+    Returns:
+        AsyncSessionWrapper context manager
+    """
+    class SessionContextManager:
+        async def __aenter__(self):
+            self.session = sync_session_factory()
+            self.wrapper = AsyncSessionWrapper(self.session)
+            return self.wrapper
+        
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            if exc_type:
+                await self.wrapper.rollback()
+            await self.wrapper.close()
+    
+    return SessionContextManager()
+
+
 async def init_db():
     """Initialize database (create tables if not exist)"""
     from .base import Base
