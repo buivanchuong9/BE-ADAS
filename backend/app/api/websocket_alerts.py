@@ -35,7 +35,7 @@ Date: 2025-12-26 (Phase 6)
 """
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Optional
 import logging
 import json
 import asyncio

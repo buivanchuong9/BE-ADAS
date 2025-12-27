@@ -7,10 +7,13 @@ Handles video upload, validation, and storage.
 import os
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 import logging
 import aiofiles
 from sqlalchemy.ext.asyncio import AsyncSession
+
+if TYPE_CHECKING:
+    from fastapi import UploadFile
 
 from ..core.config import settings
 from ..core.exceptions import ValidationError
@@ -30,8 +33,14 @@ class VideoService:
     # Max file size in bytes
     MAX_SIZE_BYTES = settings.MAX_VIDEO_SIZE_MB * 1024 * 1024
     
-    def __init__(self):
-        """Initialize video service"""
+    def __init__(self, session: AsyncSession):
+        """Initialize video service
+        
+        Args:
+            session: Database session
+        """
+        self.session = session
+        
         # Create storage directories
         self.raw_dir = Path(settings.RAW_VIDEO_DIR)
         self.processed_dir = Path(settings.PROCESSED_VIDEO_DIR)
@@ -43,17 +52,18 @@ class VideoService:
         
         logger.info(f"VideoService initialized with storage: {self.raw_dir}")
     
-    def validate_video(self, filename: str, file_size: int) -> None:
+    async def validate_video(self, file: 'UploadFile') -> None:
         """
         Validate video file.
         
         Args:
-            filename: Video filename
-            file_size: File size in bytes
+            file: Uploaded video file
             
         Raises:
             ValidationError: If validation fails
         """
+        filename = file.filename
+        
         # Check extension
         ext = Path(filename).suffix.lower()
         if ext not in self.ALLOWED_EXTENSIONS:
@@ -61,6 +71,11 @@ class VideoService:
                 f"Invalid video format. Allowed: {', '.join(self.ALLOWED_EXTENSIONS)}",
                 details={"filename": filename, "extension": ext}
             )
+        
+        # Get file size by seeking to end
+        await file.seek(0, 2)
+        file_size = await file.tell()
+        await file.seek(0)
         
         # Check size
         if file_size > self.MAX_SIZE_BYTES:
@@ -75,21 +90,21 @@ class VideoService:
     
     async def create_job(
         self,
-        session: AsyncSession,
         filename: str,
         video_type: str = "dashcam",
         trip_id: Optional[int] = None,
-        device: str = "cpu"
+        device: str = "cpu",
+        user_id: Optional[int] = None
     ) -> VideoJobResponse:
         """
         Create a new video processing job.
         
         Args:
-            session: Database session
             filename: Video filename
             video_type: "dashcam" or "in_cabin"
             trip_id: Optional trip ID
             device: "cpu" or "cuda"
+            user_id: Optional user ID
             
         Returns:
             Created job
@@ -102,7 +117,7 @@ class VideoService:
         output_path = str(self.processed_dir / f"{job_id_uuid}_result.mp4")
         
         # Create job record
-        repo = VideoJobRepository(session)
+        repo = VideoJobRepository(self.session)
         job_data = {
             "job_id": job_id_uuid,
             "trip_id": trip_id,
@@ -121,38 +136,39 @@ class VideoService:
     
     async def save_uploaded_video(
         self,
-        session: AsyncSession,
         job_id: str,
-        file_content: bytes
+        file: 'UploadFile'
     ) -> str:
         """
         Save uploaded video file.
         
         Args:
-            session: Database session
             job_id: Job ID
-            file_content: Video file bytes
+            file: Uploaded video file
             
         Returns:
             Path to saved file
         """
-        repo = VideoJobRepository(session)
+        repo = VideoJobRepository(self.session)
         job = await repo.get_by_job_id(job_id)
         
         if not job:
             raise ValidationError(f"Job {job_id} not found")
         
         # Generate unique filename
-        ext = Path(job.filename).suffix
+        ext = Path(job.video_filename).suffix
         safe_filename = f"{job_id}{ext}"
         input_path = self.raw_dir / safe_filename
+        
+        # Read file content
+        file_content = await file.read()
         
         # Save file asynchronously
         async with aiofiles.open(input_path, 'wb') as f:
             await f.write(file_content)
         
         # Update job with input path
-        await repo.update(job.id, input_path=str(input_path))
+        await repo.update(job.id, video_path=str(input_path))
         
         logger.info(f"Saved video for job {job_id} to {input_path}")
         
@@ -160,20 +176,18 @@ class VideoService:
     
     async def get_job(
         self,
-        session: AsyncSession,
         job_id: str
     ) -> Optional[VideoJobResponse]:
         """
         Get job by job_id.
         
         Args:
-            session: Database session
             job_id: Job ID
             
         Returns:
             Job or None
         """
-        repo = VideoJobRepository(session)
+        repo = VideoJobRepository(self.session)
         job = await repo.get_by_job_id(job_id)
         
         if not job:

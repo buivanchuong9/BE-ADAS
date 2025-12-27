@@ -25,6 +25,7 @@ from app.services.video_service import VideoService
 from app.services.job_service import get_job_service
 from app.schemas.video import VideoJobResponse, VideoJobCreate
 from app.schemas.event import SafetyEventResponse
+from app.core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +70,10 @@ async def upload_video(
         
         # Create job in database
         job = await video_service.create_job(
-            user_id=1,  # TODO: Get from authentication
             filename=file.filename,
             video_type=video_type,
-            device=device
+            device=device,
+            user_id=1  # TODO: Get from authentication
         )
         
         # Save uploaded file
@@ -80,7 +81,14 @@ async def upload_video(
         
         # Submit to background processing
         job_service = get_job_service()
-        await job_service.submit_job(job.job_id, db)
+        await job_service.submit_job(
+            session=db,
+            job_id=job.job_id,
+            input_path=job.video_path,
+            output_path=job.result_path,
+            video_type=video_type,
+            device=device
+        )
         
         logger.info(f"Started processing job {job.job_id}")
         
@@ -88,6 +96,9 @@ async def upload_video(
     
     except HTTPException:
         raise
+    except ValidationError as e:
+        logger.warning(f"Validation failed: {e.message}")
+        raise HTTPException(status_code=400, detail=e.message)
     except Exception as e:
         logger.error(f"Upload failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
@@ -164,7 +175,7 @@ async def download_result(
         
         # Get output path
         video_service = VideoService(db)
-        output_path = video_service.get_output_path(job_id)
+        output_path = Path(video_service.get_output_path(job_id))
         
         if not output_path.exists():
             raise HTTPException(status_code=404, detail="Result video not found")
@@ -216,11 +227,12 @@ async def delete_job(
         # Cleanup files
         video_service = VideoService(db)
         try:
-            input_path = Path(job.input_path)
-            if input_path.exists():
+            input_path = Path(job.video_path) if job.video_path else None
+            if input_path and input_path.exists():
                 input_path.unlink()
             
-            output_path = video_service.get_output_path(job.job_id)
+            output_path_str = video_service.get_output_path(job.job_id)
+            output_path = Path(output_path_str)
             if output_path.exists():
                 output_path.unlink()
         except Exception as e:
