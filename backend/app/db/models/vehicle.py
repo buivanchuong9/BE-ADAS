@@ -37,7 +37,6 @@ class Vehicle(Base):
     # Relationships
     owner = relationship("User", back_populates="vehicles")
     trips = relationship("Trip", back_populates="vehicle", cascade="all, delete-orphan")
-    safety_events = relationship("SafetyEvent", back_populates="vehicle", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Vehicle(id={self.id}, plate='{self.license_plate}', model='{self.model}')>"
