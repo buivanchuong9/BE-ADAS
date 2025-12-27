@@ -135,7 +135,7 @@ BEGIN
         location_lat FLOAT,
         location_lng FLOAT,
         speed_kmh FLOAT,
-        metadata NVARCHAR(MAX), -- JSON data
+        meta_data NVARCHAR(MAX), -- JSON data
         snapshot_path NVARCHAR(500),
         created_at DATETIME NOT NULL DEFAULT GETDATE()
     );
@@ -204,7 +204,7 @@ BEGIN
         is_acknowledged BIT DEFAULT 0,
         acknowledged_at DATETIME,
         acknowledged_by INT FOREIGN KEY REFERENCES users(id) ON DELETE SET NULL,
-        metadata NVARCHAR(MAX), -- JSON data
+        meta_data NVARCHAR(MAX), -- JSON data
         created_at DATETIME NOT NULL DEFAULT GETDATE()
     );
     PRINT 'Table alerts created';

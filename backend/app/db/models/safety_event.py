@@ -59,7 +59,7 @@ class SafetyEvent(Base):
     speed_kmh = Column(Float, nullable=True)
     
     # Metadata (JSON string)
-    metadata = Column(Text, nullable=True)
+    meta_data = Column(Text, nullable=True)
     snapshot_path = Column(String(500), nullable=True)
     
     # Timestamps

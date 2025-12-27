@@ -50,7 +50,7 @@ class Alert(Base):
     acknowledged_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     
     # Metadata (JSON string in NVARCHAR(MAX))
-    metadata = Column(Text, nullable=True)
+    meta_data = Column(Text, nullable=True)
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
