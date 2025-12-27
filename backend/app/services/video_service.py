@@ -72,10 +72,14 @@ class VideoService:
                 details={"filename": filename, "extension": ext}
             )
         
-        # Get file size by seeking to end
-        await file.seek(0, 2)
-        file_size = await file.tell()
-        await file.seek(0)
+        # Get file size - FastAPI UploadFile exposes size attribute or we read content
+        if hasattr(file, 'size') and file.size is not None:
+            file_size = file.size
+        else:
+            # Read file to get size, then seek back
+            content = await file.read()
+            file_size = len(content)
+            await file.seek(0)
         
         # Check size
         if file_size > self.MAX_SIZE_BYTES:
