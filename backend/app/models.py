@@ -2,7 +2,7 @@
 Data models and in-memory storage for ADAS API
 This module contains Pydantic models and in-memory storage for testing
 """
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 from enum import Enum
@@ -108,6 +108,8 @@ class DriverStatusRequest(BaseModel):
 
 
 class StreamStartRequest(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     source: Literal["webcam", "video"]
     model_id: str = "yolo11n"
     video_id: Optional[int] = None
@@ -231,6 +233,8 @@ class DriverStatus(BaseModel):
 
 
 class StreamSession(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+    
     session_id: str
     source: str
     model_id: str
