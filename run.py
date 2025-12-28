@@ -187,13 +187,7 @@ def run_server(host="0.0.0.0", port=8000, reload=True):
     print("\n⚠️  Nhấn Ctrl+C để dừng server\n")
     print("="*60)
     
-    # Lưu thư mục hiện tại
-    original_dir = os.getcwd()
-    
-    # Chuyển vào thư mục backend
-    os.chdir(backend_dir)
-    
-    # Chạy uvicorn
+    # Build uvicorn command
     cmd = [
         sys.executable, "-m", "uvicorn",
         "app.main:app",
@@ -207,17 +201,14 @@ def run_server(host="0.0.0.0", port=8000, reload=True):
         cmd.append("--reload")
     
     try:
-        # Chạy với shell=False để tránh shell expansion
-        subprocess.run(cmd, shell=False)
+        # Run from backend directory using cwd parameter
+        subprocess.run(cmd, cwd=str(backend_dir), shell=False)
     except KeyboardInterrupt:
         print("\n\n👋 Server đã dừng. Bye!")
     except Exception as e:
         print(f"\n❌ Lỗi khi chạy server: {e}")
         print("Thử chạy thủ công:")
         print(f"  cd backend && uvicorn app.main:app --host {host} --port {port}")
-    finally:
-        # Quay lại thư mục gốc
-        os.chdir(original_dir)
 
 
 def main():
