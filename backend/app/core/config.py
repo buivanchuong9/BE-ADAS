@@ -77,8 +77,20 @@ class Settings(BaseSettings):
     LOG_ROTATION: str = "daily"
     LOG_RETENTION_DAYS: int = 30
     
-    # CORS - Can be set as comma-separated string in .env or as list
-    CORS_ORIGINS: str = "https://adas-api.aiotlab.edu.vn,https://adas-api.aiotlab.edu.vn:52000,http://localhost:3000,http://localhost:8080"
+    # CORS - Production domain with all variations (http/https, with/without port)
+    # IMPORTANT: Must include all possible Origin header values browsers might send
+    CORS_ORIGINS: str = (
+        "https://adas-api.aiotlab.edu.vn,"
+        "https://adas-api.aiotlab.edu.vn:52000,"
+        "http://adas-api.aiotlab.edu.vn,"
+        "http://adas-api.aiotlab.edu.vn:52000,"
+        "http://localhost:52000,"
+        "http://localhost:3000,"
+        "http://localhost:8080,"
+        "http://127.0.0.1:52000,"
+        "http://127.0.0.1:3000,"
+        "http://127.0.0.1:8080"
+    )
     
     @property
     def cors_origins_list(self) -> List[str]:

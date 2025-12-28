@@ -196,6 +196,8 @@ def run_server(host="0.0.0.0", port=8000, reload=True):
         "app.main:app",
         "--host", host,
         "--port", str(port),
+        "--proxy-headers",  # Trust X-Forwarded-* headers from reverse proxy
+        "--forwarded-allow-ips", "*",  # Allow all proxy IPs
     ]
     
     if reload:

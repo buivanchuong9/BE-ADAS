@@ -13,7 +13,7 @@ Author: Senior ADAS Engineer
 Date: 2025-12-26
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -145,14 +145,41 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Configure CORS
+# Configure CORS - PRODUCTION SAFE
+# CRITICAL: allow_credentials=False is required for Swagger UI file uploads to work
+# When credentials=True, browsers enforce strict CORS checks that block multipart uploads
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
-    allow_credentials=True,
+    allow_origins=[
+        # Production domain (all variations)
+        "https://adas-api.aiotlab.edu.vn",
+        "https://adas-api.aiotlab.edu.vn:52000",
+        "http://adas-api.aiotlab.edu.vn",
+        "http://adas-api.aiotlab.edu.vn:52000",
+        # Development
+        "http://localhost:52000",
+        "http://localhost:3000",
+        "http://localhost:8080",
+        "http://127.0.0.1:52000",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080",
+    ],
+    allow_credentials=False,  # MUST be False for file uploads to work in Swagger UI
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],  # Allow browsers to read all response headers
 )
+
+# Add request logging middleware for debugging
+@app.middleware("http")
+async def log_requests(request, call_next):
+    """Log all incoming requests for debugging production issues"""
+    logger.info(f"📨 {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
+    logger.debug(f"Headers: Origin={request.headers.get('origin')}, Content-Type={request.headers.get('content-type')}")
+    response = await call_next(request)
+    logger.debug(f"Response: {response.status_code}")
+    return response
+
 
 # Include routers
 app.include_router(video_router)
@@ -204,11 +231,14 @@ if __name__ == "__main__":
     import uvicorn
     
     # Production: https://adas-api.aiotlab.edu.vn/ on port 52000
+    # CRITICAL: proxy_headers=True required for reverse proxy (Nginx/IIS)
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
         port=52000,
         reload=True,
-        log_level="info"
+        log_level="info",
+        proxy_headers=True,  # Trust X-Forwarded-* headers from reverse proxy
+        forwarded_allow_ips="*",  # Allow all proxy IPs (configure specific IPs in production)
     )
 
