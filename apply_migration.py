@@ -10,11 +10,6 @@ import pyodbc
 import sys
 from pathlib import Path
 
-# Add backend to path
-sys.path.insert(0, str(Path(__file__).parent / "backend"))
-
-from backend.app.core.config import settings
-
 def run_migration():
     """Apply migration to add missing columns to video_jobs table"""
     
@@ -36,15 +31,23 @@ def run_migration():
     batches = [batch.strip() for batch in migration_sql.split('GO') if batch.strip()]
     
     try:
-        # Connect to database
-        conn_str = settings.database_url.replace('mssql+pyodbc://', '')
-        print(f"\nConnecting to database...")
-        print(f"Connection: {conn_str.split('@')[1] if '@' in conn_str else 'localhost'}")
+        # Simple connection string for Windows SQL Server
+        conn_str = (
+            'DRIVER={ODBC Driver 17 for SQL Server};'
+            'SERVER=localhost,1433;'
+            'DATABASE=adas_production;'
+            'UID=sa;'
+            'PWD=YourStrongPassword123;'
+            'TrustServerCertificate=yes;'
+        )
         
-        conn = pyodbc.connect(conn_str)
+        print(f"\nConnecting to SQL Server on localhost:1433...")
+        print(f"Database: adas_production\n")
+        
+        conn = pyodbc.connect(conn_str, timeout=30)
         cursor = conn.cursor()
         
-        print(f"\nExecuting {len(batches)} SQL batches...\n")
+        print(f"Executing {len(batches)} SQL batches...\n")
         
         for i, batch in enumerate(batches, 1):
             if not batch or batch.startswith('--'):
@@ -53,18 +56,20 @@ def run_migration():
             try:
                 cursor.execute(batch)
                 conn.commit()
-                
-                # Get any print messages
-                while cursor.nextset():
-                    pass
+                print(f"✓ Batch {i} executed successfully")
                     
             except Exception as e:
-                print(f"Batch {i} warning: {e}")
-                conn.rollback()
+                error_msg = str(e)
+                if "already exists" in error_msg.lower():
+                    print(f"⊙ Batch {i}: Column already exists (OK)")
+                else:
+                    print(f"✗ Batch {i} error: {e}")
+                    conn.rollback()
         
         print("\n" + "=" * 60)
         print("✓ Migration completed successfully!")
         print("=" * 60)
+        print("\nYou can now start the server with: python run.py")
         
         cursor.close()
         conn.close()
@@ -73,8 +78,11 @@ def run_migration():
         
     except Exception as e:
         print(f"\n✗ Migration failed: {e}")
-        print("\nPlease run the migration_fix_video_jobs.sql file manually")
-        print("in SQL Server Management Studio or using sqlcmd.")
+        print("\nTroubleshooting:")
+        print("1. Make sure SQL Server is running")
+        print("2. Check if ODBC Driver 17 for SQL Server is installed")
+        print("3. Verify SQL Server credentials (default: sa/YourStrongPassword123)")
+        print("4. Or run migration_fix_video_jobs.sql manually in SSMS")
         return False
 
 

@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     DB_NAME: str = "adas_production"
     DB_USER: str = "sa"
     DB_PASSWORD: str = "YourStrong@Passw0rd"
-    DB_DRIVER: str = "ODBC Driver 17 for SQL Server"
+    DB_DRIVER: str = "ODBC Driver 18 for SQL Server"
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False  # Set True for SQL query logging
@@ -93,36 +93,46 @@ class Settings(BaseSettings):
     
     @property
     def database_url(self) -> str:
-        """Generate SQLAlchemy database URL for SQL Server"""
+        """
+        Generate SQLAlchemy database URL for SQL Server.
+        
+        ODBC Driver 18 requires explicit SSL/TLS configuration:
+        - TrustServerCertificate=yes: Required for local/dev environments without valid SSL certs
+        - For production: Use proper SSL certificates and set TrustServerCertificate=no
+        
+        Returns:
+            Database connection URL with ODBC Driver 18 settings
+        """
         # URL-encode password for special characters
         from urllib.parse import quote_plus
         
         password_encoded = quote_plus(self.DB_PASSWORD)
         driver_encoded = quote_plus(self.DB_DRIVER)
         
+        # ODBC Driver 18 connection string with SSL settings
         return (
             f"mssql+pyodbc://{self.DB_USER}:{password_encoded}"
             f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
             f"?driver={driver_encoded}"
-            f"&TrustServerCertificate=yes"
+            f"&TrustServerCertificate=yes"  # Required for ODBC Driver 18
+            f"&Encrypt=yes"  # Explicit encryption setting
         )
     
     @property
     def async_database_url(self) -> str:
-        """Generate async database URL - Use SQL Server for production"""
-        # Always use SQL Server with pyodbc (sync driver works with async)
-        from urllib.parse import quote_plus
+        """
+        Generate async database URL - Uses sync driver (pyodbc) with async wrapper.
         
-        password_encoded = quote_plus(self.DB_PASSWORD)
-        driver_encoded = quote_plus(self.DB_DRIVER)
+        Note: We use mssql+pyodbc (sync driver) instead of mssql+aiodbc because:
+        - More stable and mature
+        - Better compatibility with ODBC Driver 18
+        - Wrapped in async context via AsyncSessionWrapper
         
-        # Use mssql+pyodbc instead of mssql+aiodbc (more stable)
-        return (
-            f"mssql+pyodbc://{self.DB_USER}:{password_encoded}"
-            f"@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
-            f"?driver={driver_encoded}"
-            f"&TrustServerCertificate=yes"
-        )
+        Returns:
+            Same as database_url (sync driver used in async context)
+        """
+        # Use same configuration as sync URL
+        return self.database_url
 
 
 @lru_cache()
