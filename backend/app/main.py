@@ -13,7 +13,7 @@ Author: Senior ADAS Engineer
 Date: 2025-12-26
 """
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -142,7 +142,23 @@ app = FastAPI(
     version=settings.APP_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
-    lifespan=lifespan
+    lifespan=lifespan,
+    # 🔧 CRITICAL FIX: Tell Swagger UI the correct server URL for Cloudflare
+    servers=[
+        {
+            "url": "https://adas-api.aiotlab.edu.vn",
+            "description": "Production server (Cloudflare proxy)"
+        },
+        {
+            "url": "http://localhost:52000",
+            "description": "Local development server"
+        }
+    ],
+    # Optimize Swagger UI for production use
+    swagger_ui_parameters={
+        "defaultModelsExpandDepth": -1,  # Hide schemas by default for cleaner UI
+        "tryItOutEnabled": True,
+    }
 )
 
 # Configure CORS - PRODUCTION SAFE
@@ -170,14 +186,39 @@ app.add_middleware(
     expose_headers=["*"],  # Allow browsers to read all response headers
 )
 
-# Add request logging middleware for debugging
+# Add request logging middleware with Cloudflare support
 @app.middleware("http")
 async def log_requests(request, call_next):
-    """Log all incoming requests for debugging production issues"""
-    logger.info(f"📨 {request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
-    logger.debug(f"Headers: Origin={request.headers.get('origin')}, Content-Type={request.headers.get('content-type')}")
+    """
+    Log all incoming requests with Cloudflare-specific headers.
+    Captures CF-Ray for support debugging and real client IP.
+    """
+    # Get real client IP from Cloudflare headers
+    cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    client_ip = cf_connecting_ip or x_forwarded_for or (request.client.host if request.client else "unknown")
+    
+    # Get Cloudflare Ray ID for support debugging
+    cf_ray = request.headers.get("CF-Ray", "N/A")
+    
+    # Log incoming request with Cloudflare info
+    logger.info(
+        f"📨 {request.method} {request.url.path} | "
+        f"Client: {client_ip} | "
+        f"CF-Ray: {cf_ray}"
+    )
+    logger.debug(
+        f"Headers: Origin={request.headers.get('origin')}, "
+        f"Content-Type={request.headers.get('content-type')}, "
+        f"Content-Length={request.headers.get('content-length', 'unknown')}"
+    )
+    
+    # Process request
     response = await call_next(request)
-    logger.debug(f"Response: {response.status_code}")
+    
+    # Log response
+    logger.info(f"✅ {response.status_code} for {request.method} {request.url.path}")
+    
     return response
 
 
@@ -219,12 +260,80 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint"""
+async def health_check(request: Request):
+    """
+    Health check endpoint with Cloudflare detection.
+    Returns server status and Cloudflare connection info for debugging.
+    """
+    # Detect if request came through Cloudflare
+    is_cloudflare = "CF-Ray" in request.headers
+    cf_ray = request.headers.get("CF-Ray", "N/A")
+    cf_connecting_ip = request.headers.get("CF-Connecting-IP", "N/A")
+    
     return {
         "status": "healthy",
-        "service": "ADAS Video Analysis API"
+        "service": "ADAS Video Analysis API",
+        "version": "2.0.0",
+        "cloudflare": {
+            "detected": is_cloudflare,
+            "cf_ray": cf_ray,
+            "client_ip": cf_connecting_ip
+        },
+        "server": {
+            "host": request.url.hostname,
+            "port": request.url.port,
+            "scheme": request.url.scheme
+        }
     }
+
+
+@app.post("/debug/upload-test")
+async def debug_upload_test(file: UploadFile = File(...)):
+    """
+    Minimal upload endpoint for debugging Cloudflare issues.
+    Returns immediately without processing to verify uploads reach FastAPI.
+    
+    Use this to test:
+    1. If uploads reach the server at all
+    2. Cloudflare timeout behavior
+    3. File upload configuration
+    """
+    import time
+    from fastapi import UploadFile, File
+    
+    start_time = time.time()
+    
+    try:
+        # Read file metadata only (don't save to disk)
+        filename = file.filename
+        content_type = file.content_type
+        
+        # Read first 1KB to verify file is readable
+        chunk = await file.read(1024)
+        file_size_sample = len(chunk)
+        
+        # Calculate elapsed time
+        elapsed = time.time() - start_time
+        
+        logger.info(f"🧪 Debug upload test: {filename} ({file_size_sample}+ bytes) in {elapsed:.2f}s")
+        
+        return {
+            "status": "success",
+            "message": "✅ Upload test successful - file reached FastAPI",
+            "filename": filename,
+            "content_type": content_type,
+            "bytes_read": file_size_sample,
+            "elapsed_seconds": round(elapsed, 3),
+            "timestamp": time.time(),
+            "note": "This endpoint does not save or process the file"
+        }
+    except Exception as e:
+        logger.error(f"❌ Debug upload test failed: {e}", exc_info=True)
+        return {
+            "status": "error",
+            "message": str(e),
+            "elapsed_seconds": round(time.time() - start_time, 3)
+        }
 
 
 if __name__ == "__main__":
