@@ -176,7 +176,7 @@ def init_database():
 
 
 def run_server(host="0.0.0.0", port=8000, reload=True):
-    """Chạy Uvicorn server"""
+    """Chạy Uvicorn server với cấu hình production-safe"""
     print(f"\n🚀 Đang khởi động ADAS Backend Server...")
     print(f"📡 Host: {host}")
     print(f"🔌 Port: {port}")
@@ -187,28 +187,54 @@ def run_server(host="0.0.0.0", port=8000, reload=True):
     print("\n⚠️  Nhấn Ctrl+C để dừng server\n")
     print("="*60)
     
-    # Build uvicorn command
+    # Ensure backend_dir is absolute path (prevents any relative path issues)
+    backend_path = Path(backend_dir).resolve()
+    
+    # Build uvicorn command as strict list (NO wildcards, NO shell expansion)
+    # Each argument is explicitly typed as string to prevent any injection
     cmd = [
-        sys.executable, "-m", "uvicorn",
-        "app.main:app",
-        "--host", host,
-        "--port", str(port),
-        "--proxy-headers",  # Trust X-Forwarded-* headers from reverse proxy
-        "--forwarded-allow-ips", "*",  # Allow all proxy IPs
+        str(sys.executable),           # Python interpreter path
+        "-m",                           # Module flag
+        "uvicorn",                      # Module name
+        "app.main:app",                 # Application path
+        "--host",                       # Host flag
+        str(host),                      # Host value (ensure string)
+        "--port",                       # Port flag
+        str(port),                      # Port value (ensure string)
+        "--proxy-headers",              # Enable proxy header trust for Cloudflare
     ]
     
+    # Add reload flag only in development mode
     if reload:
         cmd.append("--reload")
     
+    # Debug: Print exact command that will be executed
+    print("\n🔧 Uvicorn command:")
+    print(f"   Working directory: {backend_path}")
+    print(f"   Command: {' '.join(cmd)}")
+    print("="*60 + "\n")
+    
     try:
-        # Run from backend directory using cwd parameter
-        subprocess.run(cmd, cwd=str(backend_dir), shell=False)
+        # Execute uvicorn with explicit working directory
+        # shell=False ensures NO shell expansion or wildcard interpretation
+        # cwd is absolute path to prevent any ambiguity
+        subprocess.run(
+            cmd,
+            cwd=str(backend_path),
+            shell=False,
+            check=False  # Don't raise exception on non-zero exit
+        )
     except KeyboardInterrupt:
         print("\n\n👋 Server đã dừng. Bye!")
+    except FileNotFoundError as e:
+        print(f"\n❌ Không tìm thấy Python hoặc uvicorn: {e}")
+        print("\n💡 Kiểm tra:")
+        print(f"  1. Python: {sys.executable}")
+        print(f"  2. Uvicorn: pip show uvicorn")
     except Exception as e:
         print(f"\n❌ Lỗi khi chạy server: {e}")
-        print("Thử chạy thủ công:")
-        print(f"  cd backend && uvicorn app.main:app --host {host} --port {port}")
+        print("\n💡 Thử chạy thủ công:")
+        print(f"  cd backend && uvicorn app.main:app --host {host} --port {port} --proxy-headers")
 
 
 def main():
