@@ -1,135 +1,132 @@
 """
-Database Session Management
-============================
-Async SQLAlchemy session configuration with sync driver (pyodbc).
-Uses run_sync to execute sync operations in async context.
+Database Session Management - PostgreSQL v3.0
+==============================================
+Native async PostgreSQL with asyncpg driver.
 """
 
-from sqlalchemy import create_engine
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy.orm import sessionmaker
-from typing import AsyncGenerator
-import logging
 import asyncio
+import logging
+from typing import AsyncGenerator, Optional
+from contextlib import asynccontextmanager
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import (
+    AsyncSession, 
+    AsyncEngine,
+    create_async_engine, 
+    async_sessionmaker
+)
 
 from ..core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Create sync engine (pyodbc is sync driver)
-sync_engine = create_engine(
-    settings.database_url,  # Use sync URL
-    echo=settings.DB_ECHO,
-    pool_pre_ping=True,
-)
+# ============================================================
+# PostgreSQL Configuration
+# ============================================================
 
-# Create sync session factory
-sync_session_factory = sessionmaker(
-    sync_engine,
-    expire_on_commit=False,
-    autocommit=False,
-    autoflush=False,
-)
+_async_engine: Optional[AsyncEngine] = None
+_async_session_factory: Optional[async_sessionmaker] = None
 
 
-# Async wrapper for sync session
-class AsyncSessionWrapper:
-    """Wraps sync session to work with async code"""
-    
-    def __init__(self, sync_session):
-        self.sync_session = sync_session
-    
-    async def execute(self, statement):
-        """Execute statement in thread pool"""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.sync_session.execute, statement)
-    
-    async def commit(self):
-        """Commit in thread pool"""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self.sync_session.commit)
-    
-    async def rollback(self):
-        """Rollback in thread pool"""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self.sync_session.rollback)
-    
-    async def close(self):
-        """Close in thread pool"""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self.sync_session.close)
-    
-    def add(self, instance):
-        """Add instance (sync operation)"""
-        return self.sync_session.add(instance)
-    
-    async def refresh(self, instance):
-        """Refresh in thread pool"""
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, self.sync_session.refresh, instance)
-
-
-async def get_db() -> AsyncGenerator[AsyncSessionWrapper, None]:
-    """
-    Dependency for database sessions.
-    Returns async wrapper around sync session.
-    """
-    session = sync_session_factory()
-    async_wrapper = AsyncSessionWrapper(session)
-    try:
-        yield async_wrapper
-    except Exception:
-        await async_wrapper.rollback()
-        raise
-    finally:
-        await async_wrapper.close()
-
-
-def async_session_maker():
-    """
-    Create a new async session wrapper.
-    Use this for background tasks that need their own session.
-    
-    Returns:
-        AsyncSessionWrapper context manager
-    """
-    class SessionContextManager:
-        async def __aenter__(self):
-            self.session = sync_session_factory()
-            self.wrapper = AsyncSessionWrapper(self.session)
-            return self.wrapper
-        
-        async def __aexit__(self, exc_type, exc_val, exc_tb):
-            if exc_type:
-                await self.wrapper.rollback()
-            await self.wrapper.close()
-    
-    return SessionContextManager()
+def get_postgres_url() -> str:
+    """Generate PostgreSQL connection URL."""
+    if settings.PG_PASSWORD:
+        return (
+            f"postgresql+asyncpg://{settings.PG_USER}:{settings.PG_PASSWORD}"
+            f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_NAME}"
+        )
+    else:
+        return (
+            f"postgresql+asyncpg://{settings.PG_USER}"
+            f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_NAME}"
+        )
 
 
 async def init_db():
-    """Initialize database (create tables if not exist)"""
-    from .base import Base
-    # Import all models to register them with SQLAlchemy
-    from .models.user import User
-    from .models.vehicle import Vehicle
-    from .models.trip import Trip
-    from .models.video_job import VideoJob
-    from .models.safety_event import SafetyEvent
-    from .models.driver_state import DriverState
-    from .models.traffic_sign import TrafficSign
-    from .models.alert import Alert
-    from .models.model_version import ModelVersion
+    """Initialize PostgreSQL connection pool."""
+    global _async_engine, _async_session_factory
     
-    # Use sync engine to create tables
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, Base.metadata.create_all, sync_engine)
-    
-    logger.info("Database initialized successfully")
+    try:
+        _async_engine = create_async_engine(
+            get_postgres_url(),
+            echo=settings.DB_ECHO,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+            pool_timeout=30,
+            pool_recycle=3600,
+            pool_pre_ping=True,
+        )
+        
+        _async_session_factory = async_sessionmaker(
+            bind=_async_engine,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            autocommit=False,
+            autoflush=False,
+        )
+        
+        # Test connection
+        async with _async_engine.begin() as conn:
+            await conn.execute(text("SELECT 1"))
+        
+        logger.info("PostgreSQL connection initialized successfully")
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize PostgreSQL: {e}")
+        raise
 
 
 async def close_db():
-    """Close database connections"""
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, sync_engine.dispose)
-    logger.info("Database connections closed")
+    """Close PostgreSQL connection pool."""
+    global _async_engine
+    
+    if _async_engine:
+        await _async_engine.dispose()
+        _async_engine = None
+        logger.info("PostgreSQL connections closed")
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Dependency for PostgreSQL database sessions.
+    
+    Usage:
+        @router.post("/api/v3/videos")
+        async def upload(db: AsyncSession = Depends(get_db)):
+            ...
+    """
+    if not _async_session_factory:
+        raise RuntimeError("PostgreSQL not initialized. Call init_db() first.")
+    
+    async with _async_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+@asynccontextmanager
+async def async_session_maker():
+    """
+    Context manager for PostgreSQL sessions in background tasks.
+    
+    Usage:
+        async with async_session_maker() as session:
+            await session.execute(...)
+    """
+    if not _async_session_factory:
+        raise RuntimeError("PostgreSQL not initialized.")
+    
+    async with _async_session_factory() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+
