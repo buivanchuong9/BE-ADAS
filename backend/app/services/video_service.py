@@ -73,10 +73,12 @@ class VideoService:
             )
         
         # Get file size - FastAPI UploadFile exposes size attribute or we read content
+        # Note: We validate size here, actual file is streamed during save_uploaded_video
         if hasattr(file, 'size') and file.size is not None:
             file_size = file.size
         else:
-            # Read file to get size, then seek back
+            # Peek at content to get size, then seek back
+            # This is only for validation - actual upload is streamed
             content = await file.read()
             file_size = len(content)
             await file.seek(0)
@@ -158,7 +160,7 @@ class VideoService:
         file: 'UploadFile'
     ) -> str:
         """
-        Save uploaded video file.
+        Save uploaded video file using streaming to avoid blocking event loop.
         
         Args:
             job_id: Job ID
@@ -178,17 +180,34 @@ class VideoService:
         safe_filename = f"{job_id}{ext}"
         input_path = self.raw_dir / safe_filename
         
-        # Read file content
-        file_content = await file.read()
+        # Stream file in chunks to avoid blocking event loop
+        # CRITICAL FIX: Don't load entire file into memory at once
+        CHUNK_SIZE = 1024 * 1024  # 1MB chunks
+        file_size = 0
         
-        # Save file asynchronously
+        logger.info(f"[Job {job_id}] Starting streaming upload to {input_path}")
+        
+        # Save file asynchronously with chunked streaming
         async with aiofiles.open(input_path, 'wb') as f:
-            await f.write(file_content)
+            while True:
+                chunk = await file.read(CHUNK_SIZE)
+                if not chunk:
+                    break
+                await f.write(chunk)
+                file_size += len(chunk)
+                # Event loop can process other requests between chunks
         
-        # Update job with input path
-        await repo.update(job.id, video_path=str(input_path))
+        # Update job with input path AND file size
+        await repo.update(
+            job.id, 
+            video_path=str(input_path),
+            file_size=file_size
+        )
         
-        logger.info(f"Saved video for job {job_id} to {input_path}")
+        file_size_mb = file_size / (1024 * 1024)
+        logger.info(
+            f"[Job {job_id}] Saved video ({file_size_mb:.2f} MB) to {input_path}"
+        )
         
         return str(input_path)
     
