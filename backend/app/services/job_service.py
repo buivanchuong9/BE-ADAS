@@ -152,7 +152,8 @@ class JobService:
         """
         Callback when job completes.
         
-        Runs in event loop thread, can schedule async operations.
+        CRITICAL FIX: This runs in thread pool context, not event loop.
+        Must use loop.create_task() instead of asyncio.create_task().
         """
         # Remove from active jobs
         if job_id in self.active_jobs:
@@ -161,14 +162,28 @@ class JobService:
         try:
             result = future.result()
             
-            # Schedule async update to database
-            asyncio.create_task(self._update_job_result(job_id, result))
+            # CRITICAL FIX: Get event loop and schedule task properly
+            # asyncio.create_task() fails in thread pool callback
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(self._update_job_result(job_id, result))
+                logger.info(f"[Job {job_id}] Scheduled database update task")
+            except Exception as task_error:
+                logger.error(
+                    f"[Job {job_id}] Failed to schedule update task: {task_error}",
+                    exc_info=True
+                )
             
         except Exception as e:
             logger.error(f"[Job {job_id}] Future exception: {e}", exc_info=True)
-            asyncio.create_task(
-                self._update_job_error(job_id, str(e))
-            )
+            try:
+                loop = asyncio.get_event_loop()
+                loop.create_task(self._update_job_error(job_id, str(e)))
+            except Exception as task_error:
+                logger.error(
+                    f"[Job {job_id}] Failed to schedule error task: {task_error}",
+                    exc_info=True
+                )
     
     async def _update_job_result(self, job_id: str, result: Dict[str, Any]):
         """

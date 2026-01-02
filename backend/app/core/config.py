@@ -26,17 +26,24 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "ADAS Backend API"
-    APP_VERSION: str = "2.0.0"
+    APP_VERSION: str = "3.0.0"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"  # development or production
     
     # API
     API_BASE_URL: str = "http://localhost:52000"  # Base URL for API
-    API_V1_PREFIX: str = "/api/v1"
+    API_V1_PREFIX: str = "/api/v3"
     HOST: str = "0.0.0.0"
     PORT: int = 52000
     
-    # Database - SQL Server
+    # Database - PostgreSQL (Primary for v3.0)
+    PG_HOST: str = "localhost"
+    PG_PORT: int = 5432
+    PG_NAME: str = "adas_production"
+    PG_USER: str = "adas"
+    PG_PASSWORD: str = "adas_secure_password"
+    
+    # Database - SQL Server (Legacy fallback)
     DB_HOST: str = "localhost"
     DB_PORT: int = 1433
     DB_NAME: str = "adas_production"
@@ -46,6 +53,11 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False  # Set True for SQL query logging
+    
+    # v3.0 Storage Paths (production: /hdd3/adas/)
+    HDD3_ROOT: str = "/hdd3/adas"
+    VIDEOS_RAW_DIR: str = "/hdd3/adas/videos/raw"
+    VIDEOS_OUTPUT_DIR: str = "/hdd3/adas/videos/output"
     
     # Security & Authentication
     SECRET_KEY: str = "your-secret-key-change-in-production-min-32-characters-long"

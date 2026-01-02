@@ -9,12 +9,17 @@ pydantic==2.9.2
 pydantic-settings==2.5.2
 python-multipart==0.0.12  # REQUIRED for file uploads (UploadFile)
 
-# Database - SQL Server + SQLite
+# Database - PostgreSQL (v3.0 primary) + SQL Server (legacy fallback)
 sqlalchemy==2.0.25
-pyodbc==5.1.0
-aiosqlite==0.20.0  # For async SQLite (development)
+asyncpg==0.29.0              # Native async PostgreSQL driver
+psycopg2-binary==2.9.9       # Sync PostgreSQL for migrations
+pyodbc==5.1.0                # SQL Server (legacy fallback)
+aiosqlite==0.20.0            # For async SQLite (development)
 alembic==1.13.1
 greenlet==3.0.3
+
+# Process management (user-space)
+supervisor==4.2.5
 
 # Security
 python-jose[cryptography]==3.3.0

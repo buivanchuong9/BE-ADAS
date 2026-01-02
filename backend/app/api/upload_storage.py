@@ -68,8 +68,8 @@ async def upload_image(
     async with aiofiles.open(file_path, 'wb') as f:
         await f.write(content)
     
-    # Production URL
-    url = f"https://adas-api.aiotlab.edu.vn:52000/api/files/images/{year_month}/{new_filename}"
+    # Generate URL using configured base URL (supports both dev and production)
+    url = f"{settings.API_BASE_URL}/api/files/images/{year_month}/{new_filename}"
     
     return {
         "success": True,
@@ -144,8 +144,8 @@ async def upload_batch(
             async with aiofiles.open(file_path, 'wb') as f:
                 await f.write(content)
             
-            # Production URL
-            url = f"https://adas-api.aiotlab.edu.vn:52000/api/files/{file_type}/{year_month}/{new_filename}"
+            # Generate URL using configured base URL (supports both dev and production)
+            url = f"{settings.API_BASE_URL}/api/files/{file_type}/{year_month}/{new_filename}"
             
             uploaded.append({
                 "filename": file.filename,
