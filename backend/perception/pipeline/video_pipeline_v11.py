@@ -55,6 +55,13 @@ class VideoPipelineV11:
         """
         self.device = device
         self.video_type = video_type
+        self.events = []
+        
+        # PRODUCTION OPTIMIZATION: Batch size for GPU inference
+        # Process 4-8 frames at once for better GPU utilization
+        self.batch_size = 6 if device == "cuda" else 1
+        
+        logger.info(f"VideoPipelineV11 initializing (device={device}, type={video_type}, batch_size={self.batch_size})")
         
         # Log GPU info if using CUDA
         if device == "cuda":
@@ -142,6 +149,150 @@ class VideoPipelineV11:
         
         logger.info("Auto-detected: dashcam video")
         return "dashcam"
+    
+    def _process_frame_batch(
+        self,
+        frames: List[np.ndarray],
+        frame_indices: List[int],
+        timestamps: List[float],
+        video_writer,
+        fps: float,
+        total_frames: int,
+        progress_callback: Optional[callable],
+        start_time: datetime
+    ):
+        """
+        Process a batch of frames (PRODUCTION OPTIMIZATION).
+        Uses batch inference for better GPU utilization.
+        """
+        batch_size = len(frames)
+        
+        # Process based on video type
+        if self.video_type == "dashcam":
+            # Batch object detection (GPU optimized)
+            if hasattr(self.object_detector, 'detect_batch'):
+                batch_detections = self.object_detector.detect_batch(frames)
+            else:
+                batch_detections = [self.object_detector.detect(f) for f in frames]
+            
+            # Process each frame with batch detections
+            for i, (frame, frame_idx, timestamp) in enumerate(zip(frames, frame_indices, timestamps)):
+                detections = batch_detections[i]
+                result = self._process_dashcam_frame_with_detections(
+                    frame, frame_idx, timestamp, detections
+                )
+                
+                bgr_frame = cv2.cvtColor(result['annotated_frame'], cv2.COLOR_RGB2BGR)
+                video_writer.write(bgr_frame)
+                
+                if frame_idx % 30 == 0:
+                    self._log_progress(frame_idx, total_frames, start_time)
+                    if progress_callback:
+                        progress_callback(frame_idx, total_frames, len(self.events))
+        
+        else:  # in_cabin
+            for frame, frame_idx, timestamp in zip(frames, frame_indices, timestamps):
+                result = self.process_incabin_frame(frame, frame_idx, timestamp)
+                bgr_frame = cv2.cvtColor(result['annotated_frame'], cv2.COLOR_RGB2BGR)
+                video_writer.write(bgr_frame)
+                
+                if frame_idx % 30 == 0:
+                    self._log_progress(frame_idx, total_frames, start_time)
+                    if progress_callback:
+                        progress_callback(frame_idx, total_frames, len(self.events))
+    
+    def _process_dashcam_frame_with_detections(
+        self,
+        frame: np.ndarray,
+        frame_idx: int,
+        timestamp: float,
+        detections: List[Dict]
+    ) -> Dict:
+        """Process dashcam frame with pre-computed detections."""
+        height, width = frame.shape[:2]
+        annotated = frame.copy()
+        
+        # 1. Lane Detection
+        lane_result = self.lane_detector.process_frame(annotated)
+        annotated = lane_result['annotated_frame']
+        
+        if lane_result['is_departed']:
+            self.events.append({
+                "frame": frame_idx,
+                "time": round(timestamp, 2),
+                "type": "lane_departure",
+                "level": "warning",
+                "data": {"direction": lane_result['departure_direction'], "offset": lane_result['offset']}
+            })
+        
+        # 2. Object Detection (use pre-computed)
+        annotated = self.object_detector.draw_detections(annotated, detections)
+        front_vehicles = self.object_detector.filter_front_vehicles(detections, height)
+        closest = self.object_detector.get_closest_vehicle(front_vehicles)
+        
+        # 3. Distance & Collision
+        if closest:
+            dist_result = self.distance_estimator.estimate_distance(closest, height)
+            annotated = self.distance_estimator.draw_distance_info(
+                annotated, closest['bbox'], dist_result['distance_smoothed'],
+                dist_result['risk_level'], dist_result['ttc']
+            )
+            
+            if dist_result['risk_level'] in ['DANGER', 'CAUTION']:
+                self.events.append({
+                    "frame": frame_idx, "time": round(timestamp, 2),
+                    "type": "collision_risk", "level": dist_result['risk_level'].lower(),
+                    "data": {"distance": dist_result['distance_smoothed'], "ttc": dist_result['ttc'], 
+                            "vehicle_type": closest['class_name']}
+                })
+        
+        # 4. Traffic Signs
+        traffic_result = self.traffic_sign_detector.process_frame(annotated)
+        annotated = traffic_result['annotated_frame']
+        
+        if traffic_result['critical_signs']:
+            for sign in traffic_result['critical_signs']:
+                self.events.append({
+                    "frame": frame_idx, "time": round(timestamp, 2),
+                    "type": "traffic_sign", "level": "info",
+                    "data": {"sign_type": sign['sign_type'], "confidence": sign['confidence']}
+                })
+        
+        return {
+            "annotated_frame": annotated,
+            "lane": lane_result,
+            "objects": {"detections": detections, "front_vehicles": front_vehicles, "closest_vehicle": closest},
+            "traffic_signs": traffic_result
+        }
+    
+    def _log_progress(self, frame_idx: int, total_frames: int, start_time: datetime):
+        """Log processing progress."""
+        elapsed = (datetime.now() - start_time).total_seconds()
+        progress_pct = (frame_idx / total_frames) * 100
+        
+        if elapsed > 0:
+            fps_processing = frame_idx / elapsed
+            remaining_frames = total_frames - frame_idx
+            eta_seconds = remaining_frames / fps_processing if fps_processing > 0 else 0
+            eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+        else:
+            fps_processing = 0
+            eta_str = "calculating..."
+        
+        if self.device == "cuda":
+            try:
+                import torch
+                gpu_mem_used = torch.cuda.memory_allocated(0) / (1024**2)
+                gpu_mem_cached = torch.cuda.memory_reserved(0) / (1024**2)
+                logger.info(
+                    f"📊 {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
+                    f"{fps_processing:.1f} fps | ETA: {eta_str} | Events: {len(self.events)} | "
+                    f"GPU: {gpu_mem_used:.0f}/{gpu_mem_cached:.0f}MB"
+                )
+            except:
+                logger.info(f"📊 {frame_idx}/{total_frames} ({progress_pct:.1f}%) | {fps_processing:.1f} fps | ETA: {eta_str} | Events: {len(self.events)}")
+        else:
+            logger.info(f"📊 {frame_idx}/{total_frames} ({progress_pct:.1f}%) | {fps_processing:.1f} fps | ETA: {eta_str} | Events: {len(self.events)}")
     
     def process_dashcam_frame(
         self, 
@@ -358,12 +509,23 @@ class VideoPipelineV11:
         start_time = datetime.now()
         last_log_time = start_time
         
-        logger.info(f"🎬 Starting video processing: {total_frames} frames @ {fps:.1f} fps")
+        # PRODUCTION OPTIMIZATION: Batch frame buffer
+        frame_buffer = []
+        frame_indices = []
+        frame_timestamps = []
+        
+        logger.info(f"🎬 Starting video processing: {total_frames} frames @ {fps:.1f} fps (batch_size={self.batch_size})")
         
         while True:
             ret, frame = cap.read()
             
             if not ret:
+                # Process remaining frames in buffer
+                if frame_buffer:
+                    self._process_frame_batch(
+                        frame_buffer, frame_indices, frame_timestamps, 
+                        out, fps, total_frames, progress_callback, start_time
+                    )
                 break
             
             try:
@@ -373,68 +535,25 @@ class VideoPipelineV11:
                 # Calculate timestamp
                 timestamp = frame_idx / fps
                 
-                # Process frame based on video type
-                if self.video_type == "dashcam":
-                    result = self.process_dashcam_frame(rgb_frame, frame_idx, timestamp)
-                else:  # in_cabin
-                    result = self.process_incabin_frame(rgb_frame, frame_idx, timestamp)
-                
-                # Get annotated frame
-                annotated = result['annotated_frame']
-                
-                # Convert RGB back to BGR for video writer
-                bgr_frame = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
-                
-                # Write frame
-                out.write(bgr_frame)
+                # Add to batch buffer
+                frame_buffer.append(rgb_frame)
+                frame_indices.append(frame_idx)
+                frame_timestamps.append(timestamp)
                 
                 frame_idx += 1
-                processed_frames += 1
                 
-                # Progress callback
-                if progress_callback and frame_idx % 30 == 0:
-                    progress_callback(frame_idx, total_frames, len(self.events))
-                
-                # Detailed progress logging every 10 frames
-                if frame_idx % 10 == 0:
-                    current_time = datetime.now()
-                    elapsed = (current_time - start_time).total_seconds()
-                    progress_pct = (frame_idx / total_frames) * 100
+                # Process batch when buffer is full
+                if len(frame_buffer) >= self.batch_size:
+                    self._process_frame_batch(
+                        frame_buffer, frame_indices, frame_timestamps,
+                        out, fps, total_frames, progress_callback, start_time
+                    )
+                    processed_frames += len(frame_buffer)
                     
-                    # Calculate ETA
-                    if elapsed > 0:
-                        fps_processing = frame_idx / elapsed
-                        remaining_frames = total_frames - frame_idx
-                        eta_seconds = remaining_frames / fps_processing if fps_processing > 0 else 0
-                        eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
-                    else:
-                        fps_processing = 0
-                        eta_str = "calculating..."
-                    
-                    # Log with GPU memory if available
-                    if self.device == "cuda":
-                        try:
-                            import torch
-                            gpu_mem_used = torch.cuda.memory_allocated(0) / (1024**2)
-                            gpu_mem_cached = torch.cuda.memory_reserved(0) / (1024**2)
-                            logger.info(
-                                f"📊 Progress: {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
-                                f"Speed: {fps_processing:.1f} fps | ETA: {eta_str} | "
-                                f"Events: {len(self.events)} | "
-                                f"GPU: {gpu_mem_used:.0f}MB used, {gpu_mem_cached:.0f}MB cached"
-                            )
-                        except:
-                            logger.info(
-                                f"📊 Progress: {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
-                                f"Speed: {fps_processing:.1f} fps | ETA: {eta_str} | "
-                                f"Events: {len(self.events)}"
-                            )
-                    else:
-                        logger.info(
-                            f"📊 Progress: {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
-                            f"Speed: {fps_processing:.1f} fps | ETA: {eta_str} | "
-                            f"Events: {len(self.events)}"
-                        )
+                    # Clear buffer
+                    frame_buffer = []
+                    frame_indices = []
+                    frame_timestamps = []
                 
             except Exception as e:
                 logger.error(f"❌ Error processing frame {frame_idx}: {e}")
@@ -445,6 +564,9 @@ class VideoPipelineV11:
         # Release resources
         cap.release()
         out.release()
+        
+        # Add remaining frames to processed count
+        processed_frames = frame_idx
         
         # Calculate stats
         end_time = datetime.now()

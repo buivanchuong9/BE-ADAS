@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     DEFAULT_DEVICE: str = "cpu"  # cpu or cuda
     
     # Processing Configuration
-    MAX_VIDEO_SIZE_MB: int = 500
+    MAX_VIDEO_SIZE_MB: int = 1024  # 1GB - Server mạnh, GPU T4 16GB VRAM
     MAX_CONCURRENT_JOBS: int = 2
     VIDEO_CHUNK_SIZE_MB: int = 10
     
@@ -104,7 +104,9 @@ class Settings(BaseSettings):
     
     class Config:
         env_file = ".env"
-        case_sensitive = True
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+        extra = "allow"  # Allow extra env vars from old MSSQL config
     
     @property
     def database_url(self) -> str:

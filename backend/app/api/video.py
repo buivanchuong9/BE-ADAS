@@ -44,31 +44,38 @@ async def upload_video(
     Upload video for ADAS analysis.
     
     Args:
-        file: Video file (mp4, avi, mov)
+        file: Video file (mp4, avi, mov, max 500MB)
         video_type: "dashcam" or "in_cabin"
         device: "cpu" or "cuda"
         db: Database session
         
     Returns:
         Video job with job_id and status
+        
+    Raises:
+        400: Invalid file, format, or size
+        500: Server error during upload
     """
+    import time
+    start_time = time.time()
+    
     try:
-        logger.info(f"📤 Received video upload: {file.filename} (type={video_type}, device={device})")
+        logger.info(f"📤 Upload started: {file.filename} (type={video_type}, device={device})")
         
         # Validate file exists
         if not file or not file.filename:
             raise HTTPException(
                 status_code=400,
-                detail="No file provided. Please upload a video file."
+                detail="No file provided. Please select a video file to upload."
             )
         
         # Create video service
         video_service = VideoService(db)
         
-        # Validate video format and size
-        logger.info(f"[Upload] Validating video: {file.filename}")
+        # FAST validation (doesn't read entire file)
+        logger.info(f"[Upload] Step 1/4: Validating format and size...")
         await video_service.validate_video(file)
-        logger.info(f"[Upload] ✓ Video validation passed")
+        logger.info(f"[Upload] ✓ Validation passed ({time.time() - start_time:.1f}s)")
         
         # Validate video type
         if video_type not in ["dashcam", "in_cabin"]:
@@ -83,22 +90,25 @@ async def upload_video(
             device = "cpu"
         
         # Create job in database
-        logger.info(f"[Upload] Creating job record in database...")
+        logger.info(f"[Upload] Step 2/4: Creating job record...")
         job = await video_service.create_job(
             filename=file.filename,
             video_type=video_type,
             device=device,
             user_id=1  # TODO: Get from authentication
         )
-        logger.info(f"[Upload] ✓ Job created: {job.job_id}")
+        logger.info(f"[Upload] ✓ Job created: {job.job_id} ({time.time() - start_time:.1f}s)")
         
-        # Save uploaded file
-        logger.info(f"[Upload] Saving video file...")
+        # Save uploaded file (streaming)
+        logger.info(f"[Upload] Step 3/4: Uploading video (streaming)...")
         await video_service.save_uploaded_video(job.job_id, file)
-        logger.info(f"[Upload] ✓ Video saved")
+        upload_time = time.time() - start_time
+        logger.info(f"[Upload] ✓ Video uploaded ({upload_time:.1f}s)")
         
         # Submit to background processing
-        logger.info(f"[Upload] Submitting job to background processor...")
+        logger.info(f"[Upload] Step 4/4: Submitting for AI processing...")
+        # Submit to background processing
+        logger.info(f"[Upload] Step 4/4: Submitting for AI processing...")
         job_service = get_job_service()
         await job_service.submit_job(
             session=db,
@@ -109,20 +119,26 @@ async def upload_video(
             device=device
         )
         
-        logger.info(f"✅ Upload complete - Job {job.job_id} submitted for processing")
+        total_time = time.time() - start_time
+        logger.info(f"✅ Upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")
         
         return job
     
     except HTTPException:
         raise
     except ValidationError as e:
-        logger.warning(f"⚠️ Validation failed: {e.message}")
-        raise HTTPException(status_code=400, detail=e.message)
+        upload_time = time.time() - start_time
+        logger.warning(f"⚠️ Upload validation failed after {upload_time:.1f}s: {e.message}")
+        raise HTTPException(
+            status_code=400, 
+            detail=e.message
+        )
     except Exception as e:
-        logger.error(f"❌ Upload failed: {e}", exc_info=True)
+        upload_time = time.time() - start_time
+        logger.error(f"❌ Upload failed after {upload_time:.1f}s: {e}", exc_info=True)
         raise HTTPException(
             status_code=500, 
-            detail=f"Upload failed: {str(e)}. Please check server logs for details."
+            detail=f"Upload failed: {str(e)}. Please try again or contact support if the issue persists."
         )
 
 

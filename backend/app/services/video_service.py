@@ -54,7 +54,7 @@ class VideoService:
     
     async def validate_video(self, file: 'UploadFile') -> None:
         """
-        Validate video file.
+        Validate video file WITHOUT reading entire content (fast validation).
         
         Args:
             file: Uploaded video file
@@ -64,35 +64,75 @@ class VideoService:
         """
         filename = file.filename
         
+        # Check filename
+        if not filename:
+            raise ValidationError(
+                "Filename is required",
+                details={"error": "missing_filename"}
+            )
+        
         # Check extension
         ext = Path(filename).suffix.lower()
         if ext not in self.ALLOWED_EXTENSIONS:
             raise ValidationError(
-                f"Invalid video format. Allowed: {', '.join(self.ALLOWED_EXTENSIONS)}",
+                f"Invalid video format. Allowed formats: {', '.join(self.ALLOWED_EXTENSIONS)}",
                 details={"filename": filename, "extension": ext}
             )
         
-        # Get file size - FastAPI UploadFile exposes size attribute or we read content
-        # Note: We validate size here, actual file is streamed during save_uploaded_video
+        logger.info(f"[Validation] Checking file size for: {filename}")
+        
+        # FAST SIZE CHECK: Try to get size WITHOUT reading entire file
+        file_size = None
+        
+        # Method 1: Check if UploadFile has size attribute
         if hasattr(file, 'size') and file.size is not None:
             file_size = file.size
-        else:
-            # Peek at content to get size, then seek back
-            # This is only for validation - actual upload is streamed
-            content = await file.read()
-            file_size = len(content)
-            await file.seek(0)
+            logger.info(f"[Validation] Got size from attribute: {file_size / 1024 / 1024:.2f} MB")
         
-        # Check size
-        if file_size > self.MAX_SIZE_BYTES:
+        # Method 2: Check from underlying SpooledTemporaryFile
+        elif hasattr(file, 'file') and hasattr(file.file, 'tell'):
+            try:
+                current_pos = file.file.tell()
+                file.file.seek(0, 2)  # Seek to end
+                file_size = file.file.tell()
+                file.file.seek(current_pos)  # Restore position
+                logger.info(f"[Validation] Got size from file.tell(): {file_size / 1024 / 1024:.2f} MB")
+            except Exception as e:
+                logger.warning(f"[Validation] Could not get size from tell(): {e}")
+        
+        # Method 3: Only read small chunk to validate (DON'T read entire file!)
+        if file_size is None:
+            try:
+                # Read only first 1MB to validate file is readable
+                chunk = await file.read(1024 * 1024)  # 1MB only
+                if len(chunk) == 1024 * 1024:
+                    # File is at least 1MB, will validate full size during streaming
+                    logger.warning(f"[Validation] Could not determine size, will validate during upload")
+                    file_size = 0  # Placeholder - will check during streaming
+                else:
+                    file_size = len(chunk)
+                await file.seek(0)  # Reset to beginning
+                logger.info(f"[Validation] Got size from chunk read: {file_size / 1024 / 1024:.2f} MB")
+            except Exception as e:
+                logger.error(f"[Validation] Failed to read file: {e}")
+                raise ValidationError(
+                    f"Cannot read uploaded file: {str(e)}",
+                    details={"filename": filename, "error": str(e)}
+                )
+        
+        # Check size if we have it
+        if file_size > 0 and file_size > self.MAX_SIZE_BYTES:
+            size_mb = file_size / 1024 / 1024
             raise ValidationError(
-                f"Video file too large. Max size: {settings.MAX_VIDEO_SIZE_MB} MB",
+                f"Video too large! Your file: {size_mb:.1f} MB. Maximum allowed: {settings.MAX_VIDEO_SIZE_MB} MB",
                 details={
                     "filename": filename,
-                    "size_mb": file_size / 1024 / 1024,
+                    "size_mb": round(size_mb, 2),
                     "max_size_mb": settings.MAX_VIDEO_SIZE_MB
                 }
             )
+        
+        logger.info(f"[Validation] ✓ File validation passed: {filename}")
     
     async def create_job(
         self,
@@ -203,21 +243,52 @@ class VideoService:
         input_path = self.raw_dir / safe_filename
         
         # Stream file in chunks to avoid blocking event loop
-        # CRITICAL FIX: Don't load entire file into memory at once
+        # CRITICAL: Validate size during streaming to catch oversized files early
         CHUNK_SIZE = 1024 * 1024  # 1MB chunks
         file_size = 0
+        max_size = self.MAX_SIZE_BYTES
         
-        logger.info(f"[Job {job_id}] Starting streaming upload to {input_path}")
+        logger.info(f"[Job {job_id}] Starting streaming upload to {input_path} (max {settings.MAX_VIDEO_SIZE_MB}MB)")
         
-        # Save file asynchronously with chunked streaming
-        async with aiofiles.open(input_path, 'wb') as f:
-            while True:
-                chunk = await file.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                await f.write(chunk)
-                file_size += len(chunk)
-                # Event loop can process other requests between chunks
+        try:
+            # Save file asynchronously with chunked streaming
+            async with aiofiles.open(input_path, 'wb') as f:
+                while True:
+                    chunk = await file.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    
+                    # Check size during streaming
+                    file_size += len(chunk)
+                    if file_size > max_size:
+                        # Stop immediately if exceeding limit
+                        logger.warning(f"[Job {job_id}] File exceeded size limit during upload: {file_size / 1024 / 1024:.1f} MB")
+                        # Clean up partial file
+                        await f.close()
+                        if input_path.exists():
+                            input_path.unlink()
+                        raise ValidationError(
+                            f"File too large! Upload stopped at {file_size / 1024 / 1024:.1f} MB. Maximum: {settings.MAX_VIDEO_SIZE_MB} MB",
+                            details={
+                                "uploaded_mb": round(file_size / 1024 / 1024, 2),
+                                "max_mb": settings.MAX_VIDEO_SIZE_MB
+                            }
+                        )
+                    
+                    await f.write(chunk)
+                    # Event loop can process other requests between chunks
+                    
+        except ValidationError:
+            raise  # Re-raise validation errors
+        except Exception as e:
+            logger.error(f"[Job {job_id}] Upload failed: {e}", exc_info=True)
+            # Clean up partial file
+            if input_path.exists():
+                input_path.unlink()
+            raise ValidationError(
+                f"Failed to save video: {str(e)}",
+                details={"error": str(e)}
+            )
         
         # Update job with input path
         await repo.update(

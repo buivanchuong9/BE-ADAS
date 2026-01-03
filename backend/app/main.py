@@ -32,6 +32,7 @@ from app.services.job_service import get_job_service
 
 # Import API routers (absolute import)
 from app.api.video import router as video_router
+from app.api.video_sse import router as video_sse_router  # NEW: SSE streaming
 from app.api.dataset import router as dataset_router
 from app.api.detections import router as detections_router
 from app.api.models_api import router as models_router
@@ -214,12 +215,18 @@ app.add_middleware(
     expose_headers=["*"],  # Allow browsers to read all response headers
 )
 
+# PRODUCTION: Add Request ID middleware for distributed tracing
+from app.core.middleware import RequestIDMiddleware
+app.add_middleware(RequestIDMiddleware)
+
 # Add request logging middleware with Cloudflare support
 @app.middleware("http")
 async def log_requests(request, call_next):
     """
     Log all incoming requests with Cloudflare-specific headers.
     Captures CF-Ray for support debugging and real client IP.
+    
+    PRODUCTION: Suppress 404 logs for /admin/* paths to reduce spam.
     """
     # Get real client IP from Cloudflare headers
     cf_connecting_ip = request.headers.get("CF-Connecting-IP")
@@ -229,29 +236,34 @@ async def log_requests(request, call_next):
     # Get Cloudflare Ray ID for support debugging
     cf_ray = request.headers.get("CF-Ray", "N/A")
     
-    # Log incoming request with Cloudflare info
-    logger.info(
-        f"📨 {request.method} {request.url.path} | "
-        f"Client: {client_ip} | "
-        f"CF-Ray: {cf_ray}"
-    )
-    logger.debug(
-        f"Headers: Origin={request.headers.get('origin')}, "
-        f"Content-Type={request.headers.get('content-type')}, "
-        f"Content-Length={request.headers.get('content-length', 'unknown')}"
-    )
+    # Log incoming request with Cloudflare info (suppress admin 404s)
+    should_log = not (request.url.path.startswith("/admin") or request.url.path.startswith("/_admin"))
+    
+    if should_log:
+        logger.info(
+            f"📨 {request.method} {request.url.path} | "
+            f"Client: {client_ip} | "
+            f"CF-Ray: {cf_ray}"
+        )
+        logger.debug(
+            f"Headers: Origin={request.headers.get('origin')}, "
+            f"Content-Type={request.headers.get('content-type')}, "
+            f"Content-Length={request.headers.get('content-length', 'unknown')}"
+        )
     
     # Process request
     response = await call_next(request)
     
-    # Log response
-    logger.info(f"✅ {response.status_code} for {request.method} {request.url.path}")
+    # Log response (suppress admin 404s)
+    if should_log or response.status_code != 404:
+        logger.info(f"✅ {response.status_code} for {request.method} {request.url.path}")
     
     return response
 
 
 # Include routers
 app.include_router(video_router)
+app.include_router(video_sse_router)  # NEW: SSE streaming for realtime partial results
 app.include_router(dataset_router)
 app.include_router(detections_router)
 app.include_router(models_router)

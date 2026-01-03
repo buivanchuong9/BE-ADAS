@@ -45,7 +45,12 @@ class GPUWorker:
     - Heartbeat monitoring
     - Graceful shutdown
     - Model persistence (keeps AI models loaded)
+    - GPU semaphore to prevent CUDA OOM (single GPU access)
     """
+    
+    # CRITICAL: GPU semaphore to prevent multiple workers from using GPU simultaneously
+    # Only 1 worker can use GPU at a time to prevent CUDA OOM
+    _gpu_semaphore = asyncio.Semaphore(1)
     
     def __init__(
         self,
@@ -176,9 +181,10 @@ class GPUWorker:
     
     async def process_job(self, job: dict):
         """
-        Process a single video job.
+        Process a single video job with GPU semaphore protection.
         
         Runs AI pipeline and stores results.
+        CRITICAL: Uses semaphore to prevent multiple workers from using GPU simultaneously.
         """
         job_id = job['job_id']
         self.current_job = job_id
@@ -202,21 +208,29 @@ class GPUWorker:
             heartbeat_task = asyncio.create_task(self._heartbeat_loop(job_id))
             
             try:
-                # Run AI pipeline (blocking)
-                pipeline = self._load_pipeline()
-                
-                # Progress callback
-                async def progress_callback(frame_idx, total_frames, events):
-                    progress = int((frame_idx / total_frames) * 100)
-                    await self.update_progress(job_id, progress)
-                
-                # Process video
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    pipeline.process_video,
-                    input_path,
-                    output_path
-                )
+                # CRITICAL: Acquire GPU semaphore to prevent CUDA OOM
+                # Only 1 worker can use GPU at a time
+                logger.info(f"[{self.worker_id}] Waiting for GPU access...")
+                async with self._gpu_semaphore:
+                    logger.info(f"[{self.worker_id}] GPU acquired, starting processing")
+                    
+                    # Run AI pipeline (blocking)
+                    pipeline = self._load_pipeline()
+                    
+                    # Progress callback
+                    async def progress_callback(frame_idx, total_frames, events):
+                        progress = int((frame_idx / total_frames) * 100)
+                        await self.update_progress(job_id, progress)
+                    
+                    # Process video with GPU lock held
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        pipeline.process_video,
+                        input_path,
+                        output_path
+                    )
+                    
+                logger.info(f"[{self.worker_id}] GPU released")
                 
             finally:
                 heartbeat_task.cancel()

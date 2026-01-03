@@ -25,6 +25,8 @@ from typing import Optional, Tuple, List, Dict
 from collections import deque
 import logging
 
+from .kalman_filter import LaneKalmanFilter  # NEW: Kalman Filter for smoothing
+
 logger = logging.getLogger(__name__)
 
 
@@ -120,8 +122,12 @@ class TemporalLaneFilter:
 
 class LaneDetectorV11:
     """
-    Production-grade curved lane detector with temporal smoothing.
+    Production-grade curved lane detector with Kalman Filter smoothing.
     Designed for Vietnamese road conditions.
+    
+    PRODUCTION ENHANCEMENT:
+    - Replaced EMA with Kalman Filter for better temporal smoothing
+    - Reduced flickering and improved stability
     """
     
     def __init__(self, device: str = "cpu"):
@@ -134,7 +140,11 @@ class LaneDetectorV11:
         self.device = device
         self.lane_width_pixels = None  # Learned from detection
         
-        # Temporal filter for smooth tracking
+        # PRODUCTION: Kalman Filter for smooth tracking (replaces EMA)
+        self.kalman_left = LaneKalmanFilter(process_variance=0.005, measurement_variance=0.05)
+        self.kalman_right = LaneKalmanFilter(process_variance=0.005, measurement_variance=0.05)
+        
+        # Temporal filter for confidence tracking (keep this for backward compatibility)
         self.temporal_filter = TemporalLaneFilter(alpha=0.3, buffer_size=5)
         
         # Lane confidence tracking
@@ -149,7 +159,7 @@ class LaneDetectorV11:
         self.departure_threshold = 0.3  # 30% offset from center
         self.min_confidence = 0.3  # Minimum confidence to use detection
         
-        logger.info(f"LaneDetectorV11 initialized on {device} with temporal filtering")
+        logger.info(f"LaneDetectorV11 initialized on {device} with Kalman Filter smoothing")
     
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """
@@ -402,24 +412,14 @@ class LaneDetectorV11:
     
     def process_frame(self, frame: np.ndarray) -> Dict:
         """
-        Process single frame for lane detection with temporal smoothing.
+        Process single frame for lane detection with Kalman Filter smoothing.
         PRODUCTION-GRADE: No flickering, confident detections only.
         
         Args:
             frame: RGB frame from video
             
         Returns:
-            Dict containing:
-                - annotated_frame: Frame with lane overlay
-                - left_fit: Left lane polynomial coefficients (smoothed)
-                - right_fit: Right lane polynomial coefficients (smoothed)
-                - left_confidence: Left lane confidence [0-1]
-                - right_confidence: Right lane confidence [0-1]
-                - left_lane_id: Persistent left lane identifier
-                - right_lane_id: Persistent right lane identifier
-                - offset: Vehicle offset from center
-                - direction: Lane position (LEFT/RIGHT/CENTER)
-                - lane_departure: Boolean warning flag
+            Dict containing lane detection results with smoothed coefficients
         """
         height, width = frame.shape[:2]
         
@@ -433,15 +433,12 @@ class LaneDetectorV11:
         left_fit_raw, left_conf = self.fit_polynomial(left_points)
         right_fit_raw, right_conf = self.fit_polynomial(right_points)
         
-        # Apply temporal filtering with confidence weighting
-        left_fit, right_fit = self.temporal_filter.update(
-            left_fit_raw, 
-            right_fit_raw,
-            left_conf,
-            right_conf
-        )
+        # PRODUCTION: Apply Kalman Filter smoothing instead of EMA
+        left_fit = self.kalman_left.update(left_fit_raw, left_conf)
+        right_fit = self.kalman_right.update(right_fit_raw, right_conf)
         
-        # Get overall confidence from temporal consistency
+        # Update temporal filter for confidence tracking (backward compatibility)
+        self.temporal_filter.update(left_fit_raw, right_fit_raw, left_conf, right_conf)
         self.left_confidence, self.right_confidence = self.temporal_filter.get_confidence()
         
         # Draw lanes only if confidence is sufficient

@@ -175,6 +175,77 @@ class ObjectDetectorV11:
             logger.error(f"Detection failed: {e}")
             return []
     
+    def detect_batch(self, frames: List[np.ndarray]) -> List[List[Dict]]:
+        """
+        Batch detection for improved GPU utilization (PRODUCTION OPTIMIZATION).
+        Process multiple frames at once to maximize GPU throughput.
+        
+        Args:
+            frames: List of RGB frames
+            
+        Returns:
+            List of detection lists (one per frame)
+        """
+        if self.model is None:
+            logger.warning("Model not loaded")
+            return [[] for _ in frames]
+        
+        if not frames:
+            return []
+        
+        try:
+            # Run batch inference
+            results = self.model(
+                frames,  # List of numpy arrays
+                device=self.device,
+                conf=self.conf_threshold,
+                verbose=False
+            )
+            
+            all_detections = []
+            
+            # Extract detections for each frame
+            for result in results:
+                frame_detections = []
+                boxes = result.boxes
+                
+                for box in boxes:
+                    # Extract box data
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0].cpu().numpy())
+                    cls_id = int(box.cls[0].cpu().numpy())
+                    
+                    # Get class name
+                    cls_name = result.names[cls_id]
+                    
+                    # Filter for ADAS-relevant classes only
+                    if cls_name not in self.ADAS_CLASSES:
+                        continue
+                    
+                    # Calculate center and area
+                    cx = int((x1 + x2) / 2)
+                    cy = int((y1 + y2) / 2)
+                    area = (x2 - x1) * (y2 - y1)
+                    
+                    detection = {
+                        "class_id": cls_id,
+                        "class_name": cls_name,
+                        "confidence": conf,
+                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                        "center": [cx, cy],
+                        "area": float(area)
+                    }
+                    
+                    frame_detections.append(detection)
+                
+                all_detections.append(frame_detections)
+            
+            return all_detections
+            
+        except Exception as e:
+            logger.error(f"Batch detection failed: {e}")
+            return [[] for _ in frames]
+    
     def detect_and_track(self, frame: np.ndarray) -> List[Dict]:
         """
         Detect and track objects with persistent IDs.
