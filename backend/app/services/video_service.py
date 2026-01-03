@@ -122,33 +122,46 @@ class VideoService:
         input_path = str(self.raw_dir / f"{job_id_uuid}_{filename}")
         output_path = str(self.processed_dir / f"{job_id_uuid}_result.mp4")
         
-        # Create job record
+        # Create Video record first (required for foreign key)
+        from app.db.models.video import Video
+        import hashlib
+        
+        # Generate SHA256 hash for video (using filename as placeholder for now)
+        # Will be updated with actual hash after file upload
+        temp_hash = hashlib.sha256(f"{job_id_uuid}_{filename}".encode()).hexdigest()
+        
+        video = Video(
+            sha256_hash=temp_hash,
+            original_filename=filename,
+            storage_path=input_path,
+            size_bytes=0,  # Will be updated after upload
+            uploader_id=user_id
+        )
+        self.session.add(video)
+        await self.session.flush()  # Get video.id without committing
+        
+        # Create job record with video_id
         repo = JobQueueRepository(self.session)
         job_data = {
             "job_id": job_id_uuid,
+            "video_id": video.id,  # Required foreign key
             "trip_id": trip_id,
-            "video_filename": filename,
-            "video_path": input_path,
-            "result_path": output_path,
+            "video_type": video_type,
+            "device": device,
             "status": "pending",
             "progress_percent": 0,
         }
         
         try:
             job = await repo.create(**job_data)
+            await self.session.commit()  # Commit both video and job
         except Exception as e:
-            error_msg = str(e).lower()
-            if "invalid column name" in error_msg or "column" in error_msg:
-                logger.error(f"Database schema mismatch: {e}")
-                raise ValidationError(
-                    "Database schema is outdated. Please run: python apply_migration.py",
-                    details={
-                        "error": str(e),
-                        "solution": "Run migration script to update database schema",
-                        "command": "python apply_migration.py"
-                    }
-                )
-            raise
+            logger.error(f"Failed to create job: {e}", exc_info=True)
+            await self.session.rollback()
+            raise ValidationError(
+                f"Failed to create job: {str(e)}",
+                details={"error": str(e)}
+            )
         
         logger.info(f"Created job {job_id_uuid} for video: {filename}")
         
@@ -175,8 +188,17 @@ class VideoService:
         if not job:
             raise ValidationError(f"Job {job_id} not found")
         
+        # Get video record
+        from app.db.models.video import Video
+        from sqlalchemy import select
+        
+        result = await self.session.execute(
+            select(Video).where(Video.id == job.video_id)
+        )
+        video = result.scalar_one_or_none()
+        
         # Generate unique filename
-        ext = Path(job.video_filename).suffix
+        ext = Path(video.original_filename if video else "video.mp4").suffix
         safe_filename = f"{job_id}{ext}"
         input_path = self.raw_dir / safe_filename
         
@@ -197,12 +219,17 @@ class VideoService:
                 file_size += len(chunk)
                 # Event loop can process other requests between chunks
         
-        # Update job with input path AND file size
+        # Update job with input path
         await repo.update(
             job.id, 
-            video_path=str(input_path),
-            file_size=file_size
+            video_path=str(input_path)
         )
+        
+        # Update video record with actual file size
+        if video:
+            video.size_bytes = file_size
+            video.storage_path = str(input_path)
+            await self.session.commit()
         
         file_size_mb = file_size / (1024 * 1024)
         logger.info(
