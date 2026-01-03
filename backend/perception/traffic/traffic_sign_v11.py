@@ -250,7 +250,17 @@ class TrafficSignV11:
             for result in results:
                 boxes = result.boxes
                 
-                for box in bo, speed_limit = self.classify_sign(cls_name, cls_id)
+                for box in boxes:
+                    # Get box coordinates
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0])
+                    cls_id = int(box.cls[0])
+                    
+                    # Get class name
+                    cls_name = result.names[cls_id]
+                    
+                    # Classify sign type
+                    sign_type, speed_limit = self.classify_sign(cls_name, cls_id)
                     
                     if sign_type is None:
                         continue  # Not a traffic sign
@@ -262,16 +272,6 @@ class TrafficSignV11:
                         "confidence": conf,
                         "bbox": [int(x1), int(y1), int(x2), int(y2)],
                         "speed_limit": speed_limit  # None if not a speed limit sign
-                    
-                    if sign_type is None:
-                        continue  # Not a traffic sign
-                    
-                    detection = {
-                        "class_id": cls_id,
-                        "class_name": cls_name,
-                        "sign_type": sign_type,
-                        "confidence": conf,
-                        "bbox": [int(x1), int(y1), int(x2), int(y2)]
                     }
                     
                     detections.append(detection)
@@ -281,7 +281,8 @@ class TrafficSignV11:
         except Exception as e:
             logger.error(f"Detection failed: {e}")
             return []
-    Tuple[Optional[str], Optional[int]]:
+    
+    def classify_sign(self, class_name: str, class_id: int) -> Tuple[Optional[str], Optional[int]]:
         """
         Classify detected object as traffic sign type (Vietnamese context).
         
@@ -313,7 +314,6 @@ class TrafficSignV11:
                 return (sign_type, None)
         
         return (None, None)
-        return None
     
     def get_sign_action(self, sign_type: str) -> str:
         """
@@ -399,12 +399,12 @@ class TrafficSignV11:
             
             # Draw action below bbox
             cv2.putText(
-                annotated,
-                action,
-                (x1, y2 + 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-        check_speed_violation(
+                color,
+                2
+            )
+    
+    def check_speed_violation(
         self,
         vehicle_speed: Optional[float] = None
     ) -> Optional[Dict[str, Any]]:
@@ -526,9 +526,6 @@ class TrafficSignV11:
             "speed_violation": speed_violation
         }
     
-    def         color,
-                2
-            )
         
         return annotated
     
