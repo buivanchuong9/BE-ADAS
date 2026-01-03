@@ -56,22 +56,56 @@ class VideoPipelineV11:
         self.device = device
         self.video_type = video_type
         
+        # Log GPU info if using CUDA
+        if device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0)
+                    gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    logger.info(f"🎮 GPU Detected: {gpu_name} ({gpu_memory:.1f} GB VRAM)")
+                    logger.info(f"🚀 GPU acceleration enabled for video processing")
+                else:
+                    logger.warning("⚠️ CUDA requested but not available, falling back to CPU")
+                    self.device = "cpu"
+            except ImportError:
+                logger.warning("⚠️ PyTorch not installed, falling back to CPU")
+                self.device = "cpu"
+        
         # Initialize modules based on video type
         if video_type == "dashcam":
             logger.info("Initializing dashcam pipeline modules...")
-            self.lane_detector = LaneDetectorV11(device=device)
-            self.object_detector = ObjectDetectorV11(device=device)
-            self.distance_estimator = DistanceEstimator()
-            self.traffic_sign_detector = TrafficSignV11(device=device)
-            self.driver_monitor = None
+            try:
+                self.lane_detector = LaneDetectorV11(device=self.device)
+                logger.info("  ✓ Lane detector initialized")
+                
+                self.object_detector = ObjectDetectorV11(device=self.device)
+                logger.info("  ✓ Object detector initialized")
+                
+                self.distance_estimator = DistanceEstimator()
+                logger.info("  ✓ Distance estimator initialized")
+                
+                self.traffic_sign_detector = TrafficSignV11(device=self.device)
+                logger.info("  ✓ Traffic sign detector initialized")
+                
+                self.driver_monitor = None
+            except Exception as e:
+                logger.error(f"Failed to initialize dashcam modules: {e}")
+                raise
         
         elif video_type == "in_cabin":
             logger.info("Initializing in-cabin pipeline modules...")
-            self.driver_monitor = DriverMonitorV11(device=device)
-            self.lane_detector = None
-            self.object_detector = None
-            self.distance_estimator = None
-            self.traffic_sign_detector = None
+            try:
+                self.driver_monitor = DriverMonitorV11(device=self.device)
+                logger.info("  ✓ Driver monitor initialized")
+                
+                self.lane_detector = None
+                self.object_detector = None
+                self.distance_estimator = None
+                self.traffic_sign_detector = None
+            except Exception as e:
+                logger.error(f"Failed to initialize in-cabin modules: {e}")
+                raise
         
         else:
             raise ValueError(f"Unknown video_type: {video_type}. Use 'dashcam' or 'in_cabin'")
@@ -79,7 +113,7 @@ class VideoPipelineV11:
         # Event logging
         self.events = []
         
-        logger.info(f"VideoPipelineV11 initialized for {video_type} on {device}")
+        logger.info(f"✅ VideoPipelineV11 ready: {video_type} on {self.device}")
     
     def detect_video_type(self, frame: np.ndarray) -> str:
         """
@@ -322,6 +356,9 @@ class VideoPipelineV11:
         frame_idx = 0
         processed_frames = 0
         start_time = datetime.now()
+        last_log_time = start_time
+        
+        logger.info(f"🎬 Starting video processing: {total_frames} frames @ {fps:.1f} fps")
         
         while True:
             ret, frame = cap.read()
@@ -329,37 +366,81 @@ class VideoPipelineV11:
             if not ret:
                 break
             
-            # Convert BGR to RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # Calculate timestamp
-            timestamp = frame_idx / fps
-            
-            # Process frame based on video type
-            if self.video_type == "dashcam":
-                result = self.process_dashcam_frame(rgb_frame, frame_idx, timestamp)
-            else:  # in_cabin
-                result = self.process_incabin_frame(rgb_frame, frame_idx, timestamp)
-            
-            # Get annotated frame
-            annotated = result['annotated_frame']
-            
-            # Convert RGB back to BGR for video writer
-            bgr_frame = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
-            
-            # Write frame
-            out.write(bgr_frame)
-            
-            frame_idx += 1
-            processed_frames += 1
-            
-            # Progress callback
-            if progress_callback and frame_idx % 30 == 0:
-                progress_callback(frame_idx, total_frames, len(self.events))
-            
-            # Log progress
-            if frame_idx % 100 == 0:
-                logger.info(f"Processed {frame_idx}/{total_frames} frames ({frame_idx/total_frames*100:.1f}%)")
+            try:
+                # Convert BGR to RGB
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Calculate timestamp
+                timestamp = frame_idx / fps
+                
+                # Process frame based on video type
+                if self.video_type == "dashcam":
+                    result = self.process_dashcam_frame(rgb_frame, frame_idx, timestamp)
+                else:  # in_cabin
+                    result = self.process_incabin_frame(rgb_frame, frame_idx, timestamp)
+                
+                # Get annotated frame
+                annotated = result['annotated_frame']
+                
+                # Convert RGB back to BGR for video writer
+                bgr_frame = cv2.cvtColor(annotated, cv2.COLOR_RGB2BGR)
+                
+                # Write frame
+                out.write(bgr_frame)
+                
+                frame_idx += 1
+                processed_frames += 1
+                
+                # Progress callback
+                if progress_callback and frame_idx % 30 == 0:
+                    progress_callback(frame_idx, total_frames, len(self.events))
+                
+                # Detailed progress logging every 10 frames
+                if frame_idx % 10 == 0:
+                    current_time = datetime.now()
+                    elapsed = (current_time - start_time).total_seconds()
+                    progress_pct = (frame_idx / total_frames) * 100
+                    
+                    # Calculate ETA
+                    if elapsed > 0:
+                        fps_processing = frame_idx / elapsed
+                        remaining_frames = total_frames - frame_idx
+                        eta_seconds = remaining_frames / fps_processing if fps_processing > 0 else 0
+                        eta_str = f"{int(eta_seconds // 60)}m {int(eta_seconds % 60)}s"
+                    else:
+                        fps_processing = 0
+                        eta_str = "calculating..."
+                    
+                    # Log with GPU memory if available
+                    if self.device == "cuda":
+                        try:
+                            import torch
+                            gpu_mem_used = torch.cuda.memory_allocated(0) / (1024**2)
+                            gpu_mem_cached = torch.cuda.memory_reserved(0) / (1024**2)
+                            logger.info(
+                                f"📊 Progress: {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
+                                f"Speed: {fps_processing:.1f} fps | ETA: {eta_str} | "
+                                f"Events: {len(self.events)} | "
+                                f"GPU: {gpu_mem_used:.0f}MB used, {gpu_mem_cached:.0f}MB cached"
+                            )
+                        except:
+                            logger.info(
+                                f"📊 Progress: {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
+                                f"Speed: {fps_processing:.1f} fps | ETA: {eta_str} | "
+                                f"Events: {len(self.events)}"
+                            )
+                    else:
+                        logger.info(
+                            f"📊 Progress: {frame_idx}/{total_frames} ({progress_pct:.1f}%) | "
+                            f"Speed: {fps_processing:.1f} fps | ETA: {eta_str} | "
+                            f"Events: {len(self.events)}"
+                        )
+                
+            except Exception as e:
+                logger.error(f"❌ Error processing frame {frame_idx}: {e}")
+                # Continue with next frame instead of crashing
+                frame_idx += 1
+                continue
         
         # Release resources
         cap.release()

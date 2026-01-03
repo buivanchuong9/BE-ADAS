@@ -399,10 +399,16 @@ class TrafficSignV11:
             
             # Draw action below bbox
             cv2.putText(
+                annotated,
+                action,
+                (x1, y2 + 25),
+                cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
                 color,
                 2
             )
+        
+        return annotated
     
     def check_speed_violation(
         self,
@@ -525,9 +531,6 @@ class TrafficSignV11:
             "current_speed_limit": self.current_speed_limit,
             "speed_violation": speed_violation
         }
-    
-        
-        return annotated
     
     def process_frame(self, frame: np.ndarray) -> Dict:
         """

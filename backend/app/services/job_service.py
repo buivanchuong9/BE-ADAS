@@ -110,18 +110,24 @@ class JobService:
         
         This method BLOCKS and performs CPU-intensive AI processing.
         """
-        logger.info(f"[Job {job_id}] Starting video processing")
+        logger.info(f"[Job {job_id}] 🎬 Starting video processing")
+        logger.info(f"[Job {job_id}]   Input: {input_path}")
+        logger.info(f"[Job {job_id}]   Output: {output_path}")
+        logger.info(f"[Job {job_id}]   Type: {video_type}, Device: {device}")
         start_time = datetime.now()
         
         try:
             # Import AI pipeline
+            logger.info(f"[Job {job_id}] 📦 Loading AI pipeline modules...")
             import sys
             from pathlib import Path as PathlibPath
             sys.path.insert(0, str(PathlibPath(__file__).parent.parent.parent))
             
             from perception.pipeline.video_pipeline_v11 import process_video
+            logger.info(f"[Job {job_id}] ✓ AI pipeline loaded")
             
             # Process video
+            logger.info(f"[Job {job_id}] 🚀 Starting AI inference...")
             result = process_video(
                 input_path=input_path,
                 output_path=output_path,
@@ -133,15 +139,21 @@ class JobService:
             result['processing_time'] = processing_time
             result['job_id'] = job_id
             
-            logger.info(
-                f"[Job {job_id}] Processing complete in {processing_time:.2f}s. "
-                f"Events: {len(result.get('events', []))}"
-            )
+            if result.get('success'):
+                logger.info(
+                    f"[Job {job_id}] ✅ Processing complete in {processing_time:.2f}s. "
+                    f"Events: {len(result.get('events', []))}, "
+                    f"Frames: {result.get('stats', {}).get('processed_frames', 0)}"
+                )
+            else:
+                logger.error(
+                    f"[Job {job_id}] ❌ Processing failed: {result.get('error', 'Unknown error')}"
+                )
             
             return result
             
         except Exception as e:
-            logger.error(f"[Job {job_id}] Processing failed: {e}", exc_info=True)
+            logger.error(f"[Job {job_id}] ❌ Processing exception: {e}", exc_info=True)
             return {
                 'success': False,
                 'error': str(e),

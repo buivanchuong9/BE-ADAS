@@ -53,33 +53,52 @@ async def upload_video(
         Video job with job_id and status
     """
     try:
-        logger.info(f"Received video upload: {file.filename}")
+        logger.info(f"📤 Received video upload: {file.filename} (type={video_type}, device={device})")
+        
+        # Validate file exists
+        if not file or not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail="No file provided. Please upload a video file."
+            )
         
         # Create video service
         video_service = VideoService(db)
         
-        # Validate video
+        # Validate video format and size
+        logger.info(f"[Upload] Validating video: {file.filename}")
         await video_service.validate_video(file)
+        logger.info(f"[Upload] ✓ Video validation passed")
         
         # Validate video type
         if video_type not in ["dashcam", "in_cabin"]:
             raise HTTPException(
                 status_code=400,
-                detail="video_type must be 'dashcam' or 'in_cabin'"
+                detail=f"Invalid video_type '{video_type}'. Must be 'dashcam' or 'in_cabin'"
             )
         
+        # Validate device
+        if device not in ["cpu", "cuda"]:
+            logger.warning(f"Invalid device '{device}', defaulting to 'cpu'")
+            device = "cpu"
+        
         # Create job in database
+        logger.info(f"[Upload] Creating job record in database...")
         job = await video_service.create_job(
             filename=file.filename,
             video_type=video_type,
             device=device,
             user_id=1  # TODO: Get from authentication
         )
+        logger.info(f"[Upload] ✓ Job created: {job.job_id}")
         
         # Save uploaded file
+        logger.info(f"[Upload] Saving video file...")
         await video_service.save_uploaded_video(job.job_id, file)
+        logger.info(f"[Upload] ✓ Video saved")
         
         # Submit to background processing
+        logger.info(f"[Upload] Submitting job to background processor...")
         job_service = get_job_service()
         await job_service.submit_job(
             session=db,
@@ -90,18 +109,21 @@ async def upload_video(
             device=device
         )
         
-        logger.info(f"Started processing job {job.job_id}")
+        logger.info(f"✅ Upload complete - Job {job.job_id} submitted for processing")
         
         return job
     
     except HTTPException:
         raise
     except ValidationError as e:
-        logger.warning(f"Validation failed: {e.message}")
+        logger.warning(f"⚠️ Validation failed: {e.message}")
         raise HTTPException(status_code=400, detail=e.message)
     except Exception as e:
-        logger.error(f"Upload failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+        logger.error(f"❌ Upload failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Upload failed: {str(e)}. Please check server logs for details."
+        )
 
 
 
@@ -121,6 +143,8 @@ async def get_result(
         Video job with status and results
     """
     try:
+        logger.info(f"📊 Fetching result for job: {job_id}")
+        
         from app.db.repositories.job_queue_repo import JobQueueRepository
         
         # Get job from database
@@ -128,15 +152,23 @@ async def get_result(
         job = await repo.get_by_job_id(job_id)
         
         if not job:
-            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            logger.warning(f"⚠️ Job not found: {job_id}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Job '{job_id}' not found. Please check the job_id."
+            )
         
+        logger.info(f"✓ Job {job_id} status: {job.status}")
         return job
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Get result failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Get result failed: {str(e)}")
+        logger.error(f"❌ Get result failed for {job_id}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to retrieve job result: {str(e)}"
+        )
 
 
 @router.get("/download/{job_id}/{filename}")
