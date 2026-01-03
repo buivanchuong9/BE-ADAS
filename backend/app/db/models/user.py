@@ -47,6 +47,7 @@ class User(Base):
     # Relationships
     vehicles = relationship("Vehicle", back_populates="owner", cascade="all, delete-orphan")
     trips = relationship("Trip", back_populates="driver", cascade="all, delete-orphan")
+    videos = relationship("Video", back_populates="uploader")  # Add this
     
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}', role='{self.role}')>"
