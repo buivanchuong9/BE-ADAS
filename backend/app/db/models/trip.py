@@ -56,6 +56,7 @@ class Trip(Base):
     # Relationships
     driver = relationship("User", back_populates="trips")
     vehicle = relationship("Vehicle", back_populates="trips")
+    jobs = relationship("JobQueue", back_populates="trip", cascade="all, delete-orphan")  # Added for v3.0
     video_jobs = relationship("VideoJob", back_populates="trip", cascade="all, delete-orphan")
     safety_events = relationship("SafetyEvent", back_populates="trip", cascade="all, delete-orphan")
     traffic_signs = relationship("TrafficSign", back_populates="trip", cascade="all, delete-orphan")
