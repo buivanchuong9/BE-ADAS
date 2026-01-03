@@ -1,6 +1,6 @@
 """
-ADAS BACKEND - MAIN ENTRY POINT
-================================
+ADAS BACKEND v3.0 - MAIN ENTRY POINT (PostgreSQL)
+==================================================
 Chạy file này để khởi động toàn bộ hệ thống.
 
 Usage:
@@ -14,14 +14,13 @@ import os
 import subprocess
 import argparse
 from pathlib import Path
-import shutil
 
 # Thêm thư mục backend vào Python path
 backend_dir = Path(__file__).parent / "backend"
 sys.path.insert(0, str(backend_dir))
 
 
-def check_environment_file(is_production=False):
+def check_environment_file():
     """Kiểm tra file .env đã tồn tại"""
     root_dir = Path(__file__).parent
     env_file = root_dir / ".env"
@@ -31,7 +30,17 @@ def check_environment_file(is_production=False):
         return True
     else:
         print(f"❌ Không tìm thấy file .env")
-        print("💡 Pull code từ GitHub để có file .env")
+        print("💡 Tạo file .env với nội dung:")
+        print("""
+PG_HOST=localhost
+PG_PORT=5432
+PG_NAME=adas_db
+PG_USER=adas_user
+PG_PASSWORD=adas123
+API_BASE_URL=https://adas-api.aiotlab.edu.vn
+DEBUG=False
+ENVIRONMENT=production
+        """)
         return False
 
 
@@ -56,9 +65,9 @@ def check_dependencies():
         missing.append("sqlalchemy")
     
     try:
-        import pyodbc
+        import asyncpg
     except ImportError:
-        missing.append("pyodbc")
+        missing.append("asyncpg")
     
     if missing:
         print(f"❌ Thiếu dependencies: {', '.join(missing)}")
@@ -77,107 +86,47 @@ def check_dependencies():
         return True
 
 
-def check_sql_server_connection():
-    """Kiểm tra kết nối SQL Server"""
-    print("\n🔌 Đang kiểm tra kết nối SQL Server...")
+def check_postgresql_connection():
+    """Kiểm tra kết nối PostgreSQL"""
+    print("\n🔌 Đang kiểm tra kết nối PostgreSQL...")
     try:
         from app.core.config import settings
-        import pyodbc
+        import asyncpg
+        import asyncio
         
-        conn_str = (
-            f"DRIVER={{{settings.DB_DRIVER}}};"
-            f"SERVER={settings.DB_HOST},{settings.DB_PORT};"
-            f"UID={settings.DB_USER};"
-            f"PWD={settings.DB_PASSWORD};"
-            "TrustServerCertificate=yes;"
-        )
+        async def test_connection():
+            try:
+                conn = await asyncpg.connect(
+                    host=settings.PG_HOST,
+                    port=settings.PG_PORT,
+                    database=settings.PG_NAME,
+                    user=settings.PG_USER,
+                    password=settings.PG_PASSWORD,
+                    timeout=5
+                )
+                await conn.close()
+                return True
+            except Exception as e:
+                raise e
         
-        conn = pyodbc.connect(conn_str, timeout=5)
-        conn.close()
-        print("✅ Kết nối SQL Server thành công")
+        asyncio.run(test_connection())
+        print("✅ Kết nối PostgreSQL thành công")
         return True
     except Exception as e:
-        print(f"❌ Không thể kết nối SQL Server: {e}")
-        print("\n⚠️  Hãy đảm bảo SQL Server đang chạy:")
-        print("  - Docker: docker ps | grep mssql")
-        print("  - Native: services.msc → SQL Server")
+        print(f"❌ Không thể kết nối PostgreSQL: {e}")
+        print("\n⚠️  Hãy đảm bảo PostgreSQL đang chạy:")
+        print("  - Ubuntu: sudo systemctl status postgresql")
+        print("  - macOS: brew services list | grep postgresql")
+        print("\n� Kiểm tra:")
+        print("  1. PostgreSQL đang chạy")
+        print("  2. Database 'adas_db' đã tồn tại")
+        print("  3. Thông tin đăng nhập trong .env đúng")
         return False
 
 
-def init_database():
-    """Khởi tạo database và tables nếu chưa tồn tại"""
-    print("\n🔧 Đang kiểm tra database...")
-    
-    try:
-        from app.core.config import settings
-        import pyodbc
-        
-        # Kết nối master database để tạo database
-        conn_str_master = (
-            f"DRIVER={{{settings.DB_DRIVER}}};"
-            f"SERVER={settings.DB_HOST},{settings.DB_PORT};"
-            f"DATABASE=master;"
-            f"UID={settings.DB_USER};"
-            f"PWD={settings.DB_PASSWORD};"
-            "TrustServerCertificate=yes;"
-        )
-        
-        conn = pyodbc.connect(conn_str_master, timeout=10)
-        cursor = conn.cursor()
-        
-        # Kiểm tra database có tồn tại không
-        cursor.execute(f"SELECT database_id FROM sys.databases WHERE name = '{settings.DB_NAME}'")
-        db_exists = cursor.fetchone() is not None
-        
-        if not db_exists:
-            print(f"📦 Tạo database '{settings.DB_NAME}'...")
-            cursor.execute(f"CREATE DATABASE {settings.DB_NAME}")
-            conn.commit()
-            print(f"✅ Database '{settings.DB_NAME}' đã được tạo")
-        else:
-            print(f"✅ Database '{settings.DB_NAME}' đã tồn tại")
-        
-        cursor.close()
-        conn.close()
-        
-        # Khởi tạo tables và seed data
-        print("📋 Đang khởi tạo tables và seed data...")
-        
-        # Dùng subprocess để chạy init script
-        import subprocess
-        result = subprocess.run(
-            [sys.executable, "backend/scripts/init_db.py"],
-            capture_output=True,
-            text=True
-        )
-        
-        if result.returncode == 0:
-            print("✅ Database tables đã sẵn sàng")
-            
-            # Kiểm tra và seed data
-            print("📦 Kiểm tra initial data...")
-            result_seed = subprocess.run(
-                [sys.executable, "backend/scripts/seed_data.py"],
-                capture_output=True,
-                text=True
-            )
-            
-            if result_seed.returncode == 0:
-                print("✅ Initial data đã sẵn sàng")
-            else:
-                # Seed data có thể fail nếu data đã có - không sao
-                print("ℹ️ Data có thể đã tồn tại")
-        else:
-            print(f"⚠️  Init tables: {result.stderr}")
-        
-    except Exception as e:
-        print(f"⚠️  Lỗi khởi tạo database: {e}")
-        print("ℹ️  Database có thể đã được khởi tạo sẵn, tiếp tục...")
-
-
 def run_server(host="0.0.0.0", port=8000, reload=True):
-    """Chạy Uvicorn server với cấu hình production-safe"""
-    print(f"\n🚀 Đang khởi động ADAS Backend Server...")
+    """Chạy Uvicorn server"""
+    print(f"\n🚀 Đang khởi động ADAS Backend Server v3.0...")
     print(f"📡 Host: {host}")
     print(f"🔌 Port: {port}")
     print(f"🔄 Hot reload: {'Bật' if reload else 'Tắt'}")
@@ -187,42 +136,34 @@ def run_server(host="0.0.0.0", port=8000, reload=True):
     print("\n⚠️  Nhấn Ctrl+C để dừng server\n")
     print("="*60)
     
-    # Ensure backend_dir is absolute path (prevents any relative path issues)
     backend_path = Path(backend_dir).resolve()
     
-    # Build uvicorn command as strict list (NO wildcards, NO shell expansion)
-    # Each argument is explicitly typed as string to prevent any injection
     cmd = [
-        str(sys.executable),           # Python interpreter path
-        "-m",                           # Module flag
-        "uvicorn",                      # Module name
-        "app.main:app",                 # Application path
-        "--host",                       # Host flag
-        str(host),                      # Host value (ensure string)
-        "--port",                       # Port flag
-        str(port),                      # Port value (ensure string)
-        "--proxy-headers",              # Enable proxy header trust for Cloudflare
+        str(sys.executable),
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        str(host),
+        "--port",
+        str(port),
+        "--proxy-headers",
     ]
     
-    # Add reload flag only in development mode
     if reload:
         cmd.append("--reload")
     
-    # Debug: Print exact command that will be executed
     print("\n🔧 Uvicorn command:")
     print(f"   Working directory: {backend_path}")
     print(f"   Command: {' '.join(cmd)}")
     print("="*60 + "\n")
     
     try:
-        # Execute uvicorn with explicit working directory
-        # shell=False ensures NO shell expansion or wildcard interpretation
-        # cwd is absolute path to prevent any ambiguity
         subprocess.run(
             cmd,
             cwd=str(backend_path),
             shell=False,
-            check=False  # Don't raise exception on non-zero exit
+            check=False
         )
     except KeyboardInterrupt:
         print("\n\n👋 Server đã dừng. Bye!")
@@ -238,7 +179,7 @@ def run_server(host="0.0.0.0", port=8000, reload=True):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="ADAS Backend Server")
+    parser = argparse.ArgumentParser(description="ADAS Backend Server v3.0")
     parser.add_argument("--host", default="0.0.0.0", help="Host address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8000, help="Port number (default: 8000)")
     parser.add_argument("--production", action="store_true", help="Production mode (port 52000, no reload)")
@@ -256,7 +197,7 @@ def main():
     print("\n" + "="*60)
     print("  🚗 ADAS BACKEND - Advanced Driver Assistance System")
     print("  📍 Domain: https://adas-api.aiotlab.edu.vn:52000")
-    print("  🔧 Version: 2.0.0")
+    print("  🔧 Version: 3.0.0 (PostgreSQL)")
     print("  🏭 Mode:", "PRODUCTION" if args.production else "DEVELOPMENT")
     print("="*60)
     
@@ -264,26 +205,18 @@ def main():
         print("\n⏩ Bỏ qua system checks (--skip-checks)")
     else:
         # Step 1: Kiểm tra .env file
-        if not check_environment_file(is_production=args.production):
+        if not check_environment_file():
             sys.exit(1)
         
         # Step 2: Kiểm tra và cài đặt dependencies
         if not check_dependencies():
             sys.exit(1)
         
-        # Step 3: Kiểm tra kết nối SQL Server
-        sql_connected = check_sql_server_connection()
-        if not sql_connected:
-            print("\n❌ Không thể kết nối SQL Server. Vui lòng kiểm tra:")
-            print("  1. SQL Server đang chạy")
-            print("  2. Thông tin đăng nhập trong .env")
-            print("  3. ODBC Driver 17 đã cài")
-            sys.exit(1)
-        
-        # Step 4: Khởi tạo database (không hỏi nếu thành công)
-        init_database()
+        # Step 3: Kiểm tra kết nối PostgreSQL
+        if not check_postgresql_connection():
+            print("\n⚠️  Tiếp tục khởi động server (có thể lỗi nếu DB không sẵn sàng)...")
     
-    # Step 5: Chạy server
+    # Step 4: Chạy server
     run_server(
         host=args.host,
         port=args.port,
