@@ -107,7 +107,7 @@ app = FastAPI(
     description="""
     # 🚗 Hệ Thống ADAS Backend v3.0 - PostgreSQL
     
-    **Hệ thống phân tích video ADAS chuyên nghiệp cho nghiên cứu khoa học và triển khai thương mại**
+    **Hệ thống phân tích video ADAS triển khai thương mại**
     
     ---
     
@@ -143,7 +143,6 @@ app = FastAPI(
     
     ### 🚀 Triển Khai
     Thiết kế cho **Ubuntu Production Server** với PostgreSQL.  
-    Phù hợp cho nghiên cứu khoa học (ĐHBK TP.HCM) và triển khai thương mại.
     
     ---
     
@@ -151,7 +150,6 @@ app = FastAPI(
     
     - **Swagger UI**: `/docs` (trang này)
     - **ReDoc**: `/redoc` (giao diện thay thế)
-    - **OpenAPI JSON**: `/openapi.json`
     
     ## 🔗 Endpoints Chính
     
@@ -165,7 +163,7 @@ app = FastAPI(
     
     ---
     
-    **Phát triển bởi:** ADAS Research Team - ĐHBK TP.HCM  
+    **Phát triển bởi:** ADAS Research Team - Bùi Văn Chương
     **Phiên bản:** 3.0.0 (PostgreSQL)  
     **Ngày cập nhật:** 03/01/2026
     """,
