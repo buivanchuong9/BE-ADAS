@@ -1,5 +1,5 @@
-# ADAS Backend - Windows Server Python 3.11
-# ALL packages use pre-built wheels - NO compilation needed
+# ADAS Backend - PostgreSQL v3.0
+# Cross-platform (macOS/Windows/Linux)
 
 # ================================================
 # Core Framework
@@ -11,18 +11,26 @@ pydantic-settings==2.6.1
 python-multipart==0.0.12
 
 # ================================================
-# Computer Vision & AI (Pre-built for Windows)
+# Database - PostgreSQL v3.0
+# ================================================
+asyncpg==0.29.0
+psycopg2-binary==2.9.9
+sqlalchemy[asyncio]==2.0.23
+alembic==1.13.1
+
+# ================================================
+# Computer Vision & AI
 # ================================================
 opencv-python==4.10.0.84
 numpy==1.26.4
-mediapipe==0.10.14
+mediapipe==0.10.30
 
-# PyTorch CPU (Let pip resolve compatible versions)
+# PyTorch CPU
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch>=2.0.0,<2.4.0
 torchvision>=0.15.0,<0.19.0
 
-# YOLOv11 (will auto-select compatible torch version)
+# YOLOv11
 ultralytics>=8.0.0
 
 # ================================================
@@ -34,28 +42,29 @@ aiofiles==24.1.0
 pillow==10.4.0
 
 # ================================================
-# Authentication & Security (Phase 8)
+# Authentication & Security
 # ================================================
 python-jose[cryptography]==3.3.0
 bcrypt==4.2.0
 
 # ================================================
-# Text-to-Speech (Phase 6)
+# Text-to-Speech
 # ================================================
 gTTS==2.5.3
 
 # ================================================
-# Object Tracking (ByteTrack)
+# Object Tracking
 # ================================================
 filterpy==1.4.5
 scipy==1.11.4
 
 # ================================================
-# System Monitoring (Phase 9)
+# System Monitoring
 # ================================================
 psutil==6.1.0
 
 # ================================================
-# Testing (Optional)
+# Testing
 # ================================================
 pytest==8.3.0
+requests==2.31.0

@@ -1,222 +1,171 @@
 """
-Job Queue Repository - v3.0
-===========================
-PostgreSQL-backed job queue with SELECT FOR UPDATE SKIP LOCKED.
+Job Queue Repository - PostgreSQL v3.0
+======================================
+Repository pattern for job_queue table operations.
+
+Author: Senior ADAS Engineer
+Date: 2026-01-03
 """
 
-import logging
-from datetime import datetime, timedelta
-from typing import Optional, List
-from uuid import UUID
-
-from sqlalchemy import select, update, and_, text
+from typing import List, Optional, Dict, Any
+from datetime import datetime
+from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.job_queue import JobQueue, JobStatus
-from ..models.video import Video
-
-logger = logging.getLogger(__name__)
+from app.db.repositories.base import BaseRepository
+from app.db.models.job_queue import JobQueue
 
 
-class JobQueueRepository:
-    """
-    Repository for job queue operations with PostgreSQL locking.
-    
-    Supports distributed workers with atomic job claiming.
-    """
+class JobQueueRepository(BaseRepository[JobQueue]):
+    """Repository for job queue operations"""
     
     def __init__(self, session: AsyncSession):
-        self.session = session
+        super().__init__(JobQueue, session)
     
-    async def create_job(
-        self,
-        video_id: int,
-        video_type: str = "dashcam",
-        device: str = "cuda",
-        priority: int = 0,
-        trip_id: Optional[int] = None
-    ) -> JobQueue:
-        """Create a new job in pending state."""
-        job = JobQueue(
-            video_id=video_id,
-            video_type=video_type,
-            device=device,
-            priority=priority,
-            trip_id=trip_id,
-            status=JobStatus.PENDING
-        )
-        self.session.add(job)
-        await self.session.flush()
-        await self.session.refresh(job)
-        return job
-    
-    async def claim_job(self, worker_id: str) -> Optional[JobQueue]:
-        """
-        Atomically claim the next available job.
-        
-        Uses SELECT FOR UPDATE SKIP LOCKED to prevent conflicts
-        between multiple workers.
-        
-        Args:
-            worker_id: Unique identifier for the claiming worker
-            
-        Returns:
-            Claimed job or None if no jobs available
-        """
-        # Raw SQL for proper FOR UPDATE SKIP LOCKED
-        claim_sql = text("""
-            UPDATE job_queue 
-            SET status = :processing,
-                worker_id = :worker_id,
-                worker_heartbeat = NOW(),
-                started_at = NOW(),
-                attempts = attempts + 1
-            WHERE id = (
-                SELECT id FROM job_queue
-                WHERE status = :pending
-                  AND attempts < max_attempts
-                ORDER BY priority DESC, created_at ASC
-                LIMIT 1
-                FOR UPDATE SKIP LOCKED
-            )
-            RETURNING *
-        """)
-        
+    async def get_all(self) -> List[JobQueue]:
+        """Get all jobs"""
         result = await self.session.execute(
-            claim_sql,
-            {
-                "processing": JobStatus.PROCESSING,
-                "pending": JobStatus.PENDING,
-                "worker_id": worker_id
-            }
+            select(JobQueue).order_by(JobQueue.created_at.desc())
         )
-        
-        row = result.fetchone()
-        if row:
-            logger.info(f"Worker {worker_id} claimed job {row.job_id}")
-            # Convert row to JobQueue object
-            job = await self.get_by_id(row.id)
-            return job
-        
-        return None
+        return list(result.scalars().all())
     
-    async def update_heartbeat(self, job_id: UUID) -> bool:
-        """Update worker heartbeat for a job."""
-        result = await self.session.execute(
-            update(JobQueue)
-            .where(JobQueue.job_id == job_id)
-            .values(worker_heartbeat=datetime.utcnow())
-        )
-        return result.rowcount > 0
-    
-    async def update_progress(self, job_id: UUID, progress: int) -> bool:
-        """Update job progress percentage."""
-        result = await self.session.execute(
-            update(JobQueue)
-            .where(JobQueue.job_id == job_id)
-            .values(progress_percent=min(100, max(0, progress)))
-        )
-        return result.rowcount > 0
-    
-    async def complete_job(
-        self,
-        job_id: UUID,
-        result_path: str,
-        processing_time: int
-    ) -> bool:
-        """Mark job as completed."""
-        result = await self.session.execute(
-            update(JobQueue)
-            .where(JobQueue.job_id == job_id)
-            .values(
-                status=JobStatus.COMPLETED,
-                result_path=result_path,
-                processing_time_seconds=processing_time,
-                completed_at=datetime.utcnow(),
-                progress_percent=100
-            )
-        )
-        return result.rowcount > 0
-    
-    async def fail_job(self, job_id: UUID, error: str) -> bool:
-        """Mark job as failed."""
-        result = await self.session.execute(
-            update(JobQueue)
-            .where(JobQueue.job_id == job_id)
-            .values(
-                status=JobStatus.FAILED,
-                error_message=error,
-                completed_at=datetime.utcnow()
-            )
-        )
-        return result.rowcount > 0
-    
-    async def get_by_id(self, id: int) -> Optional[JobQueue]:
-        """Get job by internal ID."""
-        result = await self.session.execute(
-            select(JobQueue).where(JobQueue.id == id)
-        )
-        return result.scalar_one_or_none()
-    
-    async def get_by_job_id(self, job_id: UUID) -> Optional[JobQueue]:
-        """Get job by UUID."""
+    async def get_by_job_id(self, job_id: str) -> Optional[JobQueue]:
+        """Get job by UUID job_id"""
         result = await self.session.execute(
             select(JobQueue).where(JobQueue.job_id == job_id)
         )
         return result.scalar_one_or_none()
     
-    async def get_pending_count(self) -> int:
-        """Get count of pending jobs."""
+    async def get_by_status(self, status: str) -> List[JobQueue]:
+        """Get jobs by status"""
         result = await self.session.execute(
-            text("SELECT COUNT(*) FROM job_queue WHERE status = :status"),
-            {"status": JobStatus.PENDING}
+            select(JobQueue)
+            .where(JobQueue.status == status)
+            .order_by(JobQueue.created_at.desc())
         )
-        return result.scalar() or 0
+        return list(result.scalars().all())
     
-    async def recover_stale_jobs(self, timeout_minutes: int = 15) -> int:
+    async def get_pending_jobs(self, limit: int = 10) -> List[JobQueue]:
+        """Get pending jobs ordered by priority and creation time"""
+        result = await self.session.execute(
+            select(JobQueue)
+            .where(JobQueue.status == 'pending')
+            .order_by(JobQueue.priority.desc(), JobQueue.created_at.asc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+    
+    async def get_storage_stats(self) -> Dict[str, Any]:
         """
-        Recover jobs from workers that died (no heartbeat).
+        Get storage statistics from job queue.
+        
+        Returns:
+            Dictionary with storage stats including total size, counts by status
+        """
+        # Count jobs by status
+        status_counts = await self.session.execute(
+            select(
+                JobQueue.status,
+                func.count(JobQueue.id).label('count')
+            )
+            .group_by(JobQueue.status)
+        )
+        
+        stats = {
+            'total_jobs': 0,
+            'pending': 0,
+            'processing': 0,
+            'completed': 0,
+            'failed': 0
+        }
+        
+        for row in status_counts:
+            stats['total_jobs'] += row.count
+            stats[row.status] = row.count
+        
+        return stats
+    
+    async def update_progress(
+        self,
+        job_id: str,
+        progress_percent: int,
+        current_step: Optional[str] = None
+    ) -> Optional[JobQueue]:
+        """Update job progress"""
+        job = await self.get_by_job_id(job_id)
+        if not job:
+            return None
+        
+        job.progress_percent = progress_percent
+        if current_step:
+            job.current_step = current_step
+        job.updated_at = datetime.utcnow()
+        
+        await self.session.commit()
+        await self.session.refresh(job)
+        return job
+    
+    async def mark_completed(
+        self,
+        job_id: str,
+        result_path: str,
+        processing_time_seconds: int
+    ) -> Optional[JobQueue]:
+        """Mark job as completed"""
+        job = await self.get_by_job_id(job_id)
+        if not job:
+            return None
+        
+        job.status = 'completed'
+        job.progress_percent = 100
+        job.result_path = result_path
+        job.processing_time_seconds = processing_time_seconds
+        job.completed_at = datetime.utcnow()
+        job.updated_at = datetime.utcnow()
+        
+        await self.session.commit()
+        await self.session.refresh(job)
+        return job
+    
+    async def mark_failed(
+        self,
+        job_id: str,
+        error_message: str
+    ) -> Optional[JobQueue]:
+        """Mark job as failed"""
+        job = await self.get_by_job_id(job_id)
+        if not job:
+            return None
+        
+        job.status = 'failed'
+        job.error_message = error_message
+        job.updated_at = datetime.utcnow()
+        job.attempts += 1
+        
+        await self.session.commit()
+        await self.session.refresh(job)
+        return job
+    
+    async def cleanup_old_jobs(self, days: int = 90) -> int:
+        """
+        Delete jobs older than specified days.
         
         Args:
-            timeout_minutes: Consider job stale if no heartbeat in this time
+            days: Number of days to keep
             
         Returns:
-            Number of jobs recovered
+            Number of deleted jobs
         """
-        cutoff = datetime.utcnow() - timedelta(minutes=timeout_minutes)
+        from datetime import timedelta
+        cutoff_date = datetime.utcnow() - timedelta(days=days)
         
         result = await self.session.execute(
-            update(JobQueue)
-            .where(
-                and_(
-                    JobQueue.status == JobStatus.PROCESSING,
-                    JobQueue.worker_heartbeat < cutoff
-                )
-            )
-            .values(
-                status=JobStatus.PENDING,
-                worker_id=None,
-                worker_heartbeat=None
-            )
+            select(JobQueue).where(JobQueue.created_at < cutoff_date)
         )
+        old_jobs = list(result.scalars().all())
         
-        if result.rowcount > 0:
-            logger.warning(f"Recovered {result.rowcount} stale jobs")
+        for job in old_jobs:
+            await self.session.delete(job)
         
-        return result.rowcount
-    
-    async def list_jobs(
-        self,
-        status: Optional[JobStatus] = None,
-        limit: int = 50,
-        offset: int = 0
-    ) -> List[JobQueue]:
-        """List jobs with optional filtering."""
-        query = select(JobQueue).order_by(JobQueue.created_at.desc())
-        
-        if status:
-            query = query.where(JobQueue.status == status)
-        
-        query = query.limit(limit).offset(offset)
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
+        await self.session.commit()
+        return len(old_jobs)
