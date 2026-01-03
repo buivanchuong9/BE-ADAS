@@ -105,7 +105,8 @@ class ConnectionManager:
             try:
                 self.alert_queue.get_nowait()
                 await self.alert_queue.put(alert)
-            except:
+            except Exception:
+                # Ignore queue errors during alert buffering
                 pass
     
     async def _broadcast_loop(self):
@@ -146,7 +147,8 @@ class ConnectionManager:
                 "type": "heartbeat",
                 "timestamp": datetime.utcnow().isoformat()
             })
-        except:
+        except Exception:
+            # Ignore heartbeat send errors (connection may be closed)
             pass
     
     def get_stats(self) -> Dict[str, Any]:
