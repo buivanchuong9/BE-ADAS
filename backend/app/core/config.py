@@ -1,15 +1,14 @@
 """
-Application Configuration
-==========================
+Application Configuration - v3.0 (PostgreSQL)
+==============================================
 Uses Pydantic Settings for environment-based configuration.
 
 Environment variables:
-- DB_HOST: SQL Server host (default: localhost)
-- DB_PORT: SQL Server port (default: 1433)
-- DB_NAME: Database name (default: adas_production)
-- DB_USER: Database user
-- DB_PASSWORD: Database password
-- DB_DRIVER: ODBC Driver name (default: ODBC Driver 17 for SQL Server)
+- PG_HOST: PostgreSQL host (default: localhost)
+- PG_PORT: PostgreSQL port (default: 5432)
+- PG_NAME: Database name (default: adas_db)
+- PG_USER: Database user (default: adas_user)
+- PG_PASSWORD: Database password
 - SECRET_KEY: JWT secret key
 - ALGORITHM: JWT algorithm (default: HS256)
 - ACCESS_TOKEN_EXPIRE_MINUTES: Token expiry (default: 30)

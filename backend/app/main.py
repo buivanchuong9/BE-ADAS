@@ -1,16 +1,17 @@
 """
-MAIN FASTAPI APPLICATION - Version 2.0
+MAIN FASTAPI APPLICATION - Version 3.0
 ========================================
 Entry point for ADAS Video Analysis Backend.
 
-Version 2.0 Changes:
-- Microsoft SQL Server database
-- Async job processing
-- Repository pattern for data access
-- Proper separation of concerns
+Version 3.0 Changes:
+- PostgreSQL database with asyncpg
+- Distributed job queue with SELECT FOR UPDATE SKIP LOCKED
+- GPU worker pool with supervisor
+- Video deduplication with SHA256
+- Improved error handling and stability
 
 Author: Senior ADAS Engineer
-Date: 2025-12-26
+Date: 2026-01-03
 """
 
 from fastapi import FastAPI, Request, UploadFile, File
@@ -65,7 +66,7 @@ async def lifespan(app: FastAPI):
         logger.info("✓ Database initialized successfully")
     except Exception as e:
         logger.error(f"✗ Database initialization failed: {e}")
-        logger.error("Please check database configuration and ensure SQL Server is running")
+        logger.error("Please check database configuration and ensure PostgreSQL is running")
         raise
     
     # Initialize job service
@@ -106,18 +107,20 @@ app = FastAPI(
     description="""
     Production-Grade ADAS Backend System for Research and Commercial Use
     
-    ## Version 2.0 Features
+    ## Version 3.0 Features (PostgreSQL)
     
     ### Database
-    - **Microsoft SQL Server** for production-grade data persistence
-    - **Async SQLAlchemy** for efficient database operations
-    - **Alembic migrations** for schema version control
+    - **PostgreSQL** for production-grade data persistence
+    - **Async asyncpg** for high-performance database operations
+    - **Distributed job queue** with SELECT FOR UPDATE SKIP LOCKED
+    - **Video deduplication** with SHA256 hash
     
     ### Video Processing
     - **Non-blocking uploads** - API returns immediately
-    - **Background processing** with ThreadPoolExecutor
-    - **Job status tracking** with progress updates
-    - **Event logging** to database
+    - **GPU worker pool** with supervisor management
+    - **Job status tracking** with real-time progress updates
+    - **Event logging** to PostgreSQL database
+    - **Automatic retry** for failed jobs
     
     ### ADAS Analysis
     - **Lane Detection**: Real geometry-based curved lane detection
@@ -128,16 +131,15 @@ app = FastAPI(
     - **Traffic Sign Recognition**: Speed limits, stop signs, warnings
     - **Driver Monitoring**: MediaPipe Face Mesh for fatigue detection
     
-    ### Architecture
-    - **Repository Pattern**: Clean data access layer
-    - **Service Layer**: Business logic separation
-    - **Pydantic Schemas**: Request/response validation
-    - **Structured Logging**: JSON logs with request_id tracking
+    ### Infrastructure
+    - **Cloudflare proxy** support with CF-Ray tracking
+    - **WebSocket alerts** for real-time notifications
+    - **Structured logging** with JSON format
+    - **Health checks** and monitoring endpoints
     
-    ## Deployment
-    
-    Designed for Windows Server with SQL Server Developer Edition.
-    Suitable for scientific research (NCKH) and commercial deployment.
+    ### Deployment
+    Designed for Windows Server with SQL Server → **Ubuntu production** with PostgreSQL.
+    Suitable for scientific research (HCMUT) and commercial deployment.
     """,
     version=settings.APP_VERSION,
     docs_url="/docs",
