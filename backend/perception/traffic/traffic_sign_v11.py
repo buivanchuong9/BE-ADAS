@@ -29,7 +29,7 @@ Date: 2025-12-26 (Phase 7 Enhancement)
 
 import cv2
 import numpy as np
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 from collections import deque
 import logging
 

@@ -158,7 +158,8 @@ async def complete_trip(id: int, request: TripCompleteRequest):
         end = datetime.fromisoformat(request.end_time.replace('Z', '+00:00'))
         duration = (end - start).total_seconds() / 60
         trip.duration_minutes = int(duration)
-    except:
+    except Exception as e:
+        # Fallback to default duration if datetime parsing fails
         trip.duration_minutes = 60  # Default
     
     return {
