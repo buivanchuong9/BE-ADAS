@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     # Database - PostgreSQL
     PG_HOST: str = "localhost"
     PG_PORT: int = 5432
-    PG_NAME: str = "adas_production"
-    PG_USER: str = "phonglv"
+    PG_NAME: str = "adas_db"  # Database created
+    PG_USER: str = os.getenv("USER", "postgres")  # Current macOS user
     PG_PASSWORD: str = ""
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
