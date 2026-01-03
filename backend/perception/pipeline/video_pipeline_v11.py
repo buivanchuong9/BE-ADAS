@@ -283,7 +283,7 @@ class VideoPipelineV11:
             logger.error(f"Failed to open video: {input_path}")
             return {
                 "success": False,
-                "error": "Failed to open video file"
+                "error": "Failed to open video file. File may be corrupted or format not supported."
             }
         
         # Get video properties
@@ -291,6 +291,15 @@ class VideoPipelineV11:
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        # Validate video properties
+        if fps == 0 or width == 0 or height == 0:
+            cap.release()
+            logger.error(f"Invalid video properties: fps={fps}, size={width}x{height}")
+            return {
+                "success": False,
+                "error": f"Invalid video properties: fps={fps}, resolution={width}x{height}"
+            }
         
         logger.info(f"Video properties: {width}x{height} @ {fps} fps, {total_frames} frames")
         
@@ -303,7 +312,7 @@ class VideoPipelineV11:
             cap.release()
             return {
                 "success": False,
-                "error": "Failed to create output video file"
+                "error": "Failed to create output video file. Check disk space and permissions."
             }
         
         # Reset events

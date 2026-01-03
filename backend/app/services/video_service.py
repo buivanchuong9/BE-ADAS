@@ -17,8 +17,8 @@ if TYPE_CHECKING:
 
 from ..core.config import settings
 from ..core.exceptions import ValidationError
-from ..db.repositories.video_job_repo import VideoJobRepository
-from ..db.models.video_job import JobStatus, VideoType
+from ..db.repositories.job_queue_repo import JobQueueRepository
+from ..db.models.job_queue import JobQueue, JobStatus
 from ..schemas.video import VideoJobCreate, VideoJobResponse
 
 logger = logging.getLogger(__name__)
@@ -123,7 +123,7 @@ class VideoService:
         output_path = str(self.processed_dir / f"{job_id_uuid}_result.mp4")
         
         # Create job record
-        repo = VideoJobRepository(self.session)
+        repo = JobQueueRepository(self.session)
         job_data = {
             "job_id": job_id_uuid,
             "trip_id": trip_id,
@@ -169,7 +169,7 @@ class VideoService:
         Returns:
             Path to saved file
         """
-        repo = VideoJobRepository(self.session)
+        repo = JobQueueRepository(self.session)
         job = await repo.get_by_job_id(job_id)
         
         if not job:
@@ -224,7 +224,7 @@ class VideoService:
         Returns:
             Job or None
         """
-        repo = VideoJobRepository(self.session)
+        repo = JobQueueRepository(self.session)
         job = await repo.get_by_job_id(job_id)
         
         if not job:

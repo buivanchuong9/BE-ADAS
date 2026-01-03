@@ -85,6 +85,102 @@ class JobQueueRepository(BaseRepository[JobQueue]):
         
         return stats
     
+    async def create(self, **kwargs) -> JobQueue:
+        """
+        Create a new job in queue.
+        
+        Args:
+            **kwargs: Job attributes
+            
+        Returns:
+            Created job
+        """
+        job = JobQueue(**kwargs)
+        self.session.add(job)
+        await self.session.commit()
+        await self.session.refresh(job)
+        return job
+    
+    async def update(self, job_id: int, **kwargs) -> Optional[JobQueue]:
+        """
+        Update job by ID.
+        
+        Args:
+            job_id: Job ID (integer primary key)
+            **kwargs: Fields to update
+            
+        Returns:
+            Updated job or None
+        """
+        result = await self.session.execute(
+            select(JobQueue).where(JobQueue.id == job_id)
+        )
+        job = result.scalar_one_or_none()
+        
+        if not job:
+            return None
+        
+        for key, value in kwargs.items():
+            if hasattr(job, key):
+                setattr(job, key, value)
+        
+        job.updated_at = datetime.utcnow()
+        await self.session.commit()
+        await self.session.refresh(job)
+        return job
+    
+    async def delete(self, job_id: int) -> bool:
+        """
+        Delete job by ID.
+        
+        Args:
+            job_id: Job ID (integer primary key)
+            
+        Returns:
+            True if deleted, False if not found
+        """
+        result = await self.session.execute(
+            select(JobQueue).where(JobQueue.id == job_id)
+        )
+        job = result.scalar_one_or_none()
+        
+        if not job:
+            return False
+        
+        await self.session.delete(job)
+        await self.session.commit()
+        return True
+    
+    async def update_status(
+        self,
+        job_id: str,
+        status: str,
+        error_message: Optional[str] = None
+    ) -> Optional[JobQueue]:
+        """
+        Update job status.
+        
+        Args:
+            job_id: Job ID (UUID string)
+            status: New status
+            error_message: Optional error message
+            
+        Returns:
+            Updated job or None
+        """
+        job = await self.get_by_job_id(job_id)
+        if not job:
+            return None
+        
+        job.status = status
+        if error_message:
+            job.error_message = error_message
+        job.updated_at = datetime.utcnow()
+        
+        await self.session.commit()
+        await self.session.refresh(job)
+        return job
+    
     async def update_progress(
         self,
         job_id: str,

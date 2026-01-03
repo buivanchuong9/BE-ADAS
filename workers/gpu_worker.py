@@ -118,24 +118,17 @@ class GPUWorker:
                         LIMIT 1
                         FOR UPDATE SKIP LOCKED
                     )
-                    RETURNING id, job_id, video_id, video_type, device
+                    RETURNING id, job_id, video_path, video_filename, video_type, device
                 """, self.worker_id)
                 
                 if row:
-                    # Get video info
-                    video = await conn.fetchrow(
-                        "SELECT storage_path, original_filename FROM videos WHERE id = $1",
-                        row['video_id']
-                    )
-                    
                     return {
                         'id': row['id'],
                         'job_id': row['job_id'],
-                        'video_id': row['video_id'],
                         'video_type': row['video_type'],
                         'device': row['device'],
-                        'input_path': video['storage_path'] if video else None,
-                        'filename': video['original_filename'] if video else None
+                        'input_path': row['video_path'],
+                        'filename': row['video_filename']
                     }
         
         return None

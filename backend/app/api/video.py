@@ -121,10 +121,10 @@ async def get_result(
         Video job with status and results
     """
     try:
-        from app.db.repositories.video_job_repo import VideoJobRepository
+        from app.db.repositories.job_queue_repo import JobQueueRepository
         
         # Get job from database
-        repo = VideoJobRepository(db)
+        repo = JobQueueRepository(db)
         job = await repo.get_by_job_id(job_id)
         
         if not job:
@@ -157,11 +157,11 @@ async def download_result(
         Video file
     """
     try:
-        from app.db.repositories.video_job_repo import VideoJobRepository
+        from app.db.repositories.job_queue_repo import JobQueueRepository
         from app.services.video_service import VideoService
         
         # Get job from database
-        repo = VideoJobRepository(db)
+        repo = JobQueueRepository(db)
         job = await repo.get_by_job_id(job_id)
         
         if not job:
@@ -210,11 +210,11 @@ async def delete_job(
         Success message
     """
     try:
-        from app.db.repositories.video_job_repo import VideoJobRepository
+        from app.db.repositories.job_queue_repo import JobQueueRepository
         from app.services.video_service import VideoService
         
         # Get job from database
-        repo = VideoJobRepository(db)
+        repo = JobQueueRepository(db)
         job = await repo.get_by_job_id(job_id)
         
         if not job:

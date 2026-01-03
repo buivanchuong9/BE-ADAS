@@ -10,7 +10,7 @@ import aiofiles
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.db.repositories.video_job_repo import VideoJobRepository
+from app.db.repositories.job_queue_repo import JobQueueRepository
 from app.core.config import settings
 
 router = APIRouter(prefix="/api", tags=["upload", "storage"])
@@ -255,7 +255,7 @@ async def cleanup_old_files(
     cutoff_date = datetime.now() - timedelta(days=days_old)
     
     # Get old jobs from database
-    repo = VideoJobRepository(db)
+    repo = JobQueueRepository(db)
     all_jobs = await repo.get_all()
     
     old_jobs = [

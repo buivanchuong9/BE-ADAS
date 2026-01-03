@@ -15,9 +15,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
 from ..core.exceptions import JobNotFoundError
-from ..db.repositories.video_job_repo import VideoJobRepository
+from ..db.repositories.job_queue_repo import JobQueueRepository
 from ..db.repositories.safety_event_repo import SafetyEventRepository
-from ..db.models.video_job import JobStatus
+from ..db.models.job_queue import JobQueue, JobStatus
 from ..schemas.video import VideoJobResponse
 
 logger = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ class JobService:
             video_type: "dashcam" or "in_cabin"
             device: "cpu" or "cuda"
         """
-        repo = VideoJobRepository(session)
+        repo = JobQueueRepository(session)
         
         # Update status to PROCESSING
         await repo.update_status(job_id, JobStatus.PROCESSING)
@@ -195,7 +195,7 @@ class JobService:
         
         async with async_session_maker() as session:
             try:
-                repo = VideoJobRepository(session)
+                repo = JobQueueRepository(session)
                 
                 if result.get('success'):
                     # Success
@@ -237,7 +237,7 @@ class JobService:
         
         async with async_session_maker() as session:
             try:
-                repo = VideoJobRepository(session)
+                repo = JobQueueRepository(session)
                 await repo.update_status(job_id, JobStatus.FAILED, error)
                 await session.commit()
                 logger.error(f"[Job {job_id}] Marked as failed: {error}")
@@ -262,7 +262,7 @@ class JobService:
         if not events:
             return
         
-        job_repo = VideoJobRepository(session)
+        job_repo = JobQueueRepository(session)
         event_repo = SafetyEventRepository(session)
         
         job = await job_repo.get_by_job_id(job_id)
@@ -338,7 +338,7 @@ class JobService:
         Raises:
             JobNotFoundError: If job not found
         """
-        repo = VideoJobRepository(session)
+        repo = JobQueueRepository(session)
         job = await repo.get_by_job_id(job_id)
         
         if not job:
@@ -357,7 +357,7 @@ class JobService:
         Returns:
             True if cancelled, False otherwise
         """
-        repo = VideoJobRepository(session)
+        repo = JobQueueRepository(session)
         job = await repo.get_by_job_id(job_id)
         
         if not job:
