@@ -105,41 +105,69 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description="""
-    Production-Grade ADAS Backend System for Research and Commercial Use
+    # 🚗 Hệ Thống ADAS Backend v3.0 - PostgreSQL
     
-    ## Version 3.0 Features (PostgreSQL)
+    **Hệ thống phân tích video ADAS chuyên nghiệp cho nghiên cứu khoa học và triển khai thương mại**
     
-    ### Database
-    - **PostgreSQL** for production-grade data persistence
-    - **Async asyncpg** for high-performance database operations
-    - **Distributed job queue** with SELECT FOR UPDATE SKIP LOCKED
-    - **Video deduplication** with SHA256 hash
+    ---
     
-    ### Video Processing
-    - **Non-blocking uploads** - API returns immediately
-    - **GPU worker pool** with supervisor management
-    - **Job status tracking** with real-time progress updates
-    - **Event logging** to PostgreSQL database
-    - **Automatic retry** for failed jobs
+    ## 🎯 Tính Năng Phiên Bản 3.0
     
-    ### ADAS Analysis
-    - **Lane Detection**: Real geometry-based curved lane detection
-    - **Object Detection**: YOLOv11-based vehicle and pedestrian detection
-    - **Distance Estimation**: Monocular distance with risk classification
-    - **Lane Departure Warning**: Real-time LDW based on vehicle offset
-    - **Forward Collision Warning**: TTC-based collision risk assessment
-    - **Traffic Sign Recognition**: Speed limits, stop signs, warnings
-    - **Driver Monitoring**: MediaPipe Face Mesh for fatigue detection
+    ### 💾 Cơ Sở Dữ Liệu
+    - ✅ **PostgreSQL** - Cơ sở dữ liệu production-grade
+    - ✅ **Async asyncpg** - Hiệu suất cao với async I/O
+    - ✅ **Distributed Job Queue** - Hàng đợi phân tán với `SELECT FOR UPDATE SKIP LOCKED`
+    - ✅ **Video Deduplication** - Loại bỏ trùng lặp với SHA256 hash
     
-    ### Infrastructure
-    - **Cloudflare proxy** support with CF-Ray tracking
-    - **WebSocket alerts** for real-time notifications
-    - **Structured logging** with JSON format
-    - **Health checks** and monitoring endpoints
+    ### 🎬 Xử Lý Video
+    - ✅ **Non-blocking Upload** - API trả về ngay lập tức
+    - ✅ **GPU Worker Pool** - Quản lý worker với Supervisor
+    - ✅ **Real-time Progress** - Theo dõi tiến độ xử lý real-time
+    - ✅ **Event Logging** - Ghi log sự kiện vào PostgreSQL
+    - ✅ **Auto Retry** - Tự động thử lại khi job thất bại
     
-    ### Deployment
-    Designed for Windows Server with SQL Server → **Ubuntu production** with PostgreSQL.
-    Suitable for scientific research (HCMUT) and commercial deployment.
+    ### 🤖 Phân Tích ADAS
+    - 🛣️ **Lane Detection** - Phát hiện làn đường dựa trên hình học thực
+    - 🚙 **Object Detection** - Phát hiện xe và người đi bộ với YOLOv11
+    - 📏 **Distance Estimation** - Ước lượng khoảng cách monocular
+    - ⚠️ **Lane Departure Warning** - Cảnh báo lệch làn đường real-time
+    - 🚨 **Forward Collision Warning** - Cảnh báo va chạm dựa trên TTC
+    - 🚦 **Traffic Sign Recognition** - Nhận diện biển báo giao thông
+    - 😴 **Driver Monitoring** - Giám sát mệt mỏi với MediaPipe Face Mesh
+    
+    ### 🏗️ Hạ Tầng
+    - ☁️ **Cloudflare Proxy** - Hỗ trợ proxy với CF-Ray tracking
+    - 🔔 **WebSocket Alerts** - Thông báo real-time qua WebSocket
+    - 📊 **Structured Logging** - Log có cấu trúc định dạng JSON
+    - 💚 **Health Checks** - Endpoint kiểm tra sức khỏe hệ thống
+    
+    ### 🚀 Triển Khai
+    Thiết kế cho **Ubuntu Production Server** với PostgreSQL.  
+    Phù hợp cho nghiên cứu khoa học (ĐHBK TP.HCM) và triển khai thương mại.
+    
+    ---
+    
+    ## 📚 Tài Liệu API
+    
+    - **Swagger UI**: `/docs` (trang này)
+    - **ReDoc**: `/redoc` (giao diện thay thế)
+    - **OpenAPI JSON**: `/openapi.json`
+    
+    ## 🔗 Endpoints Chính
+    
+    | Nhóm | Endpoint | Mô Tả |
+    |------|----------|-------|
+    | 🎬 Video | `POST /api/video/upload` | Upload video để phân tích |
+    | 📊 Kết Quả | `GET /api/video/result/{job_id}` | Lấy kết quả phân tích |
+    | 💾 Download | `GET /api/video/download/{job_id}/{filename}` | Tải video đã xử lý |
+    | 🔐 Auth | `POST /api/auth/login` | Đăng nhập hệ thống |
+    | 📈 Stats | `GET /api/statistics/summary` | Thống kê tổng quan |
+    
+    ---
+    
+    **Phát triển bởi:** ADAS Research Team - ĐHBK TP.HCM  
+    **Phiên bản:** 3.0.0 (PostgreSQL)  
+    **Ngày cập nhật:** 03/01/2026
     """,
     version=settings.APP_VERSION,
     docs_url="/docs",
