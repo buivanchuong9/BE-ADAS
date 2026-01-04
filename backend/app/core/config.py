@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     
+    # Supabase Authentication
+    SUPABASE_PROJECT_ID: str = "kijdjdtuyeywmthhuoac"
+    SUPABASE_PROJECT_URL: str = "https://kijdjdtuyeywmthhuoac.supabase.co"
+    SUPABASE_JWKS_URL: str = "https://kijdjdtuyeywmthhuoac.supabase.co/auth/v1/.well-known/jwks.json"
+    SUPABASE_JWT_AUDIENCE: str = "authenticated"
+    SUPABASE_JWT_ALGORITHM: str = "RS256"
+    # Anon key for Supabase client (public, safe to expose)
+    SUPABASE_ANON_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpamRqZHR1eWV5d210aGh1b2FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczMzY0MTUsImV4cCI6MjA4MjkxMjQxNX0.T2UOrxb53Op_xfMMoaTvQIUs0c_PJbPdlezz4B1-9Lg"  # Set via environment variable
+    
     # Storage Paths
     STORAGE_ROOT: str = "./backend/storage"
     RAW_VIDEO_DIR: str = "./backend/storage/raw"

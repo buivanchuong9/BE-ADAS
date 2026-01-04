@@ -1,352 +1,207 @@
 """
-Authentication and User Management API endpoints - Phase 5 Optional
-Handles user authentication and authorization (dummy implementation for frontend testing)
+Authentication API Endpoints - Hybrid ID System
+================================================
+Handles user authentication using Supabase JWT tokens with
+integer ID support for legacy compatibility.
+
+Author: Senior ADAS Engineer  
+Date: 2026-01-04
 """
-from fastapi import APIRouter, HTTPException, Header, Form
+from fastapi import APIRouter, Depends
 from typing import Optional
-from datetime import datetime, timedelta
 from pydantic import BaseModel
-import uuid
-import hashlib
 
-router = APIRouter(prefix="/api", tags=["authentication", "users"])
+from app.core.supabase_auth import get_current_user, get_optional_user, SupabaseUser
 
-
-# Request models
-class LoginRequest(BaseModel):
-    username: str
-    password: str
+router = APIRouter(prefix="/api", tags=["authentication"])
 
 
-class CreateUserRequest(BaseModel):
-    username: str
-    password: str
-    role: str
+# Response models
+class UserResponse(BaseModel):
+    """User information response with Hybrid ID."""
+    id: int  # Integer ID from database (for legacy controllers)
+    auth_id: str  # UUID from Supabase Auth
     email: Optional[str] = None
+    role: Optional[str] = None
 
 
-# In-memory user storage (dummy)
-_users = {
-    "user_001": {
-        "id": "user_001",
-        "username": "admin",
-        "password_hash": hashlib.sha256("admin123".encode()).hexdigest(),  # admin123
-        "role": "admin",
-        "email": "admin@adas.com",
-        "created_at": "2025-12-01T00:00:00"
-    },
-    "user_002": {
-        "id": "user_002",
-        "username": "driver1",
-        "password_hash": hashlib.sha256("driver123".encode()).hexdigest(),  # driver123
-        "role": "driver",
-        "email": "driver1@adas.com",
-        "created_at": "2025-12-15T00:00:00"
-    },
-    "user_003": {
-        "id": "user_003",
-        "username": "analyst",
-        "password_hash": hashlib.sha256("analyst123".encode()).hexdigest(),  # analyst123
-        "role": "analyst",
-        "email": "analyst@adas.com",
-        "created_at": "2025-12-10T00:00:00"
-    }
-}
-
-# Active sessions (token -> user_id)
-_sessions = {}
+class AuthMeResponse(BaseModel):
+    """Authentication status response."""
+    success: bool
+    user: UserResponse
 
 
-@router.post("/auth/login")
-async def login(request: LoginRequest):
+@router.get("/auth/me", response_model=AuthMeResponse)
+async def get_current_user_info(user: SupabaseUser = Depends(get_current_user)):
     """
-    User login
+    Get current authenticated user information with Hybrid ID.
     
-    Request body (JSON):
-    - username: Username
-    - password: Password
+    **Authentication:** Required (Bearer token)
     
-    Returns:
-    - success: Boolean
-    - token: JWT-like token for authentication
-    - user: User information (without password)
+    **Headers:**
+    - Authorization: Bearer {supabase_jwt_token}
     
-    Test credentials:
-    - admin / admin123 (admin role)
-    - driver1 / driver123 (driver role)
-    - analyst / analyst123 (analyst role)
+    **Returns:**
+    - success: True if authenticated
+    - user: User information from Supabase JWT + Database
+        - id: Integer ID from database (for legacy controllers)
+        - auth_id: UUID from Supabase Auth
+        - email: User email address
+        - role: User role from database
+    
+    **Hybrid ID System:**
+    This endpoint bridges Supabase Auth (UUID) with legacy integer IDs.
+    The integer `id` can be used directly in existing controllers without changes.
+    
+    **Example:**
+    ```bash
+    curl -X GET "http://localhost:52000/api/auth/me" \\
+      -H "Authorization: Bearer YOUR_SUPABASE_JWT_TOKEN"
+    ```
+    
+    **Response:**
+    ```json
+    {
+      "success": true,
+      "user": {
+        "id": 123,
+        "auth_id": "550e8400-e29b-41d4-a716-446655440000",
+        "email": "user@example.com",
+        "role": "admin"
+      }
+    }
+    ```
+    
+    **Errors:**
+    - 401: Invalid or expired token
+    - 401: User not synced with database
+    - 503: Database unavailable
     """
-    # Find user by username
-    user = None
-    for u in _users.values():
-        if u["username"] == request.username:
-            user = u
-            break
-    
-    if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid username or password"
+    return AuthMeResponse(
+        success=True,
+        user=UserResponse(
+            id=user.id,  # Integer ID from database
+            auth_id=user.user_id,  # UUID from Supabase
+            email=user.email,
+            role=user.role
         )
+    )
+
+
+@router.get("/auth/status")
+async def check_auth_status(user: Optional[SupabaseUser] = Depends(get_optional_user)):
+    """
+    Check authentication status without requiring authentication.
     
-    # Check password
-    password_hash = hashlib.sha256(request.password.encode()).hexdigest()
-    if password_hash != user["password_hash"]:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid username or password"
-        )
+    **Authentication:** Optional
     
-    # Generate token (dummy - in production use JWT)
-    token = str(uuid.uuid4())
+    **Headers:**
+    - Authorization: Bearer {supabase_jwt_token} (optional)
     
-    # Store session
-    _sessions[token] = {
-        "user_id": user["id"],
-        "created_at": datetime.now().isoformat(),
-        "expires_at": (datetime.now() + timedelta(hours=24)).isoformat()
+    **Returns:**
+    - authenticated: True if valid token provided, False otherwise
+    - user: User information if authenticated (with Hybrid ID), null otherwise
+    
+    **Use case:**
+    Use this endpoint to check if a user is authenticated without
+    triggering a 401 error for unauthenticated requests.
+    
+    **Example:**
+    ```bash
+    # With token
+    curl -X GET "http://localhost:52000/api/auth/status" \\
+      -H "Authorization: Bearer YOUR_SUPABASE_JWT_TOKEN"
+    
+    # Without token
+    curl -X GET "http://localhost:52000/api/auth/status"
+    ```
+    
+    **Response (authenticated):**
+    ```json
+    {
+      "authenticated": true,
+      "user": {
+        "id": 123,
+        "auth_id": "550e8400-e29b-41d4-a716-446655440000",
+        "email": "user@example.com",
+        "role": "admin"
+      }
     }
+    ```
     
-    # Return user info (without password)
-    user_info = {
-        "id": user["id"],
-        "username": user["username"],
-        "role": user["role"],
-        "email": user.get("email")
+    **Response (not authenticated):**
+    ```json
+    {
+      "authenticated": false,
+      "user": null
     }
+    ```
+    """
+    if user:
+        return {
+            "authenticated": True,
+            "user": {
+                "id": user.id,  # Integer ID
+                "auth_id": user.user_id,  # UUID
+                "email": user.email,
+                "role": user.role
+            }
+        }
+    else:
+        return {
+            "authenticated": False,
+            "user": None
+        }
+
+
+# Example protected endpoint demonstrating integer ID usage
+@router.get("/auth/protected")
+async def protected_example(user: SupabaseUser = Depends(get_current_user)):
+    """
+    Example protected endpoint demonstrating Hybrid ID usage.
     
+    **Authentication:** Required (Bearer token)
+    
+    **Headers:**
+    - Authorization: Bearer {supabase_jwt_token}
+    
+    **Returns:**
+    Personalized message with both integer ID and UUID for demonstration.
+    
+    **Legacy Controller Compatibility:**
+    Use `user.id` (integer) in your existing database queries and
+    foreign key relationships without any code changes.
+    
+    **Example:**
+    ```python
+    # In your legacy controller
+    @router.get("/videos/my-uploads")
+    async def get_my_videos(user: SupabaseUser = Depends(get_current_user)):
+        # user.id is the integer ID - works with existing foreign keys
+        videos = await db.query(Video).filter(Video.uploader_id == user.id).all()
+        return videos
+    ```
+    
+    **Example:**
+    ```bash
+    curl -X GET "http://localhost:52000/api/auth/protected" \\
+      -H "Authorization: Bearer YOUR_SUPABASE_JWT_TOKEN"
+    ```
+    """
     return {
-        "success": True,
-        "token": token,
-        "user": user_info,
-        "expires_in": 86400  # 24 hours in seconds
-    }
-
-
-@router.post("/auth/logout")
-async def logout(authorization: Optional[str] = Header(None)):
-    """
-    User logout
-    
-    Headers:
-    - Authorization: Bearer {token}
-    
-    Invalidates the current session token
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid authorization header"
-        )
-    
-    token = authorization.replace("Bearer ", "")
-    
-    if token not in _sessions:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
-    
-    # Remove session
-    _sessions.pop(token)
-    
-    return {
-        "success": True,
-        "message": "Logged out successfully"
-    }
-
-
-@router.get("/auth/me")
-async def get_current_user(authorization: Optional[str] = Header(None)):
-    """
-    Get current authenticated user
-    
-    Headers:
-    - Authorization: Bearer {token}
-    
-    Returns user information for the authenticated user
-    """
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid authorization header"
-        )
-    
-    token = authorization.replace("Bearer ", "")
-    
-    if token not in _sessions:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
-    
-    # Get user from session
-    session = _sessions[token]
-    user_id = session["user_id"]
-    
-    if user_id not in _users:
-        raise HTTPException(
-            status_code=404,
-            detail="User not found"
-        )
-    
-    user = _users[user_id]
-    
-    # Return user info (without password)
-    user_info = {
-        "id": user["id"],
-        "username": user["username"],
-        "role": user["role"],
-        "email": user.get("email"),
-        "created_at": user.get("created_at")
-    }
-    
-    return {
-        "success": True,
-        "user": user_info
-    }
-
-
-@router.get("/users/list")
-async def list_users(authorization: Optional[str] = Header(None)):
-    """
-    List all users (admin only)
-    
-    Headers:
-    - Authorization: Bearer {token}
-    
-    Returns list of all users (without passwords)
-    """
-    # Verify authentication
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid authorization header"
-        )
-    
-    token = authorization.replace("Bearer ", "")
-    
-    if token not in _sessions:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
-    
-    # Get user from session
-    session = _sessions[token]
-    user_id = session["user_id"]
-    current_user = _users.get(user_id)
-    
-    # Check if admin
-    if not current_user or current_user.get("role") != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Admin access required"
-        )
-    
-    # Return all users (without passwords)
-    users_list = []
-    for user in _users.values():
-        users_list.append({
-            "id": user["id"],
-            "username": user["username"],
-            "role": user["role"],
-            "email": user.get("email"),
-            "created_at": user.get("created_at")
-        })
-    
-    return {
-        "success": True,
-        "users": users_list,
-        "total": len(users_list)
-    }
-
-
-@router.post("/users/create")
-async def create_user(
-    request: CreateUserRequest,
-    authorization: Optional[str] = Header(None)
-):
-    """
-    Create a new user (admin only)
-    
-    Headers:
-    - Authorization: Bearer {token}
-    
-    Request body (JSON):
-    - username: Username (must be unique)
-    - password: Password
-    - role: User role (admin/driver/analyst)
-    - email: Optional email address
-    """
-    # Verify authentication
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(
-            status_code=401,
-            detail="Missing or invalid authorization header"
-        )
-    
-    token = authorization.replace("Bearer ", "")
-    
-    if token not in _sessions:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or expired token"
-        )
-    
-    # Get user from session
-    session = _sessions[token]
-    user_id = session["user_id"]
-    current_user = _users.get(user_id)
-    
-    # Check if admin
-    if not current_user or current_user.get("role") != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Admin access required"
-        )
-    
-    # Check if username exists
-    for user in _users.values():
-        if user["username"] == request.username:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Username '{request.username}' already exists"
-            )
-    
-    # Validate role
-    if request.role not in ["admin", "driver", "analyst", "viewer"]:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid role. Must be: admin, driver, analyst, or viewer"
-        )
-    
-    # Create new user
-    new_user_id = f"user_{str(uuid.uuid4())[:8]}"
-    password_hash = hashlib.sha256(request.password.encode()).hexdigest()
-    
-    new_user = {
-        "id": new_user_id,
-        "username": request.username,
-        "password_hash": password_hash,
-        "role": request.role,
-        "email": request.email,
-        "created_at": datetime.now().isoformat()
-    }
-    
-    _users[new_user_id] = new_user
-    
-    # Return user info (without password)
-    user_info = {
-        "id": new_user["id"],
-        "username": new_user["username"],
-        "role": new_user["role"],
-        "email": new_user.get("email"),
-        "created_at": new_user.get("created_at")
-    }
-    
-    return {
-        "success": True,
-        "message": f"User '{request.username}' created successfully",
-        "user": user_info
+        "message": f"Hello {user.email or f'User {user.id}'}! This is a protected endpoint.",
+        "hybrid_id": {
+            "database_id": user.id,  # Use this for legacy controllers
+            "supabase_auth_id": user.user_id,  # UUID from Supabase
+        },
+        "user_info": {
+            "id": user.id,
+            "auth_id": user.user_id,
+            "email": user.email,
+            "role": user.role
+        },
+        "metadata": {
+            "issued_at": user.metadata.get("iat"),
+            "expires_at": user.metadata.get("exp")
+        }
     }

@@ -24,6 +24,9 @@ supervisor==4.2.5
 python-jose[cryptography]==3.3.0
 bcrypt==4.2.0
 
+# Supabase integration
+supabase>=2.0.0
+
 # Computer vision (pre-built wheels)
 opencv-python-headless==4.10.0.84
 numpy>=1.26.0,<1.27.0
