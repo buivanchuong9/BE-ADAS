@@ -1,5 +1,5 @@
 """
-MAIN FASTAPI APPLICATION - Version 3.0
+MAIN FASTAPI APPLICATION - Version 3.1
 ========================================
 Entry point for ADAS Video Analysis Backend.
 
@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description="""
-    # 🚗 Hệ Thống ADAS Backend v3.0 - PostgreSQL
+    # 🚗 Hệ Thống ADAS Backend v3.1 - PostgreSQL
     
     **Hệ thống phân tích video ADAS triển khai thương mại**
     
@@ -190,8 +190,62 @@ app = FastAPI(
     }
 )
 
+# PRODUCTION: Add Request ID middleware for distributed tracing
+from app.core.middleware import RequestIDMiddleware
+app.add_middleware(RequestIDMiddleware)
+
+# Add request logging middleware with Cloudflare support
+# IMPORTANT: This middleware is defined with @app.middleware decorator
+# which means it runs AFTER middlewares added with app.add_middleware()
+# We'll move this to a proper middleware class below to ensure correct order
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class CloudflareLoggingMiddleware(BaseHTTPMiddleware):
+    """
+    Log all incoming requests with Cloudflare-specific headers.
+    Captures CF-Ray for support debugging and real client IP.
+    
+    PRODUCTION: Suppress 404 logs for /admin/* paths to reduce spam.
+    """
+    async def dispatch(self, request, call_next):
+        # Get real client IP from Cloudflare headers
+        cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+        x_forwarded_for = request.headers.get("X-Forwarded-For")
+        client_ip = cf_connecting_ip or x_forwarded_for or (request.client.host if request.client else "unknown")
+        
+        # Get Cloudflare Ray ID for support debugging
+        cf_ray = request.headers.get("CF-Ray", "N/A")
+        
+        # Log incoming request with Cloudflare info (suppress admin 404s)
+        should_log = not (request.url.path.startswith("/admin") or request.url.path.startswith("/_admin"))
+        
+        if should_log:
+            logger.info(
+                f"📨 {request.method} {request.url.path} | "
+                f"Client: {client_ip} | "
+                f"CF-Ray: {cf_ray}"
+            )
+            logger.debug(
+                f"Headers: Origin={request.headers.get('origin')}, "
+                f"Content-Type={request.headers.get('content-type')}, "
+                f"Content-Length={request.headers.get('content-length', 'unknown')}"
+            )
+        
+        # Process request
+        response = await call_next(request)
+        
+        # Log response (suppress admin 404s)
+        if should_log or response.status_code != 404:
+            logger.info(f"✅ {response.status_code} for {request.method} {request.url.path}")
+        
+        return response
+
+# Add logging middleware
+app.add_middleware(CloudflareLoggingMiddleware)
+
 # Configure CORS - PRODUCTION SAFE
-# CRITICAL: allow_credentials=False is required for Swagger UI file uploads to work
+# ⚠️ CRITICAL: CORSMiddleware MUST be added LAST so it runs FIRST
+# This ensures OPTIONS preflight requests are handled before authentication checks
 # When credentials=True, browsers enforce strict CORS checks that block multipart uploads
 app.add_middleware(
     CORSMiddleware,
@@ -200,65 +254,44 @@ app.add_middleware(
         "https://adas-api.aiotlab.edu.vn",
         "https://adas-api.aiotlab.edu.vn:52000",
         "http://adas-api.aiotlab.edu.vn",
+        "https://www.adas.aiotlab.edu.vn",
         "http://adas-api.aiotlab.edu.vn:52000",
+        # Frontend domains (add your actual frontend URLs here)
+        "https://adas.aiotlab.edu.vn",  # Replace with actual frontend domain
+        "http://localhost:3000",  # React/Next.js dev
+        "http://localhost:5173",  # Vite dev
+        "http://localhost:8080",  # Vue dev
         # Development
         "http://localhost:52000",
-        "http://localhost:3000",
-        "http://localhost:8080",
         "http://127.0.0.1:52000",
         "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
         "http://127.0.0.1:8080",
     ],
-    allow_credentials=False,  # MUST be False for file uploads to work in Swagger UI
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=True,  # Set to True to allow cookies/auth headers
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicit methods
+    allow_headers=["*"],  # Allow all headers including Authorization
     expose_headers=["*"],  # Allow browsers to read all response headers
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
 
-# PRODUCTION: Add Request ID middleware for distributed tracing
-from app.core.middleware import RequestIDMiddleware
-app.add_middleware(RequestIDMiddleware)
 
-# Add request logging middleware with Cloudflare support
-@app.middleware("http")
-async def log_requests(request, call_next):
+# ⚠️ CRITICAL: Handle OPTIONS preflight requests BEFORE routers
+# This ensures preflight requests don't hit authentication dependencies
+from fastapi import Response
+
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
     """
-    Log all incoming requests with Cloudflare-specific headers.
-    Captures CF-Ray for support debugging and real client IP.
+    Handle all OPTIONS preflight requests.
     
-    PRODUCTION: Suppress 404 logs for /admin/* paths to reduce spam.
+    This endpoint catches all OPTIONS requests and returns 200 OK
+    with appropriate CORS headers (added by CORSMiddleware).
+    
+    This prevents OPTIONS requests from reaching protected endpoints
+    that require authentication, which would cause 401/400 errors.
     """
-    # Get real client IP from Cloudflare headers
-    cf_connecting_ip = request.headers.get("CF-Connecting-IP")
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    client_ip = cf_connecting_ip or x_forwarded_for or (request.client.host if request.client else "unknown")
-    
-    # Get Cloudflare Ray ID for support debugging
-    cf_ray = request.headers.get("CF-Ray", "N/A")
-    
-    # Log incoming request with Cloudflare info (suppress admin 404s)
-    should_log = not (request.url.path.startswith("/admin") or request.url.path.startswith("/_admin"))
-    
-    if should_log:
-        logger.info(
-            f"📨 {request.method} {request.url.path} | "
-            f"Client: {client_ip} | "
-            f"CF-Ray: {cf_ray}"
-        )
-        logger.debug(
-            f"Headers: Origin={request.headers.get('origin')}, "
-            f"Content-Type={request.headers.get('content-type')}, "
-            f"Content-Length={request.headers.get('content-length', 'unknown')}"
-        )
-    
-    # Process request
-    response = await call_next(request)
-    
-    # Log response (suppress admin 404s)
-    if should_log or response.status_code != 404:
-        logger.info(f"✅ {response.status_code} for {request.method} {request.url.path}")
-    
-    return response
+    return Response(status_code=200)
 
 
 # Include routers
