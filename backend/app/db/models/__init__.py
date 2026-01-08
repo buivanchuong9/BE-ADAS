@@ -21,9 +21,6 @@ from .traffic_sign import TrafficSign
 from .alert import Alert
 from .model_version import ModelVersion
 
-# Legacy model (kept for compatibility)
-from .video_job import VideoJob
-
 __all__ = [
     "User",
     "Vehicle", 
@@ -38,5 +35,4 @@ __all__ = [
     "TrafficSign",
     "Alert",
     "ModelVersion",
-    "VideoJob",  # Legacy
 ]

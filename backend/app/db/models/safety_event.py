@@ -44,7 +44,6 @@ class SafetyEvent(Base):
     
     # Foreign keys
     trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
-    video_job_id = Column(Integer, ForeignKey("video_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
     job_id = Column(Integer, ForeignKey("job_queue.id", ondelete="CASCADE"), nullable=True, index=True)  # v3.0
     
     # Event details
@@ -68,7 +67,6 @@ class SafetyEvent(Base):
     
     # Relationships
     trip = relationship("Trip", back_populates="safety_events")
-    video_job = relationship("VideoJob")
     job = relationship("JobQueue", back_populates="events")  # v3.0
     
     def __repr__(self):

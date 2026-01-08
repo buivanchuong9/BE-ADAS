@@ -268,9 +268,9 @@ async def cleanup_old_files(
     
     for job in old_jobs:
         try:
-            # Delete input file
-            if job.video_path:
-                input_path = Path(job.video_path)
+            # Delete input file (v3.0: access via job.video.storage_path)
+            if job.video and job.video.storage_path:
+                input_path = Path(job.video.storage_path)
                 if input_path.exists():
                     file_size = input_path.stat().st_size
                     input_path.unlink()

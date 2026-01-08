@@ -32,6 +32,7 @@ from app.services.job_service import get_job_service
 
 # Import API routers (absolute import)
 from app.api.video import router as video_router
+from app.api.video_v3 import router as video_v3_router  # v3.0: SHA256 deduplication
 from app.api.video_sse import router as video_sse_router  # NEW: SSE streaming
 from app.api.dataset import router as dataset_router
 from app.api.detections import router as detections_router
@@ -295,7 +296,8 @@ async def options_handler(full_path: str):
 
 
 # Include routers
-app.include_router(video_router)
+app.include_router(video_router)  # Legacy API (backward compatible with v3.0)
+app.include_router(video_v3_router)  # v3.0 API with SHA256 deduplication
 app.include_router(video_sse_router)  # NEW: SSE streaming for realtime partial results
 app.include_router(dataset_router)
 app.include_router(detections_router)

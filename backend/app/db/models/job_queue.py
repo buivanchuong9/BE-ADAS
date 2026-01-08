@@ -82,3 +82,37 @@ class JobQueue(Base):
             self.status == JobStatus.PENDING and 
             self.attempts < self.max_attempts
         )
+    
+    # Backward compatibility properties for v2.0 code
+    @property
+    def video_path(self) -> str:
+        """Get video storage path from related Video record."""
+        return self.video.storage_path if self.video else ""
+    
+    @property
+    def video_filename(self) -> str:
+        """Get original video filename from related Video record."""
+        return self.video.original_filename if self.video else ""
+    
+    @property
+    def video_size_mb(self) -> float:
+        """Get video size in MB from related Video record."""
+        if self.video and self.video.size_bytes:
+            return round(self.video.size_bytes / (1024 * 1024), 2)
+        return 0.0
+    
+    @property
+    def duration_seconds(self) -> float:
+        """Get video duration from related Video record."""
+        return self.video.duration_seconds if self.video else None
+    
+    @property
+    def fps(self) -> float:
+        """Get video FPS from related Video record."""
+        return self.video.fps if self.video else None
+    
+    @property
+    def resolution(self) -> str:
+        """Get video resolution from related Video record."""
+        return self.video.resolution if self.video else None
+

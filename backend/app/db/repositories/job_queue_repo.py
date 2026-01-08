@@ -11,6 +11,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.db.repositories.base import BaseRepository
 from app.db.models.job_queue import JobQueue
@@ -23,23 +24,28 @@ class JobQueueRepository(BaseRepository[JobQueue]):
         super().__init__(JobQueue, session)
     
     async def get_all(self) -> List[JobQueue]:
-        """Get all jobs"""
+        """Get all jobs with video relationship loaded"""
         result = await self.session.execute(
-            select(JobQueue).order_by(JobQueue.created_at.desc())
+            select(JobQueue)
+            .options(joinedload(JobQueue.video))
+            .order_by(JobQueue.created_at.desc())
         )
         return list(result.scalars().all())
     
     async def get_by_job_id(self, job_id: str) -> Optional[JobQueue]:
-        """Get job by UUID job_id"""
+        """Get job by UUID job_id with video relationship loaded"""
         result = await self.session.execute(
-            select(JobQueue).where(JobQueue.job_id == job_id)
+            select(JobQueue)
+            .options(joinedload(JobQueue.video))
+            .where(JobQueue.job_id == job_id)
         )
         return result.scalar_one_or_none()
     
     async def get_by_status(self, status: str) -> List[JobQueue]:
-        """Get jobs by status"""
+        """Get jobs by status with video relationship loaded"""
         result = await self.session.execute(
             select(JobQueue)
+            .options(joinedload(JobQueue.video))
             .where(JobQueue.status == status)
             .order_by(JobQueue.created_at.desc())
         )
@@ -54,6 +60,15 @@ class JobQueueRepository(BaseRepository[JobQueue]):
             .limit(limit)
         )
         return list(result.scalars().all())
+    
+    async def get_pending_count(self) -> int:
+        """Get count of pending jobs"""
+        result = await self.session.execute(
+            select(func.count(JobQueue.id))
+            .where(JobQueue.status == 'pending')
+        )
+        return result.scalar() or 0
+
     
     async def get_storage_stats(self) -> Dict[str, Any]:
         """
@@ -100,6 +115,36 @@ class JobQueueRepository(BaseRepository[JobQueue]):
         await self.session.commit()
         await self.session.refresh(job)
         return job
+    
+    async def create_job(
+        self,
+        video_id: int,
+        video_type: str = "dashcam",
+        priority: int = 0,
+        device: str = "cuda"
+    ) -> JobQueue:
+        """
+        Create a new job with defaults.
+        
+        Args:
+            video_id: Video ID
+            video_type: Type of video (dashcam or in_cabin)
+            priority: Job priority (higher = process first)
+            device: Processing device (cpu or cuda)
+            
+        Returns:
+            Created job
+        """
+        import uuid
+        return await self.create(
+            job_id=uuid.uuid4(),
+            video_id=video_id,
+            video_type=video_type,
+            priority=priority,
+            device=device,
+            status="pending",
+            progress_percent=0
+        )
     
     async def update(self, job_id: int, **kwargs) -> Optional[JobQueue]:
         """

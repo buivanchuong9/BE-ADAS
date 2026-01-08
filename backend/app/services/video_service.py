@@ -290,13 +290,8 @@ class VideoService:
                 details={"error": str(e)}
             )
         
-        # Update job with input path
-        await repo.update(
-            job.id, 
-            video_path=str(input_path)
-        )
-        
-        # Update video record with actual file size
+        # Update video record with actual file size and storage path
+        # Note: In v3.0, video path is stored in Video.storage_path, not JobQueue.video_path
         if video:
             video.size_bytes = file_size
             video.storage_path = str(input_path)

@@ -15,7 +15,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..db.session_v3 import get_db
+from ..db.session import get_db
 from ..db.models.video import Video
 from ..db.models.job_queue import JobQueue, JobStatus
 from ..db.repositories.job_queue_repo import JobQueueRepository
