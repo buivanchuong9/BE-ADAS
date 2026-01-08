@@ -139,7 +139,7 @@ class VideoService:
         filename: str,
         video_type: str = "dashcam",
         trip_id: Optional[int] = None,
-        device: str = "cpu",
+        device: str = "cuda",  # GPU by default
         user_id: Optional[int] = None
     ) -> VideoJobResponse:
         """

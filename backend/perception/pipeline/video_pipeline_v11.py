@@ -43,7 +43,7 @@ class VideoPipelineV11:
     
     def __init__(
         self, 
-        device: str = "cpu",
+        device: str = "cuda",  # GPU by default
         video_type: str = "dashcam"
     ):
         """
@@ -602,7 +602,7 @@ def process_video(
     input_path: str,
     output_path: str,
     video_type: str = "dashcam",
-    device: str = "cpu"
+    device: str = "cuda"  # GPU by default
 ) -> Dict:
     """
     Main entry point for video processing.

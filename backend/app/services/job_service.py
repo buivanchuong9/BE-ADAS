@@ -54,7 +54,7 @@ class JobService:
         input_path: str,
         output_path: str,
         video_type: str = "dashcam",
-        device: str = "cpu"
+        device: str = "cuda"  # GPU by default
     ) -> None:
         """
         Submit job for background processing.

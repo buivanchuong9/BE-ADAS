@@ -37,7 +37,7 @@ router = APIRouter(prefix="/api/video", tags=["video"])
 async def upload_video(
     file: UploadFile = File(...),
     video_type: str = "dashcam",
-    device: str = "cpu",
+    device: str = "cuda",  # GPU by default
     db: AsyncSession = Depends(get_db)
 ):
     """
