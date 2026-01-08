@@ -204,7 +204,7 @@ class LaneDetectorV11:
         gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         
         # Apply Gaussian blur
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
         
         # Canny edge detection - tuned for faded Vietnamese lanes
         edges = cv2.Canny(blur, 30, 90)  # Lowered from (50, 150) for better faded lane detection
