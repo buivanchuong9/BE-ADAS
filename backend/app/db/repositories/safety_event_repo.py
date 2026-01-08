@@ -22,22 +22,20 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
     async def create_event(
         self,
         trip_id: int,
-        video_job_id: int,
+        job_id: int,
         event_type: EventType,
         severity: EventSeverity,
         description: str,
-        risk_score: float,
         timestamp: datetime,
         **kwargs
     ) -> SafetyEvent:
         """Create a safety event"""
         return await self.create(
             trip_id=trip_id,
-            video_job_id=video_job_id,
+            job_id=job_id,
             event_type=event_type,
             severity=severity,
             description=description,
-            risk_score=risk_score,
             timestamp=timestamp,
             **kwargs
         )
@@ -62,11 +60,11 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
         result = await self.session.execute(query)
         return list(result.scalars().all())
     
-    async def get_by_video_job(self, video_job_id: int) -> List[SafetyEvent]:
+    async def get_by_video_job(self, job_id: int) -> List[SafetyEvent]:
         """Get all events for a video job"""
         result = await self.session.execute(
             select(SafetyEvent)
-            .where(SafetyEvent.video_job_id == video_job_id)
+            .where(SafetyEvent.job_id == job_id)
             .order_by(SafetyEvent.timestamp)
         )
         return list(result.scalars().all())

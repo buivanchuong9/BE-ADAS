@@ -316,14 +316,13 @@ class JobService:
                 
                 await event_repo.create_event(
                     trip_id=job.trip_id,
-                    video_job_id=job.id,
+                    job_id=job.id,
                     event_type=event_type,
                     severity=severity,
                     description=event_data.get('data', {}).get('message', 'Event detected'),
-                    risk_score=event_data.get('data', {}).get('risk', 0.5),
                     timestamp=timestamp,
                     frame_number=event_data.get('frame'),
-                    context_data=event_data.get('data')
+                    meta_data=event_data.get('data')
                 )
                 
             except Exception as e:
