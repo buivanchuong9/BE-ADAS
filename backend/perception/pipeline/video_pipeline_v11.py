@@ -57,9 +57,39 @@ class VideoPipelineV11:
         self.video_type = video_type
         self.events = []
         
-        # PRODUCTION OPTIMIZATION: Batch size for GPU inference
-        # Process 4-8 frames at once for better GPU utilization
-        self.batch_size = 6 if device == "cuda" else 1
+        # PRODUCTION OPTIMIZATION: Auto-tune batch size based on GPU VRAM
+        if device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    
+                    # Auto-tune batch size based on VRAM
+                    if gpu_memory_gb >= 24:
+                        self.batch_size = 32  # High-end GPU (RTX 4090, A100)
+                    elif gpu_memory_gb >= 16:
+                        self.batch_size = 24  # Mid-high GPU (RTX 4080, A40)
+                    elif gpu_memory_gb >= 12:
+                        self.batch_size = 16  # Mid GPU (RTX 3080, RTX 4070)
+                    elif gpu_memory_gb >= 8:
+                        self.batch_size = 12  # Entry GPU (RTX 3060, RTX 4060)
+                    elif gpu_memory_gb >= 6:
+                        self.batch_size = 8   # Low VRAM (GTX 1660)
+                    else:
+                        self.batch_size = 4   # Very low VRAM
+                    
+                    logger.info(f"🎮 GPU: {torch.cuda.get_device_name(0)} ({gpu_memory_gb:.1f} GB)")
+                    logger.info(f"🚀 Auto-tuned batch_size={self.batch_size}")
+                else:
+                    logger.warning("⚠️ CUDA not available, using CPU")
+                    self.device = "cpu"
+                    self.batch_size = 1
+            except ImportError:
+                logger.warning("⚠️ PyTorch not found, using CPU")
+                self.device = "cpu"
+                self.batch_size = 1
+        else:
+            self.batch_size = 1  # CPU
         
         logger.info(f"VideoPipelineV11 initializing (device={device}, type={video_type}, batch_size={self.batch_size})")
         
