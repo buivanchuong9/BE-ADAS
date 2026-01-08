@@ -316,7 +316,7 @@ class JobService:
                 
                 await event_repo.create_event(
                     trip_id=job.trip_id,
-                    video_job_id=job.id,
+                    job_id=job.id,  # ✅ FIX: Changed from video_job_id to job_id
                     event_type=event_type,
                     severity=severity,
                     description=event_data.get('data', {}).get('message', 'Event detected'),
