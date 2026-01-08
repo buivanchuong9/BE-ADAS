@@ -81,6 +81,9 @@ class DistanceEstimator:
         self.track_history = {}  # track_id -> deque of (distance, timestamp)
         self.max_history = 10
         
+        # Distance smoothing history
+        self.distance_history = []  # For smooth_distance method
+        
         logger.info(
             f"DistanceEstimator initialized "
             f"(f={focal_length}px, h={camera_height}m, fps={frame_rate})"
@@ -456,8 +459,9 @@ class DistanceEstimator:
         # Classify risk
         risk_level = self.classify_risk(distance_smoothed)
         
-        # Compute TTC
-        ttc = self.compute_ttc(distance_smoothed, own_speed=own_speed)
+        # Compute TTC (assume approaching at own speed)
+        # Negative velocity = approaching
+        ttc = self.compute_ttc(distance_smoothed, -own_speed)
         
         return {
             "distance": float(distance),
