@@ -73,7 +73,14 @@ class JobQueue(Base):
     events = relationship("SafetyEvent", back_populates="job", cascade="all, delete-orphan")
     
     def __repr__(self):
-        return f"<JobQueue {self.job_id} status={self.status}>"
+        """Safe repr that works even when detached from session."""
+        try:
+            # Use object.__getattribute__ to avoid triggering lazy loading
+            job_id = object.__getattribute__(self, '__dict__').get('job_id', 'unknown')
+            status = object.__getattribute__(self, '__dict__').get('status', 'unknown')
+            return f"<JobQueue {job_id} status={status}>"
+        except Exception:
+            return f"<JobQueue at {hex(id(self))}>"
     
     @property
     def is_claimable(self) -> bool:

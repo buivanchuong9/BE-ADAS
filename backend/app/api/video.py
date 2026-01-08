@@ -107,14 +107,16 @@ async def upload_video(
         
         # Submit to background processing
         logger.info(f"[Upload] Step 4/4: Submitting for AI processing...")
-        # Submit to background processing
-        logger.info(f"[Upload] Step 4/4: Submitting for AI processing...")
+        
+        # Generate output path
+        output_path = video_service.get_output_path(job.job_id)
+        
         job_service = get_job_service()
         await job_service.submit_job(
             session=db,
             job_id=job.job_id,
             input_path=job.video_path,
-            output_path=job.result_path,
+            output_path=output_path,
             video_type=video_type,
             device=device
         )
