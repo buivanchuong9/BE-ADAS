@@ -232,7 +232,11 @@ class VideoPipelineV11:
         
         # 3. Distance & Collision
         if closest:
-            dist_result = self.distance_estimator.estimate_distance(closest, height)
+            dist_result = self.distance_estimator.process_detection(
+                closest, 
+                height,
+                own_speed=20.0  # Default 72 km/h
+            )
             annotated = self.distance_estimator.draw_distance_info(
                 annotated, closest['bbox'], dist_result['distance_smoothed'],
                 dist_result['risk_level'], dist_result['ttc']

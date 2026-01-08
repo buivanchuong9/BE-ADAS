@@ -124,7 +124,30 @@ async def upload_video(
         total_time = time.time() - start_time
         logger.info(f"✅ Upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")
         
-        return job
+        # CRITICAL FIX: Access all attributes within session to avoid MissingGreenlet
+        # Convert to dict before returning to prevent lazy loading outside session
+        response_data = {
+            "id": job.id,
+            "job_id": str(job.job_id),  # Convert UUID to string
+            "video_filename": job.video.original_filename if job.video else "",
+            "video_path": job.video.storage_path if job.video else "",
+            "video_size_mb": round(job.video.size_bytes / (1024 * 1024), 2) if job.video and job.video.size_bytes else 0.0,
+            "duration_seconds": job.video.duration_seconds if job.video else None,
+            "fps": job.video.fps if job.video else None,
+            "resolution": job.video.resolution if job.video else None,
+            "status": job.status,
+            "progress_percent": job.progress_percent,
+            "result_path": job.result_path,
+            "error_message": job.error_message,
+            "processing_time_seconds": job.processing_time_seconds,
+            "trip_id": job.trip_id,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at
+        }
+        
+        return response_data
     
     except HTTPException:
         raise
