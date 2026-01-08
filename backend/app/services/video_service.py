@@ -195,6 +195,20 @@ class VideoService:
         try:
             job = await repo.create(**job_data)
             await self.session.commit()  # Commit both video and job
+            
+            # CRITICAL: Refresh job with eager loading to prevent MissingGreenlet
+            await self.session.refresh(job)
+            
+            # Eager load video relationship
+            from sqlalchemy import select
+            from sqlalchemy.orm import joinedload
+            result = await self.session.execute(
+                select(JobQueue)
+                .options(joinedload(JobQueue.video))
+                .where(JobQueue.id == job.id)
+            )
+            job = result.scalar_one()
+            
         except Exception as e:
             logger.error(f"Failed to create job: {e}", exc_info=True)
             await self.session.rollback()

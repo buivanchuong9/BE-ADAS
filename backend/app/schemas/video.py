@@ -5,8 +5,9 @@ Pydantic models for video job requests and responses.
 """
 
 from pydantic import BaseModel, Field, UUID4
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime
+from uuid import UUID
 
 
 class VideoJobCreate(BaseModel):
@@ -29,7 +30,7 @@ class VideoJobUpdate(BaseModel):
 class VideoJobResponse(BaseModel):
     """Schema for video job response"""
     id: int
-    job_id: str
+    job_id: Union[str, UUID]  # Accept both string and UUID
     
     # Video details
     video_filename: str
