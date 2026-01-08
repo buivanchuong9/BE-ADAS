@@ -82,6 +82,8 @@ SUPABASE_ANON_KEY: str = "eyJhbGc..."
 # 1. Kill process cũ
 pkill -u phonglv -9 uvicorn
 
+pkill -f uvicorn
+
 # 2. Di chuyển đến thư mục project
 cd ~/BE-ADAS
 

@@ -24,8 +24,12 @@ import numpy as np
 from typing import Optional, Tuple, List, Dict
 from collections import deque
 import logging
+import warnings
 
 from .kalman_filter import LaneKalmanFilter  # NEW: Kalman Filter for smoothing
+
+# Suppress polyfit warnings for better performance
+warnings.filterwarnings('ignore', category=np.RankWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +40,7 @@ class TemporalLaneFilter:
     Prevents frame-by-frame flickering while maintaining responsiveness.
     """
     
-    def __init__(self, alpha: float = 0.3, buffer_size: int = 5):
+    def __init__(self, alpha: float = 0.15, buffer_size: int = 10):
         """
         Initialize temporal filter.
         
@@ -50,6 +54,12 @@ class TemporalLaneFilter:
         self.right_history = deque(maxlen=buffer_size)
         self.ema_left = None
         self.ema_right = None
+        # Lane persistence - keep last good detection
+        self.last_good_left = None
+        self.last_good_right = None
+        self.frames_since_left = 0
+        self.frames_since_right = 0
+        self.max_missing_frames = 15  # Keep lane for 15 frames (~0.5s at 30fps)
     
     def update(
         self, 
@@ -71,25 +81,44 @@ class TemporalLaneFilter:
             Tuple of smoothed (left_fit, right_fit)
         """
         # Update left lane with confidence weighting
-        if left_fit is not None and left_confidence > 0.3:
+        if left_fit is not None and left_confidence > 0.2:
             self.left_history.append((left_fit, left_confidence))
+            self.last_good_left = left_fit.copy()
+            self.frames_since_left = 0
             
             if self.ema_left is None:
                 self.ema_left = left_fit
             else:
-                # EMA with confidence weighting
+                # EMA with confidence weighting - more smoothing
                 alpha_weighted = self.alpha * left_confidence
                 self.ema_left = alpha_weighted * left_fit + (1 - alpha_weighted) * self.ema_left
+        else:
+            # No detection - use lane persistence
+            self.frames_since_left += 1
+            if self.frames_since_left < self.max_missing_frames and self.last_good_left is not None:
+                # Keep using last good detection with fading
+                fade_factor = 1.0 - (self.frames_since_left / self.max_missing_frames)
+                if self.ema_left is None:
+                    self.ema_left = self.last_good_left
         
         # Update right lane with confidence weighting  
-        if right_fit is not None and right_confidence > 0.3:
+        if right_fit is not None and right_confidence > 0.2:
             self.right_history.append((right_fit, right_confidence))
+            self.last_good_right = right_fit.copy()
+            self.frames_since_right = 0
             
             if self.ema_right is None:
                 self.ema_right = right_fit
             else:
                 alpha_weighted = self.alpha * right_confidence
                 self.ema_right = alpha_weighted * right_fit + (1 - alpha_weighted) * self.ema_right
+        else:
+            # No detection - use lane persistence
+            self.frames_since_right += 1
+            if self.frames_since_right < self.max_missing_frames and self.last_good_right is not None:
+                fade_factor = 1.0 - (self.frames_since_right / self.max_missing_frames)
+                if self.ema_right is None:
+                    self.ema_right = self.last_good_right
         
         return self.ema_left, self.ema_right
     
@@ -270,14 +299,36 @@ class LaneDetectorV11:
             y = points[:, 1]
             x = points[:, 0]
             
-            # Fit polynomial
-            coeffs = np.polyfit(y, x, degree)
+            # ROBUST POLYNOMIAL FITTING with weighted least squares
+            # Add small regularization to prevent poorly conditioned matrix
+            weights = np.ones_like(y)
+            
+            # Use polyfit with rcond parameter to handle poorly conditioned matrix
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', category=np.RankWarning)
+                try:
+                    coeffs = np.polyfit(y, x, degree, rcond=1e-10, w=weights)
+                except np.linalg.LinAlgError:
+                    # Fallback to simple linear fit if polynomial fails
+                    logger.debug("Polynomial fit failed, using linear fallback")
+                    try:
+                        coeffs = np.polyfit(y, x, min(degree, 1), rcond=None)
+                    except Exception as fallback_error:
+                        logger.warning(f"Linear fallback also failed: {fallback_error}, using horizontal line")
+                        # Last resort: horizontal line at mean x
+                        return np.array([0, 0, np.mean(x)] if degree == 2 else [0, np.mean(x)]), 0.1
+            
+            # Validate coefficients - check for extreme values
+            if np.any(np.abs(coeffs) > 1e6):
+                logger.debug("Extreme coefficients detected, rejecting fit")
+                return None, 0.0
             
             # Calculate confidence based on:
             # 1. Number of points (more points = higher confidence)
             # 2. Residual error (lower error = higher confidence)
+            # 3. Point distribution (well-distributed = higher confidence)
             num_points = len(points)
-            points_confidence = min(num_points / 100.0, 1.0)  # Saturate at 100 points
+            points_confidence = min(num_points / 80.0, 1.0)  # Saturate at 80 points
             
             # Calculate residual error
             x_pred = np.polyval(coeffs, y)
@@ -285,17 +336,21 @@ class LaneDetectorV11:
             mean_residual = np.mean(residuals)
             
             # Convert residual to confidence (lower residual = higher confidence)
-            # Assume max acceptable residual is 50 pixels
-            residual_confidence = max(0.0, 1.0 - (mean_residual / 50.0))
+            # Assume max acceptable residual is 40 pixels (more strict)
+            residual_confidence = max(0.0, 1.0 - (mean_residual / 40.0))
+            
+            # Check point distribution (vertical spread)
+            y_range = np.max(y) - np.min(y)
+            distribution_confidence = min(y_range / 300.0, 1.0)  # Good if spread over 300px
             
             # Combined confidence (weighted average)
-            confidence = 0.6 * points_confidence + 0.4 * residual_confidence
+            confidence = 0.4 * points_confidence + 0.4 * residual_confidence + 0.2 * distribution_confidence
             confidence = max(0.0, min(1.0, confidence))  # Clamp to [0,1]
             
             return coeffs, confidence
             
         except Exception as e:
-            logger.warning(f"Polynomial fitting failed: {e}")
+            logger.debug(f"Polynomial fitting failed: {e}")
             return None, 0.0
     
     def draw_lane(
@@ -453,20 +508,39 @@ class LaneDetectorV11:
         # Lane departure warning (only trigger if confidence is high)
         lane_departure = (
             abs(offset) > self.departure_threshold and 
-            min(self.left_confidence, self.right_confidence) >= 0.5
+            min(self.left_confidence, self.right_confidence) >= 0.6  # Tăng lên 0.6 để giảm false positives
         )
         
-        # Add warning text
+        # Add warning text - TIẾNG VIỆT
         if lane_departure:
-            warning_text = f"LANE DEPARTURE: {direction}"
+            # Vietnamese warning message
+            if "LEFT" in direction.upper():
+                warning_text = "⚠️ CẢNH BÁO: Lệch Trái"
+                warning_color = (0, 100, 255)  # Orange
+            else:
+                warning_text = "⚠️ CẢNH BÁO: Lệch Phải"
+                warning_color = (0, 100, 255)  # Orange
+            
+            # Draw warning background for better visibility
+            text_size = cv2.getTextSize(warning_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
+            cv2.rectangle(
+                annotated_frame,
+                (40, 50),
+                (60 + text_size[0], 90),
+                (0, 0, 0),
+                -1
+            )
+            
+            # Draw warning text
             cv2.putText(
                 annotated_frame, 
                 warning_text, 
                 (50, 80), 
                 cv2.FONT_HERSHEY_SIMPLEX, 
-                1.2, 
-                (0, 0, 255), 
-                3
+                1.0, 
+                warning_color, 
+                2,
+                cv2.LINE_AA
             )
         
         # Add confidence and ID info to output

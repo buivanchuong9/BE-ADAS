@@ -591,7 +591,8 @@ class VideoPipelineV11:
                 
             except Exception as e:
                 logger.error(f"❌ Error processing frame {frame_idx}: {e}")
-                # Continue with next frame instead of crashing
+                logger.debug(f"Error details: {str(e)}", exc_info=True)
+                # Continue with next frame instead of crashing entire pipeline
                 frame_idx += 1
                 continue
         

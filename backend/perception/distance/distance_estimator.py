@@ -384,38 +384,70 @@ class DistanceEstimator:
         annotated = frame.copy()
         x1, y1, x2, y2 = bbox
         
-        # Color based on risk
+        # Color based on risk - Màu dựa trên mức độ nguy hiểm
         color_map = {
-            "SAFE": (0, 255, 0),      # Green
-            "CAUTION": (0, 165, 255),  # Orange
-            "DANGER": (0, 0, 255)      # Red
+            "SAFE": (0, 255, 0),      # Green - Xanh lá (An toàn)
+            "CAUTION": (0, 200, 255),  # Orange - Cam (Cảnh báo)
+            "DANGER": (0, 0, 255)      # Red - Đỏ (Nguy hiểm)
         }
         color = color_map.get(risk_level, (255, 255, 255))
         
-        # Draw distance text above bbox
-        distance_text = f"{distance:.1f}m - {risk_level}"
+        # Vietnamese risk level text
+        risk_text_map = {
+            "SAFE": "AN TOÀN",
+            "CAUTION": "CẢNH BÁO",
+            "DANGER": "NGUY HIỂM"
+        }
+        risk_vn = risk_text_map.get(risk_level, risk_level)
+        
+        # Draw distance text above bbox - Hiển thị khoảng cách phía trên bbox
+        distance_text = f"{distance:.1f}m - {risk_vn}"
+        
+        # Add text background for better visibility
+        text_size = cv2.getTextSize(distance_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
+        bg_x1 = x1
+        bg_y1 = y1 - 40
+        bg_x2 = x1 + text_size[0] + 10
+        bg_y2 = y1 - 40 + text_size[1] + 10
+        
+        # Draw background rectangle
+        cv2.rectangle(annotated, (bg_x1, bg_y1), (bg_x2, bg_y2), (0, 0, 0), -1)
+        cv2.rectangle(annotated, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 2)
         
         cv2.putText(
             annotated,
             distance_text,
-            (x1, y1 - 30),
+            (x1 + 5, y1 - 25),
             cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
+            0.7,
             color,
-            2
+            2,
+            cv2.LINE_AA
         )
         
-        # Draw TTC if available
+        # Draw TTC if available - Hiển thị thời gian va chạm nếu có
         if ttc is not None and ttc < 5.0:
-            ttc_text = f"TTC: {ttc:.1f}s"
+            ttc_text = f"Va chạm sau: {ttc:.1f}s"
+            
+            # Add background for TTC text
+            ttc_text_size = cv2.getTextSize(ttc_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            ttc_bg_x1 = x1
+            ttc_bg_y1 = y1 - 12
+            ttc_bg_x2 = x1 + ttc_text_size[0] + 8
+            ttc_bg_y2 = y1 - 12 + ttc_text_size[1] + 8
+            
+            cv2.rectangle(annotated, (ttc_bg_x1, ttc_bg_y1), (ttc_bg_x2, ttc_bg_y2), (0, 0, 0), -1)
+            cv2.rectangle(annotated, (ttc_bg_x1, ttc_bg_y1), (ttc_bg_x2, ttc_bg_y2), (0, 0, 255), 2)
+            
             cv2.putText(
                 annotated,
                 ttc_text,
-                (x1, y1 - 10),
+                (x1 + 4, y1 - 2),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
+                0.6,
                 (0, 0, 255),
-                2
+                2,
+                cv2.LINE_AA
             )
         
         return annotated

@@ -45,6 +45,16 @@ class ObjectDetectorV11:
         'truck': 7
     }
     
+    # Vietnamese translations for traffic objects
+    VIETNAMESE_LABELS = {
+        'person': 'Người',
+        'bicycle': 'Xe đạp',
+        'car': 'Ô tô',
+        'motorcycle': 'Xe máy',
+        'bus': 'Xe buýt',
+        'truck': 'Xe tải'
+    }
+    
     # Class names mapping
     CLASS_NAMES = {
         0: 'person',
@@ -339,7 +349,7 @@ class ObjectDetectorV11:
     
     def draw_detections(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
         """
-        Draw bounding boxes and labels on frame.
+        Draw bounding boxes and labels on frame with Vietnamese text.
         
         Args:
             frame: RGB frame
@@ -371,28 +381,32 @@ class ObjectDetectorV11:
             # Draw bounding box
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
             
-            # Draw label
-            label = f"{cls_name}: {conf:.2f}"
+            # Get Vietnamese label
+            label_vi = self.VIETNAMESE_LABELS.get(cls_name, cls_name)
+            
+            # Draw label with confidence (Vietnamese)
+            label = f"{label_vi}: {conf:.0%}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             
             # Background for text
             cv2.rectangle(
                 annotated, 
                 (x1, y1 - label_size[1] - 10), 
-                (x1 + label_size[0], y1), 
+                (x1 + label_size[0] + 5, y1), 
                 color, 
                 -1
             )
             
-            # Text
+            # Text with anti-aliasing
             cv2.putText(
                 annotated, 
                 label, 
-                (x1, y1 - 5), 
+                (x1 + 2, y1 - 5), 
                 cv2.FONT_HERSHEY_SIMPLEX, 
                 0.6, 
-                (0, 0, 0), 
-                2
+                (255, 255, 255), 
+                2,
+                cv2.LINE_AA
             )
         
         return annotated

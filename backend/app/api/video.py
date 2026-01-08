@@ -95,7 +95,7 @@ async def upload_video(
             filename=file.filename,
             video_type=video_type,
             device=device,
-            user_id=1  # TODO: Get from authentication
+            user_id=1  # TODO: Get from authentication - Currently using default user for MVP
         )
         logger.info(f"[Upload] ✓ Job created: {job.job_id} ({time.time() - start_time:.1f}s)")
         

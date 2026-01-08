@@ -317,27 +317,27 @@ class TrafficSignV11:
     
     def get_sign_action(self, sign_type: str) -> str:
         """
-        Get recommended action for detected sign.
+        Get recommended action for detected sign (Vietnamese).
         
         Args:
             sign_type: Traffic sign type
             
         Returns:
-            Action string
+            Action string in Vietnamese
         """
         actions = {
-            'STOP': 'STOP REQUIRED',
-            'TRAFFIC_LIGHT': 'CHECK TRAFFIC LIGHT',
-            'YIELD': 'YIELD TO TRAFFIC',
-            'NO_ENTRY': 'DO NOT ENTER',
-            'WARNING': 'CAUTION AHEAD'
+            'STOP': 'PHẢI DỪNG LẠI',
+            'TRAFFIC_LIGHT': 'QUAN SÁT ĐÈN TÍN HIỆU',
+            'YIELD': 'NHƯỜNG ĐƯỜNG',
+            'NO_ENTRY': 'CẤM ĐI VÀO',
+            'WARNING': 'CẢNH BÁO PHÍ TRƯỚC'
         }
         
-        # Speed limits
+        # Speed limits (Vietnamese)
         if 'SPEED LIMIT' in sign_type:
-            return f'SPEED LIMIT: {sign_type.split()[-1]} km/h'
+            return f'Tốc độ tối đa: {sign_type.split()[-1]} km/h'
         
-        return actions.get(sign_type, 'OBSERVE SIGN')
+        return actions.get(sign_type, 'CHÚ Ý BIỂN BÁO')
     
     def draw_signs(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
         """
@@ -370,42 +370,78 @@ class TrafficSignV11:
             # Draw bounding box
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
             
-            # Draw label
-            label = f"{sign_type}: {conf:.2f}"
+            # Vietnamese sign type names
+            sign_names_vi = {
+                'STOP': 'DỪNG',
+                'TRAFFIC_LIGHT': 'ĐÈN TÍN HIỆU',
+                'YIELD': 'NHƯỜNG ĐƯỜNG',
+                'NO_ENTRY': 'CẤM VÀO',
+                'WARNING': 'CẢNH BÁO'
+            }
+            
+            # Get Vietnamese sign name
+            if 'SPEED LIMIT' in sign_type:
+                sign_name_vi = f"Tốc độ {sign_type.split()[-1]}"
+            else:
+                sign_name_vi = sign_names_vi.get(sign_type, sign_type)
+            
+            # Draw label with confidence
+            label = f"{sign_name_vi}: {conf:.0%}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
             
             # Background for text
             cv2.rectangle(
                 annotated, 
                 (x1, y1 - label_size[1] - 10), 
-                (x1 + label_size[0], y1), 
+                (x1 + label_size[0] + 5, y1), 
                 color, 
                 -1
             )
             
-            # Text
+            # Text with anti-aliasing
             cv2.putText(
                 annotated, 
                 label, 
-                (x1, y1 - 5), 
+                (x1 + 2, y1 - 5), 
                 cv2.FONT_HERSHEY_SIMPLEX, 
                 0.7, 
                 (255, 255, 255), 
+                2,
+                cv2.LINE_AA
+            )
+            
+            # Get action (Vietnamese)
+            action = self.get_sign_action(sign_type)
+            action_size, _ = cv2.getTextSize(action, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            
+            # Background for action text
+            cv2.rectangle(
+                annotated,
+                (x1, y2 + 5),
+                (x1 + action_size[0] + 5, y2 + action_size[1] + 15),
+                (0, 0, 0),
+                -1
+            )
+            
+            # Border for action text
+            cv2.rectangle(
+                annotated,
+                (x1, y2 + 5),
+                (x1 + action_size[0] + 5, y2 + action_size[1] + 15),
+                color,
                 2
             )
             
-            # Get action
-            action = self.get_sign_action(sign_type)
-            
-            # Draw action below bbox
+            # Draw action below bbox with anti-aliasing
             cv2.putText(
                 annotated,
                 action,
-                (x1, y2 + 25),
+                (x1 + 2, y2 + action_size[1] + 8),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.6,
-                color,
-                2
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA
             )
         
         return annotated
