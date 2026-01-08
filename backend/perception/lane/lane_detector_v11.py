@@ -480,7 +480,8 @@ class LaneDetectorV11:
             "right_lane_id": self.right_lane_id,
             "offset": float(offset),
             "direction": direction,
-            "lane_departure": lane_departure
+            "lane_departure": lane_departure,
+            "is_departed": lane_departure  # Alias for backward compatibility
         }
 
 
