@@ -105,27 +105,11 @@ async def upload_video(
         upload_time = time.time() - start_time
         logger.info(f"[Upload] ✓ Video uploaded ({upload_time:.1f}s)")
         
-        # Submit to background processing
-        logger.info(f"[Upload] Step 4/4: Submitting for AI processing...")
+        # CRITICAL FIX: Extract all video attributes BEFORE submitting to background
+        # This prevents MissingGreenlet error from lazy loading outside async session
+        logger.info(f"[Upload] Step 4/4: Preparing response data...")
         
-        # Generate output path
-        output_path = video_service.get_output_path(job.job_id)
-        
-        job_service = get_job_service()
-        await job_service.submit_job(
-            session=db,
-            job_id=job.job_id,
-            input_path=job.video_path,
-            output_path=output_path,
-            video_type=video_type,
-            device=device
-        )
-        
-        total_time = time.time() - start_time
-        logger.info(f"✅ Upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")
-        
-        # CRITICAL FIX: Access all attributes within session to avoid MissingGreenlet
-        # Convert to dict before returning to prevent lazy loading outside session
+        # Access all job and video attributes while still in session context
         response_data = {
             "id": job.id,
             "job_id": str(job.job_id),  # Convert UUID to string
@@ -146,6 +130,25 @@ async def upload_video(
             "started_at": job.started_at,
             "completed_at": job.completed_at
         }
+        
+        # Now submit to background processing (after extracting all data)
+        logger.info(f"[Upload] Submitting job {job.job_id} for AI processing...")
+        
+        # Generate output path
+        output_path = video_service.get_output_path(job.job_id)
+        
+        job_service = get_job_service()
+        await job_service.submit_job(
+            session=db,
+            job_id=job.job_id,
+            input_path=job.video_path,
+            output_path=output_path,
+            video_type=video_type,
+            device=device
+        )
+        
+        total_time = time.time() - start_time
+        logger.info(f"✅ Upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")
         
         return response_data
     
@@ -200,7 +203,28 @@ async def get_result(
             )
         
         logger.info(f"✓ Job {job_id} status: {job.status}")
-        return job
+        
+        # Extract attributes to prevent lazy loading during Pydantic serialization
+        return {
+            "id": job.id,
+            "job_id": str(job.job_id),
+            "video_filename": job.video.original_filename if job.video else "",
+            "video_path": job.video.storage_path if job.video else "",
+            "video_size_mb": round(job.video.size_bytes / (1024 * 1024), 2) if job.video and job.video.size_bytes else 0.0,
+            "duration_seconds": job.video.duration_seconds if job.video else None,
+            "fps": job.video.fps if job.video else None,
+            "resolution": job.video.resolution if job.video else None,
+            "status": job.status,
+            "progress_percent": job.progress_percent,
+            "result_path": job.result_path,
+            "error_message": job.error_message,
+            "processing_time_seconds": job.processing_time_seconds,
+            "trip_id": job.trip_id,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at
+        }
     
     except HTTPException:
         raise
