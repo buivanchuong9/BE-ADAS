@@ -326,16 +326,16 @@ class TrafficSignV11:
             Action string in Vietnamese
         """
         actions = {
-            'STOP': 'PHẢI DỪNG LẠI',
-            'TRAFFIC_LIGHT': 'QUAN SÁT ĐÈN TÍN HIỆU',
-            'YIELD': 'NHƯỜNG ĐƯỜNG',
-            'NO_ENTRY': 'CẤM ĐI VÀO',
-            'WARNING': 'CẢNH BÁO PHÍ TRƯỚC'
+            'STOP': 'STOP REQUIRED',
+            'TRAFFIC_LIGHT': 'CHECK TRAFFIC LIGHT',
+            'YIELD': 'YIELD TO TRAFFIC',
+            'NO_ENTRY': 'DO NOT ENTER',
+            'WARNING': 'CAUTION AHEAD'
         }
         
-        # Speed limits (Vietnamese)
+        # Speed limits
         if 'SPEED LIMIT' in sign_type:
-            return f'Tốc độ tối đa: {sign_type.split()[-1]} km/h'
+            return f'MAX SPEED: {sign_type.split()[-1]} km/h'
         
         return actions.get(sign_type, 'CHÚ Ý BIỂN BÁO')
     
@@ -370,23 +370,8 @@ class TrafficSignV11:
             # Draw bounding box
             cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
             
-            # Vietnamese sign type names
-            sign_names_vi = {
-                'STOP': 'DỪNG',
-                'TRAFFIC_LIGHT': 'ĐÈN TÍN HIỆU',
-                'YIELD': 'NHƯỜNG ĐƯỜNG',
-                'NO_ENTRY': 'CẤM VÀO',
-                'WARNING': 'CẢNH BÁO'
-            }
-            
-            # Get Vietnamese sign name
-            if 'SPEED LIMIT' in sign_type:
-                sign_name_vi = f"Tốc độ {sign_type.split()[-1]}"
-            else:
-                sign_name_vi = sign_names_vi.get(sign_type, sign_type)
-            
             # Draw label with confidence
-            label = f"{sign_name_vi}: {conf:.0%}"
+            label = f"{sign_type}: {conf:.0%}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
             
             # Background for text

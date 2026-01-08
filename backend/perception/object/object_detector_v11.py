@@ -384,8 +384,8 @@ class ObjectDetectorV11:
             # Get Vietnamese label
             label_vi = self.VIETNAMESE_LABELS.get(cls_name, cls_name)
             
-            # Draw label with confidence (Vietnamese)
-            label = f"{label_vi}: {conf:.0%}"
+            # Draw label with confidence (English)
+            label = f"{cls_name.upper()}: {conf:.0%}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
             
             # Background for text

@@ -392,16 +392,16 @@ class DistanceEstimator:
         }
         color = color_map.get(risk_level, (255, 255, 255))
         
-        # Vietnamese risk level text
+        # English risk level text
         risk_text_map = {
-            "SAFE": "AN TOÀN",
-            "CAUTION": "CẢNH BÁO",
-            "DANGER": "NGUY HIỂM"
+            "SAFE": "SAFE",
+            "CAUTION": "CAUTION",
+            "DANGER": "DANGER"
         }
-        risk_vn = risk_text_map.get(risk_level, risk_level)
+        risk_text = risk_text_map.get(risk_level, risk_level)
         
-        # Draw distance text above bbox - Hiển thị khoảng cách phía trên bbox
-        distance_text = f"{distance:.1f}m - {risk_vn}"
+        # Draw distance text above bbox
+        distance_text = f"{distance:.1f}m - {risk_text}"
         
         # Add text background for better visibility
         text_size = cv2.getTextSize(distance_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0]
@@ -425,9 +425,9 @@ class DistanceEstimator:
             cv2.LINE_AA
         )
         
-        # Draw TTC if available - Hiển thị thời gian va chạm nếu có
+        # Draw TTC if available
         if ttc is not None and ttc < 5.0:
-            ttc_text = f"Va chạm sau: {ttc:.1f}s"
+            ttc_text = f"TTC: {ttc:.1f}s"
             
             # Add background for TTC text
             ttc_text_size = cv2.getTextSize(ttc_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]

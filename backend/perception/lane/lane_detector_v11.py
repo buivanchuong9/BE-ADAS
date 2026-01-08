@@ -40,7 +40,7 @@ class TemporalLaneFilter:
     Prevents frame-by-frame flickering while maintaining responsiveness.
     """
     
-    def __init__(self, alpha: float = 0.15, buffer_size: int = 10):
+    def __init__(self, alpha: float = 0.10, buffer_size: int = 15):
         """
         Initialize temporal filter.
         
@@ -81,7 +81,7 @@ class TemporalLaneFilter:
             Tuple of smoothed (left_fit, right_fit)
         """
         # Update left lane with confidence weighting
-        if left_fit is not None and left_confidence > 0.2:
+        if left_fit is not None and left_confidence > 0.15:  # Lowered from 0.2
             self.left_history.append((left_fit, left_confidence))
             self.last_good_left = left_fit.copy()
             self.frames_since_left = 0
@@ -102,7 +102,7 @@ class TemporalLaneFilter:
                     self.ema_left = self.last_good_left
         
         # Update right lane with confidence weighting  
-        if right_fit is not None and right_confidence > 0.2:
+        if right_fit is not None and right_confidence > 0.15:  # Lowered from 0.2
             self.right_history.append((right_fit, right_confidence))
             self.last_good_right = right_fit.copy()
             self.frames_since_right = 0
@@ -206,8 +206,8 @@ class LaneDetectorV11:
         # Apply Gaussian blur
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         
-        # Canny edge detection
-        edges = cv2.Canny(blurred, 50, 150)
+        # Canny edge detection - tuned for faded Vietnamese lanes
+        edges = cv2.Canny(blur, 30, 90)  # Lowered from (50, 150) for better faded lane detection
         
         # Region of interest (lower half of frame)
         height, width = edges.shape
@@ -236,14 +236,14 @@ class LaneDetectorV11:
         Returns:
             Tuple of (left_points, right_points) or (None, None)
         """
-        # Hough line detection
+        # Hough line detection - optimized for faded Vietnamese road markings
         lines = cv2.HoughLinesP(
             edges, 
             rho=1, 
             theta=np.pi/180, 
-            threshold=50,
-            minLineLength=100,
-            maxLineGap=50
+            threshold=30,      # Lower threshold for faded lanes (was 50)
+            minLineLength=60,  # Shorter segments for broken lines (was 100)
+            maxLineGap=80      # Larger gap tolerance (was 50)
         )
         
         if lines is None:
@@ -264,11 +264,11 @@ class LaneDetectorV11:
                 continue
             slope = (y2 - y1) / (x2 - x1)
             
-            # Filter by slope and position
-            if slope < -0.3 and x1 < mid_x and x2 < mid_x:
+            # Filter by slope and position - relaxed for curves
+            if slope < -0.2 and x1 < mid_x * 1.3:  # More tolerant for left lane
                 # Left lane (negative slope)
                 left_lines.append([(x1, y1), (x2, y2)])
-            elif slope > 0.3 and x1 > mid_x and x2 > mid_x:
+            elif slope > 0.2 and x1 > mid_x * 0.7:  # More tolerant for right lane
                 # Right lane (positive slope)
                 right_lines.append([(x1, y1), (x2, y2)])
         
@@ -511,14 +511,14 @@ class LaneDetectorV11:
             min(self.left_confidence, self.right_confidence) >= 0.6  # Tăng lên 0.6 để giảm false positives
         )
         
-        # Add warning text - TIẾNG VIỆT
+        # Add warning text - ENGLISH
         if lane_departure:
-            # Vietnamese warning message
+            # English warning message
             if "LEFT" in direction.upper():
-                warning_text = "⚠️ CẢNH BÁO: Lệch Trái"
+                warning_text = "⚠️ LANE DEPARTURE: LEFT"
                 warning_color = (0, 100, 255)  # Orange
             else:
-                warning_text = "⚠️ CẢNH BÁO: Lệch Phải"
+                warning_text = "⚠️ LANE DEPARTURE: RIGHT"
                 warning_color = (0, 100, 255)  # Orange
             
             # Draw warning background for better visibility
