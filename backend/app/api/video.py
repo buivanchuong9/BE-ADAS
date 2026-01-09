@@ -383,6 +383,7 @@ async def list_videos(
     """
     try:
         from app.db.repositories.job_queue_repo import JobQueueRepository
+        from app.db.models.job_queue import JobQueue  # <--- FIXED: Added missing import
         
         repo = JobQueueRepository(db)
         
