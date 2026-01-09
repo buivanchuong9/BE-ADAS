@@ -357,3 +357,130 @@ async def health_check():
         "service": "ADAS Video Analysis API",
         "version": "1.0.0"
     }
+
+
+@router.get("/list")
+async def list_videos(
+    limit: int = 10,
+    offset: int = 0,
+    status: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List all uploaded videos (for demo/frontend).
+    
+    Args:
+        limit: Max results (default: 10)
+        offset: Skip N results (default: 0)
+        status: Filter by status: "pending", "processing", "completed", "failed"
+        db: Database session
+        
+    Returns:
+        List of video jobs
+        
+    Example:
+        GET /api/video/list?limit=10&status=completed
+    """
+    try:
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        
+        repo = JobQueueRepository(db)
+        
+        # Get all jobs (with optional status filter)
+        from sqlalchemy import select, desc
+        from sqlalchemy.orm import joinedload
+        
+        query = select(JobQueue).options(joinedload(JobQueue.video))
+        
+        if status:
+            query = query.where(JobQueue.status == status)
+        
+        query = query.order_by(desc(JobQueue.created_at)).limit(limit).offset(offset)
+        
+        result = await db.execute(query)
+        jobs = result.scalars().all()
+        
+        # Extract attributes to prevent lazy loading
+        videos_list = []
+        for job in jobs:
+            videos_list.append({
+                "id": job.id,
+                "job_id": str(job.job_id),
+                "video_filename": job.video.original_filename if job.video else "",
+                "video_path": job.video.storage_path if job.video else "",
+                "video_size_mb": round(job.video.size_bytes / (1024 * 1024), 2) if job.video and job.video.size_bytes else 0.0,
+                "duration_seconds": job.video.duration_seconds if job.video else None,
+                "fps": job.video.fps if job.video else None,
+                "resolution": job.video.resolution if job.video else None,
+                "status": job.status,
+                "progress_percent": job.progress_percent,
+                "result_path": job.result_path,
+                "created_at": job.created_at,
+                "completed_at": job.completed_at
+            })
+        
+        return {
+            "videos": videos_list,
+            "total": len(videos_list),
+            "limit": limit,
+            "offset": offset
+        }
+    
+    except Exception as e:
+        logger.error(f"List videos failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to list videos: {str(e)}")
+
+
+@router.get("/sample/{job_id}/{filename}")
+async def get_raw_video(
+    job_id: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download RAW/original video (not processed) for demo purposes.
+    
+    Args:
+        job_id: Job ID
+        filename: Original filename
+        db: Database session
+        
+    Returns:
+        Original uploaded video file
+        
+    Example:
+        GET /api/video/sample/9d507862-f5ec-4c7e-a617-153528f5377d/project_video.mp4
+    """
+    try:
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        from pathlib import Path
+        
+        # Get job from database
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        
+        # Get raw video path from Video table
+        if not job.video or not job.video.storage_path:
+            raise HTTPException(status_code=404, detail="Raw video not found")
+        
+        raw_path = Path(job.video.storage_path)
+        
+        if not raw_path.exists():
+            raise HTTPException(status_code=404, detail="Raw video file not found on disk")
+        
+        # Return file
+        return FileResponse(
+            path=str(raw_path),
+            media_type="video/mp4",
+            filename=filename
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Get raw video failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get raw video: {str(e)}")
+
