@@ -11,6 +11,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- ================================================
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
+    auth_id VARCHAR(255) UNIQUE,  -- Supabase Auth UUID (optional for hybrid system)
     username VARCHAR(50) NOT NULL UNIQUE,
     email VARCHAR(255) NOT NULL UNIQUE,
     hashed_password VARCHAR(255) NOT NULL,
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE INDEX IF NOT EXISTS idx_users_username ON users(username);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_users_auth_id ON users(auth_id);  -- Index for Supabase lookups
 
 -- ================================================
 -- TABLE 2: Vehicles
@@ -270,3 +272,33 @@ ON CONFLICT (model_name, version) DO NOTHING;
 --     COALESCE(video_size_mb * 1024 * 1024, 0)::BIGINT
 -- FROM video_jobs_old
 -- ON CONFLICT (sha256_hash) DO NOTHING;
+
+-- ================================================
+-- MIGRATION: Fix Database Issues (Run this to update existing DB)
+-- Date: 2026-01-09
+-- Purpose: Add missing columns for Supabase Auth integration
+-- ================================================
+
+-- Add auth_id column to users table (if not exists)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_id VARCHAR(255) UNIQUE;
+
+-- Add index for auth_id lookups (if not exists)
+CREATE INDEX IF NOT EXISTS idx_users_auth_id ON users(auth_id);
+
+-- Add comment
+COMMENT ON COLUMN users.auth_id IS 'Supabase Auth UUID - links Supabase authentication with local user records';
+
+-- Verify migration
+SELECT 
+    table_name, 
+    column_name, 
+    data_type, 
+    is_nullable,
+    column_default
+FROM information_schema.columns 
+WHERE table_name = 'users' AND column_name = 'auth_id';
+
+-- Expected output: 
+-- table_name | column_name | data_type      | is_nullable | column_default
+-- -----------+-------------+----------------+-------------+---------------
+-- users      | auth_id     | character varying | YES         | null
