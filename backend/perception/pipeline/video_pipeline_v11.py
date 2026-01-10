@@ -522,9 +522,18 @@ class VideoPipelineV11:
         
         logger.info(f"Video properties: {width}x{height} @ {fps} fps, {total_frames} frames")
         
-        # Create video writer
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        # Create video writer with H.264 codec for web compatibility
+        # Try H.264 first, fallback to mp4v if not available
+        temp_output = output_path.replace('.mp4', '_temp.mp4') if output_path.endswith('.mp4') else output_path + '_temp.mp4'
+        
+        fourcc = cv2.VideoWriter_fourcc(*'H264')
+        out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
+        
+        # If H.264 fails, try mp4v as temporary codec (will re-encode later)
+        if not out.isOpened():
+            logger.warning("H.264 codec not available via OpenCV, using mp4v temporarily")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(temp_output, fourcc, fps, (width, height))
         
         if not out.isOpened():
             logger.error(f"Failed to create output video: {output_path}")
@@ -621,12 +630,84 @@ class VideoPipelineV11:
         logger.info(f"Processing speed: {stats['processing_fps']:.2f} fps")
         logger.info(f"Detected {len(self.events)} events")
         
+        # Re-encode to H.264 using FFmpeg for guaranteed web compatibility
+        logger.info("🎬 Re-encoding video to H.264 for frontend compatibility...")
+        reencode_success = self._reencode_to_h264(temp_output, output_path)
+        
+        if not reencode_success:
+            logger.warning("FFmpeg re-encoding failed, using OpenCV output directly")
+            # Fallback: use temp output as final output
+            import shutil
+            shutil.move(temp_output, output_path)
+        else:
+            # Clean up temp file
+            try:
+                Path(temp_output).unlink(missing_ok=True)
+                logger.info("✅ Video successfully re-encoded to H.264")
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file: {e}")
+        
         return {
             "success": True,
             "output_path": output_path,
             "events": self.events,
             "stats": stats
         }
+    
+    def _reencode_to_h264(self, input_path: str, output_path: str) -> bool:
+        """
+        Re-encode video to H.264 using FFmpeg for guaranteed web compatibility.
+        
+        Args:
+            input_path: Path to input video (temp file)
+            output_path: Path to output video (final H.264)
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        import subprocess
+        
+        try:
+            # FFmpeg command for H.264 encoding with web-optimized settings
+            cmd = [
+                'ffmpeg',
+                '-i', input_path,
+                '-c:v', 'libx264',           # H.264 codec
+                '-preset', 'medium',          # Balance speed/quality
+                '-crf', '23',                 # Quality (18-28, lower=better)
+                '-pix_fmt', 'yuv420p',       # Web compatibility
+                '-movflags', '+faststart',    # Enable streaming
+                '-y',                         # Overwrite output
+                output_path
+            ]
+            
+            logger.info(f"Running FFmpeg: {' '.join(cmd)}")
+            
+            # Run FFmpeg with timeout
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=600,  # 10 minute timeout
+                check=True
+            )
+            
+            logger.info("FFmpeg re-encoding completed successfully")
+            return True
+            
+        except subprocess.TimeoutExpired:
+            logger.error("FFmpeg re-encoding timed out (>10 minutes)")
+            return False
+        except subprocess.CalledProcessError as e:
+            logger.error(f"FFmpeg re-encoding failed: {e.stderr.decode()}")
+            return False
+        except FileNotFoundError:
+            logger.error("FFmpeg not found. Please install FFmpeg: apt-get install ffmpeg")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during FFmpeg re-encoding: {e}")
+            return False
+
 
 
 def process_video(
