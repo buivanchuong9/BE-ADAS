@@ -243,6 +243,72 @@ CREATE TABLE IF NOT EXISTS model_versions (
 );
 
 -- ================================================
+-- TABLE 11: Video Analytics (ML-based optimization)
+-- ================================================
+CREATE TABLE IF NOT EXISTS video_analytics (
+    id SERIAL PRIMARY KEY,
+    
+    -- Video metadata
+    job_id VARCHAR(255) NOT NULL,
+    video_filename VARCHAR(512),
+    video_format VARCHAR(50),
+    
+    -- Resolution
+    width INTEGER,
+    height INTEGER,
+    resolution_category VARCHAR(50),  -- SD, HD, FHD, 2K, 4K, 8K
+    
+    -- File metrics
+    file_size_mb REAL,
+    duration_seconds REAL,
+    fps REAL,
+    bitrate_kbps REAL,
+    
+    -- Processing metrics
+    processing_time_seconds REAL,
+    processing_fps REAL,  -- Frames processed per second
+    device_used VARCHAR(20),  -- cpu, cuda
+    batch_size_used INTEGER,
+    gpu_memory_mb REAL,
+    
+    -- Quality metrics
+    events_detected INTEGER DEFAULT 0,
+    output_codec VARCHAR(50),  -- h264, mp4v
+    encoding_time_seconds REAL,
+    
+    -- Status
+    success BOOLEAN DEFAULT TRUE,
+    error_message TEXT,
+    
+    -- Warnings
+    had_high_resolution_warning BOOLEAN DEFAULT FALSE,
+    had_encoding_issues BOOLEAN DEFAULT FALSE,
+    
+    -- Auto-Recommendations (JSONB for ML-generated suggestions)
+    auto_recommendations JSONB,
+    
+    -- Timestamp
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Indexes for analytics queries
+CREATE INDEX IF NOT EXISTS idx_video_analytics_job_id ON video_analytics(job_id);
+CREATE INDEX IF NOT EXISTS idx_video_analytics_created_at ON video_analytics(created_at);
+CREATE INDEX IF NOT EXISTS idx_video_analytics_resolution ON video_analytics(resolution_category);
+CREATE INDEX IF NOT EXISTS idx_video_analytics_device ON video_analytics(device_used);
+CREATE INDEX IF NOT EXISTS idx_video_analytics_success ON video_analytics(success);
+
+-- GIN index for JSONB recommendations
+CREATE INDEX IF NOT EXISTS idx_video_analytics_recommendations 
+    ON video_analytics USING GIN(auto_recommendations);
+
+-- Comments
+COMMENT ON TABLE video_analytics IS 'ML-based video processing analytics for auto-optimization and performance tracking';
+COMMENT ON COLUMN video_analytics.auto_recommendations IS 'JSON object with ML-generated optimization recommendations (batch_size, resize, etc)';
+COMMENT ON COLUMN video_analytics.resolution_category IS 'Standard resolution categories: SD, HD, FHD, 2K, 4K, 8K';
+COMMENT ON COLUMN video_analytics.had_high_resolution_warning IS 'True if user was warned about high resolution processing time';
+
+-- ================================================
 -- Sample Data
 -- ================================================
 INSERT INTO users (username, email, hashed_password, full_name, role, is_active)

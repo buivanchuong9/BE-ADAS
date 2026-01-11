@@ -20,6 +20,7 @@ from .driver_state import DriverState
 from .traffic_sign import TrafficSign
 from .alert import Alert
 from .model_version import ModelVersion
+from .video_analytics import VideoAnalytics  # ML tracking
 
 __all__ = [
     "User",
@@ -35,4 +36,5 @@ __all__ = [
     "TrafficSign",
     "Alert",
     "ModelVersion",
+    "VideoAnalytics",
 ]
