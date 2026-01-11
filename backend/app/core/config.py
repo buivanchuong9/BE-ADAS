@@ -80,7 +80,7 @@ class Settings(BaseSettings):
     
     # Processing Configuration
     MAX_VIDEO_SIZE_MB: int = 1024  # 1GB - Server mạnh, GPU T4 16GB VRAM
-    MAX_CONCURRENT_JOBS: int = 2
+    MAX_CONCURRENT_JOBS: int = 12  # Increased to 12 for GPU A30 (24GB VRAM)
     VIDEO_CHUNK_SIZE_MB: int = 10
     
     # Logging
