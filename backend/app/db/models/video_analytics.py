@@ -12,7 +12,7 @@ Features:
 
 from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean, JSON, Text
 from sqlalchemy.sql import func
-from ..db.base import Base
+from ..base import Base
 
 
 class VideoAnalytics(Base):
