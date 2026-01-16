@@ -126,7 +126,7 @@ async def analyze_driver_video(
             "started_at": job.started_at,
             "completed_at": job.completed_at,
             # Add download URLs for frontend
-            "download_url": f"/api/video/download/{job.job_id}/result.mp4",
+            "download_url": f"/api/driver-monitor/download/{job.job_id}",
             "result_url": f"/api/video/result/{job.job_id}",
         }
         
@@ -320,3 +320,75 @@ async def get_driver_status_history(
         "success": True,
         "history": history
     }
+
+
+@router.get("/download/{job_id}")
+async def download_driver_monitoring_result(
+    job_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download processed driver monitoring video.
+    
+    This endpoint downloads the annotated video with:
+    - Facial landmarks (468 points)
+    - EAR/MAR metrics overlay
+    - Head pose angles
+    - Vietnamese alerts
+    - Detected objects (phone, bottle)
+    
+    Args:
+        job_id: Job ID from /analyze endpoint
+        
+    Returns:
+        MP4 video file with driver monitoring annotations
+        
+    Example:
+        GET /api/driver-monitor/download/97924c1d-850f-4905-bce2-5e31f6a8d829
+    """
+    try:
+        from pathlib import Path
+        from fastapi.responses import FileResponse
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        from app.services.video_service import VideoService
+        
+        # Get job from database
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        
+        if job.status != 'completed':
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Job not completed yet. Status: {job.status}. Progress: {job.progress_percent}%"
+            )
+        
+        # Get output path
+        video_service = VideoService(db)
+        output_path = Path(video_service.get_output_path(job_id))
+        
+        if not output_path.exists():
+            raise HTTPException(
+                status_code=404, 
+                detail="Result video not found. Processing may have failed."
+            )
+        
+        logger.info(f"Serving driver monitoring result: {output_path}")
+        
+        # Return file
+        return FileResponse(
+            path=str(output_path),
+            media_type="video/mp4",
+            filename=f"driver_monitoring_{job_id}.mp4",
+            headers={
+                "Content-Disposition": f"attachment; filename=driver_monitoring_{job_id}.mp4"
+            }
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Download failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
