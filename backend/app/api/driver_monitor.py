@@ -124,7 +124,10 @@ async def analyze_driver_video(
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "started_at": job.started_at,
-            "completed_at": job.completed_at
+            "completed_at": job.completed_at,
+            # Add download URLs for frontend
+            "download_url": f"/api/video/download/{job.job_id}/result.mp4",
+            "result_url": f"/api/video/result/{job.job_id}",
         }
         
         # Submit to background processing for DRIVER MONITORING
