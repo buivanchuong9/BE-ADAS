@@ -29,7 +29,13 @@ import warnings
 from .kalman_filter import LaneKalmanFilter  # NEW: Kalman Filter for smoothing
 
 # Suppress polyfit warnings for better performance
-warnings.filterwarnings('ignore', category=np.RankWarning)
+# NumPy 2.0+ removed RankWarning, so we need to handle both old and new versions
+try:
+    # NumPy < 2.0
+    warnings.filterwarnings('ignore', category=np.RankWarning)
+except AttributeError:
+    # NumPy >= 2.0 (RankWarning was removed)
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -305,7 +311,8 @@ class LaneDetectorV11:
             
             # Use polyfit with rcond parameter to handle poorly conditioned matrix
             with warnings.catch_warnings():
-                warnings.filterwarnings('ignore', category=np.RankWarning)
+                # Suppress all warnings during polyfit (compatible with NumPy 2.0+)
+                warnings.simplefilter('ignore')
                 try:
                     coeffs = np.polyfit(y, x, degree, rcond=1e-10, w=weights)
                 except np.linalg.LinAlgError:
