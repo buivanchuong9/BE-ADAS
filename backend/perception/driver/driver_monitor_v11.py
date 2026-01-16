@@ -140,32 +140,21 @@ class TemporalDriverState:
         self.window_size = int(window_seconds * frame_rate)
         self.alpha = alpha
         
-        # Rolling buffers, enable_temporal: bool = True):
-        """
-        Initialize driver monitor.
+        # Rolling buffers
+        self.ear_buffer = deque(maxlen=self.window_size)
+        self.mar_buffer = deque(maxlen=self.window_size)
+        self.yaw_buffer = deque(maxlen=self.window_size)
+        self.pitch_buffer = deque(maxlen=self.window_size)
+        self.drowsy_state_buffer = deque(maxlen=self.window_size)
         
-        Args:
-            device: "cuda" or "cpu" (MediaPipe uses CPU)
-            enable_temporal: Enable temporal smoothing and sustained state detection
-        """
-        self.device = device
-        self.mp_face_mesh = None
-        self.face_mesh = None
+        # EMA smoothed values
+        self.smoothed_ear = None
+        self.smoothed_mar = None
+        self.smoothed_yaw = None
+        self.smoothed_pitch = None
         
-        # State tracking
-        self.closed_eye_counter = 0
-        self.yawn_counter = 0
-        self.is_drowsy = False
-        
-        # Temporal state tracking (PRODUCTION)
-        self.enable_temporal = enable_temporal
-        self.temporal_state = TemporalDriverState(
-            window_seconds=3.0,
-            frame_rate=30,
-            alpha=0.2
-        ) if enable_temporal else None
-        self.frame_number = 0
-        self.last_alert_time = {}  # {alert_type: frame_number}
+        # Alert cooldown tracking
+        self.last_alert_time = {}
         self.alert_cooldown_frames = 150  # 5 seconds @ 30fps
     
     def update(
