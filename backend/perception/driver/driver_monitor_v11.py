@@ -857,28 +857,114 @@ class DriverMonitorV11:
         landmarks: np.ndarray
     ) -> np.ndarray:
         """
-        Draw facial landmarks on frame.
+        Draw FULL 468-point facial landmarks mesh on frame.
+        
+        Features:
+        - All 468 MediaPipe landmarks
+        - Mesh connections
+        - Face contours
+        - Neon glow effect
         
         Args:
             frame: RGB frame
-            landmarks: Facial landmarks array
+            landmarks: Facial landmarks array (468 points)
             
         Returns:
-            Frame with landmarks
+            Frame with full face mesh
         """
         annotated = frame.copy()
+        height, width = frame.shape[:2]
         
-        # Draw eye landmarks
-        for idx in self.LEFT_EYE + self.RIGHT_EYE:
-            if idx < len(landmarks):
-                x, y = landmarks[idx].astype(int)
-                cv2.circle(annotated, (x, y), 2, (0, 255, 0), -1)
+        # MediaPipe Face Mesh connections (subset for performance)
+        # Full mesh would be too dense, so we draw key contours
         
-        # Draw mouth landmarks
-        for idx in self.MOUTH:
-            if idx < len(landmarks):
-                x, y = landmarks[idx].astype(int)
-                cv2.circle(annotated, (x, y), 2, (255, 0, 0), -1)
+        # === 1. FACE OVAL (Contour) ===
+        face_oval = [
+            10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+            397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+            172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109
+        ]
+        
+        # === 2. LEFT EYE (Full contour) ===
+        left_eye_contour = [
+            33, 7, 163, 144, 145, 153, 154, 155, 133,
+            173, 157, 158, 159, 160, 161, 246, 33
+        ]
+        
+        # === 3. RIGHT EYE (Full contour) ===
+        right_eye_contour = [
+            362, 382, 381, 380, 374, 373, 390, 249,
+            263, 466, 388, 387, 386, 385, 384, 398, 362
+        ]
+        
+        # === 4. LEFT EYEBROW ===
+        left_eyebrow = [46, 53, 52, 65, 55, 70, 63, 105, 66, 107]
+        
+        # === 5. RIGHT EYEBROW ===
+        right_eyebrow = [276, 283, 282, 295, 285, 300, 293, 334, 296, 336]
+        
+        # === 6. NOSE BRIDGE ===
+        nose_bridge = [168, 6, 197, 195, 5, 4, 1, 19, 94, 2]
+        
+        # === 7. NOSE TIP ===
+        nose_tip = [1, 2, 98, 327]
+        
+        # === 8. LIPS OUTER ===
+        lips_outer = [
+            61, 146, 91, 181, 84, 17, 314, 405, 321, 375,
+            291, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 61
+        ]
+        
+        # === 9. LIPS INNER ===
+        lips_inner = [
+            78, 191, 80, 81, 82, 13, 312, 311, 310, 415,
+            308, 324, 318, 402, 317, 14, 87, 178, 88, 95, 78
+        ]
+        
+        # Draw connections with neon glow effect
+        def draw_contour(contour, color, thickness=1):
+            """Draw contour with glow effect."""
+            points = []
+            for idx in contour:
+                if idx < len(landmarks):
+                    x, y = landmarks[idx].astype(int)
+                    points.append((x, y))
+            
+            if len(points) > 1:
+                # Outer glow
+                for i in range(len(points) - 1):
+                    cv2.line(annotated, points[i], points[i + 1], color, thickness + 2, cv2.LINE_AA)
+                # Inner bright line
+                for i in range(len(points) - 1):
+                    cv2.line(annotated, points[i], points[i + 1], (255, 255, 255), thickness, cv2.LINE_AA)
+        
+        # Draw all contours with cyan/neon colors
+        draw_contour(face_oval, (255, 200, 100), 2)  # Cyan for face
+        draw_contour(left_eye_contour, (0, 255, 255), 2)  # Yellow for eyes
+        draw_contour(right_eye_contour, (0, 255, 255), 2)
+        draw_contour(left_eyebrow, (255, 200, 100), 1)
+        draw_contour(right_eyebrow, (255, 200, 100), 1)
+        draw_contour(nose_bridge, (255, 200, 100), 1)
+        draw_contour(lips_outer, (255, 100, 200), 2)  # Pink for lips
+        draw_contour(lips_inner, (255, 100, 200), 1)
+        
+        # === 10. DRAW ALL 468 LANDMARKS AS POINTS ===
+        # Key landmarks (larger)
+        key_landmarks = set(
+            face_oval + left_eye_contour + right_eye_contour + 
+            left_eyebrow + right_eyebrow + nose_bridge + 
+            lips_outer + lips_inner
+        )
+        
+        for idx, (x, y) in enumerate(landmarks):
+            x, y = int(x), int(y)
+            if idx in key_landmarks:
+                # Key points: larger with glow
+                cv2.circle(annotated, (x, y), 3, (100, 200, 255), -1)
+                cv2.circle(annotated, (x, y), 2, (255, 255, 255), -1)
+            else:
+                # Other points: smaller
+                cv2.circle(annotated, (x, y), 1, (100, 200, 255), -1)
         
         return annotated
     
