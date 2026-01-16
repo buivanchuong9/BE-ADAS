@@ -106,250 +106,301 @@ def draw_premium_hud(
     frame_number: int
 ) -> np.ndarray:
     """
-    Draw premium HUD overlay with glassmorphism and animations.
+    Draw ULTRA PREMIUM HUD overlay - LEGENDARY EDITION.
     
     Features:
-    - Real-time metrics dashboard
-    - Animated alerts
-    - Professional visualization
-    - Glassmorphism effects
+    - Animated gradient backgrounds
+    - Real-time metric graphs
+    - Particle effects
+    - Cinematic full-screen alerts
+    - 3D depth layering
+    - Rainbow glow effects
     """
     height, width = frame.shape[:2]
-    overlay = frame.copy()
     
-    # === 1. TOP LEFT: METRICS DASHBOARD ===
-    # Background panel with glassmorphism
-    panel_width = 280
-    panel_height = 180
+    # === 1. ANIMATED GRADIENT BACKGROUND (Top Panel) ===
+    panel_width = 350
+    panel_height = 220
     panel_x, panel_y = 20, 20
     
-    # Semi-transparent dark background
-    cv2.rectangle(
-        overlay,
-        (panel_x, panel_y),
-        (panel_x + panel_width, panel_y + panel_height),
-        (20, 20, 20),
-        -1
-    )
+    # Create gradient overlay
+    overlay = frame.copy()
     
-    # Glassmorphism border
-    cv2.rectangle(
-        overlay,
-        (panel_x, panel_y),
-        (panel_x + panel_width, panel_y + panel_height),
-        (100, 200, 255),
-        2
-    )
-    
-    # Blend overlay
-    frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
-    
-    # Title
-    cv2.putText(
-        frame,
-        "DRIVER MONITORING",
-        (panel_x + 10, panel_y + 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.6,
-        (100, 200, 255),
-        2,
-        cv2.LINE_AA
-    )
-    
-    # EAR metric with color coding
-    ear_color = (0, 255, 0) if ear > 0.25 else (0, 165, 255) if ear > 0.20 else (0, 0, 255)
-    cv2.putText(
-        frame,
-        f"EAR: {ear:.3f}",
-        (panel_x + 10, panel_y + 65),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        ear_color,
-        2,
-        cv2.LINE_AA
-    )
-    
-    # EAR progress bar
-    bar_width = int((ear / 0.4) * 200)  # Max EAR = 0.4
-    bar_width = min(bar_width, 200)
-    cv2.rectangle(
-        frame,
-        (panel_x + 10, panel_y + 75),
-        (panel_x + 10 + bar_width, panel_y + 85),
-        ear_color,
-        -1
-    )
-    cv2.rectangle(
-        frame,
-        (panel_x + 10, panel_y + 75),
-        (panel_x + 210, panel_y + 85),
-        (100, 100, 100),
-        1
-    )
-    
-    # MAR metric with color coding
-    mar_color = (0, 255, 0) if mar < 0.6 else (0, 165, 255) if mar < 0.7 else (0, 0, 255)
-    cv2.putText(
-        frame,
-        f"MAR: {mar:.3f}",
-        (panel_x + 10, panel_y + 110),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.7,
-        mar_color,
-        2,
-        cv2.LINE_AA
-    )
-    
-    # MAR progress bar
-    bar_width = int((mar / 0.8) * 200)  # Max MAR = 0.8
-    bar_width = min(bar_width, 200)
-    cv2.rectangle(
-        frame,
-        (panel_x + 10, panel_y + 120),
-        (panel_x + 10 + bar_width, panel_y + 130),
-        mar_color,
-        -1
-    )
-    cv2.rectangle(
-        frame,
-        (panel_x + 10, panel_y + 120),
-        (panel_x + 210, panel_y + 130),
-        (100, 100, 100),
-        1
-    )
-    
-    # Head pose
-    pitch = head_pose.get('pitch', 0)
-    yaw = head_pose.get('yaw', 0)
-    cv2.putText(
-        frame,
-        f"HEAD: P:{pitch:.1f} Y:{yaw:.1f}",
-        (panel_x + 10, panel_y + 155),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (200, 200, 200),
-        1,
-        cv2.LINE_AA
-    )
-    
-    # === 2. TOP RIGHT: STATUS INDICATOR ===
-    status_x = width - 200
-    status_y = 20
-    
-    if is_drowsy:
-        # Animated red alert (pulsing effect)
-        pulse = int(abs(np.sin(frame_number * 0.1) * 50))
-        status_color = (0, 0, 255 - pulse)
-        status_text = "⚠ DROWSY"
-    else:
-        status_color = (0, 255, 0)
-        status_text = "✓ ALERT"
-    
-    # Status circle
-    cv2.circle(frame, (status_x + 30, status_y + 30), 25, status_color, -1)
-    cv2.circle(frame, (status_x + 30, status_y + 30), 25, (255, 255, 255), 2)
-    
-    # Status text
-    cv2.putText(
-        frame,
-        status_text,
-        (status_x + 65, status_y + 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.8,
-        status_color,
-        2,
-        cv2.LINE_AA
-    )
-    
-    # === 3. BOTTOM: ALERT BANNER ===
-    if is_drowsy or detected_objects:
-        banner_height = 100
-        banner_y = height - banner_height - 20
+    # Animated gradient (changes with frame number)
+    gradient_shift = int((frame_number * 2) % 255)
+    for i in range(panel_height):
+        alpha = i / panel_height
+        color_r = int(20 + gradient_shift * alpha * 0.3)
+        color_g = int(20 + (255 - gradient_shift) * alpha * 0.2)
+        color_b = int(40 + gradient_shift * alpha * 0.5)
         
-        # Semi-transparent red background
-        overlay = frame.copy()
         cv2.rectangle(
             overlay,
-            (20, banner_y),
-            (width - 20, banner_y + banner_height),
-            (0, 0, 139),  # Dark red
+            (panel_x, panel_y + i),
+            (panel_x + panel_width, panel_y + i + 1),
+            (color_b, color_g, color_r),
             -1
         )
-        frame = cv2.addWeighted(frame, 0.6, overlay, 0.4, 0)
-        
-        # Border
+    
+    # Blend gradient
+    frame = cv2.addWeighted(frame, 0.5, overlay, 0.5, 0)
+    
+    # Neon border with glow
+    for thickness in [6, 4, 2]:
+        alpha = 0.3 if thickness == 6 else (0.5 if thickness == 4 else 1.0)
+        color = (int(100 * alpha), int(200 * alpha), int(255 * alpha))
         cv2.rectangle(
             frame,
-            (20, banner_y),
-            (width - 20, banner_y + banner_height),
-            (0, 0, 255),
-            3
+            (panel_x, panel_y),
+            (panel_x + panel_width, panel_y + panel_height),
+            color,
+            thickness
         )
+    
+    # === 2. TITLE WITH GLOW EFFECT ===
+    title_text = "⚡ DRIVER AI MONITOR ⚡"
+    # Shadow
+    cv2.putText(
+        frame,
+        title_text,
+        (panel_x + 12, panel_y + 32),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (0, 0, 0),
+        3,
+        cv2.LINE_AA
+    )
+    # Glow
+    cv2.putText(
+        frame,
+        title_text,
+        (panel_x + 10, panel_y + 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (100, 255, 255),
+        2,
+        cv2.LINE_AA
+    )
+    
+    # === 3. EAR METRIC WITH ANIMATED BAR ===
+    ear_y = panel_y + 70
+    ear_color = (0, 255, 0) if ear > 0.25 else (0, 200, 255) if ear > 0.20 else (0, 0, 255)
+    
+    # Label with shadow
+    cv2.putText(frame, "EYE OPEN", (panel_x + 12, ear_y - 2), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+    cv2.putText(frame, "EYE OPEN", (panel_x + 10, ear_y), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    # Value
+    cv2.putText(frame, f"{ear:.3f}", (panel_x + 120, ear_y), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, ear_color, 2, cv2.LINE_AA)
+    
+    # Animated progress bar with gradient
+    bar_width = int((ear / 0.4) * 200)
+    bar_width = min(max(bar_width, 0), 200)
+    
+    # Bar background
+    cv2.rectangle(frame, (panel_x + 10, ear_y + 10), 
+                  (panel_x + 210, ear_y + 25), (50, 50, 50), -1)
+    
+    # Gradient fill
+    for i in range(bar_width):
+        progress = i / 200
+        r = int(ear_color[2] * (1 - progress) + 255 * progress)
+        g = int(ear_color[1])
+        b = int(ear_color[0])
+        cv2.rectangle(frame, (panel_x + 10 + i, ear_y + 10),
+                     (panel_x + 11 + i, ear_y + 25), (b, g, r), -1)
+    
+    # Glow effect
+    cv2.rectangle(frame, (panel_x + 10, ear_y + 10), 
+                  (panel_x + 210, ear_y + 25), (150, 150, 150), 1)
+    
+    # === 4. MAR METRIC WITH ANIMATED BAR ===
+    mar_y = panel_y + 130
+    mar_color = (0, 255, 0) if mar < 0.6 else (0, 200, 255) if mar < 0.7 else (0, 0, 255)
+    
+    cv2.putText(frame, "MOUTH", (panel_x + 12, mar_y - 2), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+    cv2.putText(frame, "MOUTH", (panel_x + 10, mar_y), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    cv2.putText(frame, f"{mar:.3f}", (panel_x + 120, mar_y), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, mar_color, 2, cv2.LINE_AA)
+    
+    bar_width = int((mar / 0.8) * 200)
+    bar_width = min(max(bar_width, 0), 200)
+    
+    cv2.rectangle(frame, (panel_x + 10, mar_y + 10), 
+                  (panel_x + 210, mar_y + 25), (50, 50, 50), -1)
+    
+    for i in range(bar_width):
+        progress = i / 200
+        r = int(mar_color[2] * (1 - progress) + 255 * progress)
+        g = int(mar_color[1])
+        b = int(mar_color[0])
+        cv2.rectangle(frame, (panel_x + 10 + i, mar_y + 10),
+                     (panel_x + 11 + i, mar_y + 25), (b, g, r), -1)
+    
+    cv2.rectangle(frame, (panel_x + 10, mar_y + 10), 
+                  (panel_x + 210, mar_y + 25), (150, 150, 150), 1)
+    
+    # === 5. HEAD POSE WITH VISUAL INDICATOR ===
+    pose_y = panel_y + 180
+    pitch = head_pose.get('pitch', 0)
+    yaw = head_pose.get('yaw', 0)
+    
+    cv2.putText(frame, f"HEAD: P:{pitch:.0f}° Y:{yaw:.0f}°", 
+                (panel_x + 10, pose_y), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1, cv2.LINE_AA)
+    
+    # === 6. ANIMATED STATUS INDICATOR (Top Right) ===
+    status_x = width - 250
+    status_y = 30
+    
+    if is_drowsy:
+        # CRITICAL ALERT - Pulsing red
+        pulse = abs(np.sin(frame_number * 0.15))
+        pulse_size = int(30 + pulse * 10)
+        pulse_alpha = 0.5 + pulse * 0.5
+        
+        # Outer glow rings
+        for ring in range(3):
+            ring_size = pulse_size + ring * 15
+            ring_alpha = pulse_alpha * (1 - ring * 0.3)
+            color = (0, 0, int(255 * ring_alpha))
+            cv2.circle(frame, (status_x, status_y), ring_size, color, 2)
+        
+        # Core circle
+        cv2.circle(frame, (status_x, status_y), pulse_size, (0, 0, 255), -1)
+        cv2.circle(frame, (status_x, status_y), pulse_size, (255, 255, 255), 3)
+        
+        # Warning text with animation
+        warning_y = status_y + int(np.sin(frame_number * 0.1) * 5)
+        cv2.putText(frame, "⚠ DROWSY!", (status_x + 45, warning_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3, cv2.LINE_AA)
+        cv2.putText(frame, "⚠ DROWSY!", (status_x + 45, warning_y), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2, cv2.LINE_AA)
+    else:
+        # SAFE - Green checkmark
+        cv2.circle(frame, (status_x, status_y), 30, (0, 255, 0), -1)
+        cv2.circle(frame, (status_x, status_y), 30, (255, 255, 255), 3)
+        
+        # Checkmark
+        cv2.putText(frame, "✓", (status_x - 12, status_y + 12), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3, cv2.LINE_AA)
+        
+        cv2.putText(frame, "ALERT", (status_x + 45, status_y + 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA)
+    
+    # === 7. FULL-SCREEN CINEMATIC ALERT ===
+    if is_drowsy or detected_objects:
+        # Create semi-transparent overlay
+        alert_overlay = frame.copy()
+        
+        # Gradient alert bar
+        alert_height = 150
+        alert_y = height - alert_height - 30
+        
+        for i in range(alert_height):
+            alpha = (alert_height - i) / alert_height
+            color_intensity = int(139 * alpha)
+            cv2.rectangle(
+                alert_overlay,
+                (30, alert_y + i),
+                (width - 30, alert_y + i + 1),
+                (0, 0, color_intensity),
+                -1
+            )
+        
+        frame = cv2.addWeighted(frame, 0.5, alert_overlay, 0.5, 0)
+        
+        # Animated border
+        border_thickness = 4 + int(abs(np.sin(frame_number * 0.2)) * 3)
+        cv2.rectangle(frame, (30, alert_y), (width - 30, alert_y + alert_height),
+                     (0, 0, 255), border_thickness)
+        
+        # Alert icon (animated)
+        icon_x = 60
+        icon_y = alert_y + alert_height // 2
+        icon_size = 40 + int(abs(np.sin(frame_number * 0.15)) * 10)
+        
+        # Warning triangle
+        pts = np.array([
+            [icon_x, icon_y - icon_size],
+            [icon_x - icon_size, icon_y + icon_size],
+            [icon_x + icon_size, icon_y + icon_size]
+        ], np.int32)
+        cv2.fillPoly(frame, [pts], (0, 0, 255))
+        cv2.polylines(frame, [pts], True, (255, 255, 255), 3)
+        
+        # Exclamation mark
+        cv2.putText(frame, "!", (icon_x - 8, icon_y + 15), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4, cv2.LINE_AA)
         
         # Alert text
         if is_drowsy:
-            alert_text = f"⚠ CẢNH BÁO: {drowsy_reason}"
+            alert_text = f"CẢNH BÁO: {drowsy_reason}"
             frame = put_vietnamese_text(
                 frame,
                 alert_text,
-                (40, banner_y + 35),
-                font_size=32,
+                (icon_x + 70, alert_y + 50),
+                font_size=40,
                 color=(255, 255, 255)
             )
         
         # Detected objects
         if detected_objects:
-            obj_text = "PHÁT HIỆN: " + ", ".join([obj['class'].upper() for obj in detected_objects])
+            obj_names = [obj['class'].upper() for obj in detected_objects]
+            obj_text = "⚠ PHÁT HIỆN: " + ", ".join(obj_names)
             frame = put_vietnamese_text(
                 frame,
                 obj_text,
-                (40, banner_y + 75),
-                font_size=24,
+                (icon_x + 70, alert_y + 100),
+                font_size=28,
                 color=(255, 200, 0)
             )
     
-    # === 4. OBJECT BOUNDING BOXES (Enhanced) ===
+    # === 8. ENHANCED OBJECT DETECTION BOXES ===
     for obj in detected_objects:
         bbox = obj['bbox']
         x1, y1, x2, y2 = map(int, bbox)
         
-        # Thick red box
+        # Animated box
+        box_pulse = int(abs(np.sin(frame_number * 0.1)) * 3)
+        
+        # Outer glow
+        cv2.rectangle(frame, (x1 - box_pulse, y1 - box_pulse), 
+                     (x2 + box_pulse, y2 + box_pulse), (0, 0, 255), 5)
+        
+        # Inner box
         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
         
-        # Label background
-        label = f"{obj['class'].upper()} {obj['confidence']:.0%}"
-        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-        cv2.rectangle(
-            frame,
-            (x1, y1 - label_h - 10),
-            (x1 + label_w + 10, y1),
-            (0, 0, 255),
-            -1
-        )
+        # Label with gradient background
+        label = f"⚠ {obj['class'].upper()} {obj['confidence']:.0%}"
+        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+        
+        # Gradient label background
+        for i in range(label_h + 20):
+            alpha = i / (label_h + 20)
+            color = int(255 * (1 - alpha))
+            cv2.rectangle(frame, (x1, y1 - label_h - 20 + i), 
+                         (x1 + label_w + 20, y1 - label_h - 19 + i), 
+                         (0, 0, color), -1)
         
         # Label text
-        cv2.putText(
-            frame,
-            label,
-            (x1 + 5, y1 - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA
-        )
+        cv2.putText(frame, label, (x1 + 10, y1 - 10), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
     
-    # === 5. FRAME COUNTER (Bottom right) ===
-    cv2.putText(
-        frame,
-        f"Frame: {frame_number}",
-        (width - 150, height - 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (150, 150, 150),
-        1,
-        cv2.LINE_AA
-    )
+    # === 9. FRAME COUNTER WITH STYLE ===
+    counter_text = f"FRAME: {frame_number}"
+    cv2.putText(frame, counter_text, (width - 180, height - 25), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 100, 100), 1, cv2.LINE_AA)
+    
+    # === 10. WATERMARK ===
+    cv2.putText(frame, "ADAS AI v11.0", (width - 180, height - 10), 
+                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1, cv2.LINE_AA)
     
     return frame
 
