@@ -968,7 +968,65 @@ class DriverMonitorV11:
         
         return annotated
     
+    
+    def preprocess_frame_aspect_ratio(
+        self,
+        frame: np.ndarray,
+        target_width: int = 1280,
+        maintain_aspect: bool = True
+    ) -> Tuple[np.ndarray, Dict]:
+        """
+        Preprocess frame while maintaining aspect ratio.
+        
+        CRITICAL for ADAS: Prevents face distortion which causes:
+        - Incorrect EAR/MAR calculations
+        - Wrong head pose estimation
+        - False drowsiness alerts
+        
+        Args:
+            frame: Input frame (any aspect ratio)
+            target_width: Target width for processing
+            maintain_aspect: If True, use letterboxing instead of stretching
+            
+        Returns:
+            Tuple of (processed_frame, metadata)
+            metadata contains: original_size, scale_factor, padding
+        """
+        original_height, original_width = frame.shape[:2]
+        
+        if not maintain_aspect:
+            # Old method (WRONG - causes distortion)
+            resized = cv2.resize(frame, (target_width, int(target_width * 3/4)))
+            return resized, {
+                'original_size': (original_width, original_height),
+                'scale_factor': 1.0,
+                'padding': (0, 0, 0, 0)
+            }
+        
+        # Calculate target height maintaining aspect ratio
+        aspect_ratio = original_width / original_height
+        target_height = int(target_width / aspect_ratio)
+        
+        # Resize maintaining aspect ratio
+        resized = cv2.resize(
+            frame,
+            (target_width, target_height),
+            interpolation=cv2.INTER_LINEAR
+        )
+        
+        # No padding needed - just return resized with correct aspect
+        metadata = {
+            'original_size': (original_width, original_height),
+            'processed_size': (target_width, target_height),
+            'scale_factor': target_width / original_width,
+            'aspect_ratio': aspect_ratio,
+            'padding': (0, 0, 0, 0)
+        }
+        
+        return resized, metadata
+    
     def process_frame(self, frame: np.ndarray) -> Dict:
+
         """
         Process frame for driver monitoring (PRODUCTION METHOD).
         
@@ -992,6 +1050,16 @@ class DriverMonitorV11:
                 - temporal_confidence: Dict with metric confidence scores
         """
         self.frame_number += 1
+        
+        # === CRITICAL: Maintain aspect ratio to prevent distortion ===
+        # This prevents EAR/MAR calculation errors and false alerts
+        original_frame = frame.copy()
+        frame, preprocess_meta = self.preprocess_frame_aspect_ratio(
+            frame,
+            target_width=1280,  # Process at 1280px width
+            maintain_aspect=True  # MUST be True for accurate face analysis
+        )
+        
         height, width = frame.shape[:2]
         
         # Convert to RGB (MediaPipe expects RGB)
@@ -1158,6 +1226,14 @@ class DriverMonitorV11:
                     alerts_triggered.append(AlertType.CRITICAL_NO_FACE.value)
             else:
                 alerts_triggered.append(AlertType.CRITICAL_NO_FACE.value)
+        
+        # === Resize output back to original dimensions ===
+        orig_width, orig_height = preprocess_meta['original_size']
+        annotated_frame = cv2.resize(
+            annotated_frame,
+            (orig_width, orig_height),
+            interpolation=cv2.INTER_LINEAR
+        )
         
         return {
             "annotated_frame": annotated_frame,
