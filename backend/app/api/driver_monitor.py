@@ -1,95 +1,172 @@
 """
 Driver Monitoring API endpoints - Phase 2 High Priority
-Handles driver status monitoring and fatigue detection
+Handles driver status monitoring and fatigue detection via VIDEO UPLOAD
 """
-from fastapi import APIRouter, HTTPException, Form, UploadFile, File
+from fastapi import APIRouter, HTTPException, Form, UploadFile, File, Depends
 from typing import Optional
 from datetime import datetime, timedelta
 import random
+import logging
+import time
+from pathlib import Path
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import storage, DriverStatus, DriverStatusRequest
+from app.db.session import get_db
+from app.services.video_service import VideoService
+from app.services.job_service import get_job_service
+from app.schemas.video import VideoJobResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["driver-monitoring"])
 
 
-@router.post("/driver-monitor/analyze")
-async def analyze_driver_frame(
-    frame: str = Form(...),
-    camera_id: str = Form(...)
+@router.post("/driver-monitor/analyze", response_model=VideoJobResponse)
+async def analyze_driver_video(
+    file: UploadFile = File(...),
+    camera_id: Optional[str] = Form("in_cabin_camera"),
+    device: str = Form("cuda"),
+    db: AsyncSession = Depends(get_db)
 ):
     """
-    Analyze driver face frame for fatigue/distraction
+    Upload driver monitoring video for fatigue/distraction analysis.
     
-    FormData:
-    - frame: Base64 encoded image
-    - camera_id: Camera identifier
-    
+    Args:
+        file: Video file (mp4, avi, mov, max 500MB)
+        camera_id: Camera identifier (default: "in_cabin_camera")
+        device: "cpu" or "cuda" (default: "cuda")
+        db: Database session
+        
     Returns:
-    - fatigue_level: 0-100 (higher = more fatigued)
-    - distraction_level: 0-100 (higher = more distracted)
-    - eyes_closed: Boolean
-    - head_pose: Yaw, pitch, roll angles
-    - alert_triggered: Whether an alert should be shown
-    - recommendations: Array of recommendations
+        Video job with job_id and status for tracking
+        
+    Response includes:
+        - job_id: Track processing progress
+        - status: "pending", "processing", "completed", "failed"
+        - progress_percent: 0-100
+        
+    After completion, results will include:
+        - fatigue_level: 0-100 (higher = more fatigued)
+        - distraction_level: 0-100 (higher = more distracted)
+        - eyes_closed_count: Number of frames with eyes closed
+        - head_pose_violations: Count of dangerous head poses
+        - alert_triggered: Whether alerts were triggered
+        - recommendations: Safety recommendations
+        - result_video_url: Processed video with annotations
+        
+    Example:
+        POST /api/driver-monitor/analyze
+        FormData:
+            file: <video_file>
+            camera_id: "in_cabin_camera"
+            device: "cuda"
     """
-    # Generate dummy analysis results
-    fatigue_level = random.randint(0, 100)
-    distraction_level = random.randint(0, 100)
-    eyes_closed = random.choice([True, False]) if fatigue_level > 60 else False
+    start_time = time.time()
     
-    # Head pose angles (degrees)
-    head_pose = {
-        "yaw": round(random.uniform(-30, 30), 2),
-        "pitch": round(random.uniform(-20, 20), 2),
-        "roll": round(random.uniform(-15, 15), 2)
-    }
+    try:
+        logger.info(f"📹 Driver monitoring upload started: {file.filename} (camera={camera_id}, device={device})")
+        
+        # Validate file exists
+        if not file or not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail="No file provided. Please select a video file to upload."
+            )
+        
+        # Create video service
+        video_service = VideoService(db)
+        
+        # FAST validation (doesn't read entire file)
+        logger.info(f"[Driver Monitor] Step 1/4: Validating video format and size...")
+        await video_service.validate_video(file)
+        logger.info(f"[Driver Monitor] ✓ Validation passed ({time.time() - start_time:.1f}s)")
+        
+        # Validate device
+        if device not in ["cpu", "cuda"]:
+            logger.warning(f"Invalid device '{device}', defaulting to 'cpu'")
+            device = "cpu"
+        
+        # Create job in database with video_type="in_cabin" for driver monitoring
+        logger.info(f"[Driver Monitor] Step 2/4: Creating driver monitoring job...")
+        job = await video_service.create_job(
+            filename=file.filename,
+            video_type="in_cabin",  # Driver monitoring uses in_cabin type
+            device=device,
+            user_id=1  # TODO: Get from authentication
+        )
+        logger.info(f"[Driver Monitor] ✓ Job created: {job.job_id} ({time.time() - start_time:.1f}s)")
+        
+        # Save uploaded video (streaming)
+        logger.info(f"[Driver Monitor] Step 3/4: Uploading video (streaming)...")
+        await video_service.save_uploaded_video(job.job_id, file)
+        upload_time = time.time() - start_time
+        logger.info(f"[Driver Monitor] ✓ Video uploaded ({upload_time:.1f}s)")
+        
+        # Extract all video attributes BEFORE submitting to background
+        logger.info(f"[Driver Monitor] Step 4/4: Preparing response data...")
+        
+        response_data = {
+            "id": job.id,
+            "job_id": str(job.job_id),
+            "video_filename": job.video.original_filename if job.video else "",
+            "video_path": job.video.storage_path if job.video else "",
+            "video_size_mb": round(job.video.size_bytes / (1024 * 1024), 2) if job.video and job.video.size_bytes else 0.0,
+            "duration_seconds": job.video.duration_seconds if job.video else None,
+            "fps": job.video.fps if job.video else None,
+            "resolution": job.video.resolution if job.video else None,
+            "status": job.status,
+            "progress_percent": job.progress_percent,
+            "result_path": job.result_path,
+            "error_message": job.error_message,
+            "processing_time_seconds": job.processing_time_seconds,
+            "trip_id": job.trip_id,
+            "created_at": job.created_at,
+            "updated_at": job.updated_at,
+            "started_at": job.started_at,
+            "completed_at": job.completed_at
+        }
+        
+        # Submit to background processing for DRIVER MONITORING
+        logger.info(f"[Driver Monitor] Submitting job {job.job_id} for driver monitoring AI processing...")
+        
+        # Generate output path
+        output_path = video_service.get_output_path(job.job_id)
+        
+        job_service = get_job_service()
+        await job_service.submit_job(
+            session=db,
+            job_id=job.job_id,
+            input_path=job.video_path,
+            output_path=output_path,
+            video_type="in_cabin",  # This triggers driver monitoring processing
+            device=device
+        )
+        
+        total_time = time.time() - start_time
+        logger.info(f"✅ Driver monitoring upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")
+        
+        # Store camera_id in history for tracking
+        history_entry = {
+            "timestamp": datetime.now().isoformat(),
+            "job_id": str(job.job_id),
+            "camera_id": camera_id,
+            "filename": file.filename,
+            "status": "submitted"
+        }
+        storage.driver_status_history.append(history_entry)
+        
+        return response_data
     
-    # Determine alert status
-    alert_triggered = False
-    recommendations = []
-    
-    if fatigue_level > 70:
-        alert_triggered = True
-        recommendations.append("Take a break - high fatigue detected")
-        recommendations.append("Consider stopping for rest")
-    elif fatigue_level > 50:
-        recommendations.append("Monitor fatigue level - consider taking a break soon")
-    
-    if distraction_level > 70:
-        alert_triggered = True
-        recommendations.append("Focus on the road - distraction detected")
-    elif distraction_level > 50:
-        recommendations.append("Minimize distractions")
-    
-    if eyes_closed:
-        alert_triggered = True
-        recommendations.append("Eyes closed detected - stay alert!")
-    
-    # Store in history
-    history_entry = {
-        "timestamp": datetime.now().isoformat(),
-        "fatigue_level": fatigue_level,
-        "distraction_level": distraction_level,
-        "eyes_closed": eyes_closed,
-        "head_pose": head_pose,
-        "camera_id": camera_id,
-        "alert_triggered": alert_triggered
-    }
-    storage.driver_status_history.append(history_entry)
-    
-    # Keep only last 1000 entries
-    if len(storage.driver_status_history) > 1000:
-        storage.driver_status_history = storage.driver_status_history[-1000:]
-    
-    return {
-        "success": True,
-        "fatigue_level": fatigue_level,
-        "distraction_level": distraction_level,
-        "eyes_closed": eyes_closed,
-        "head_pose": head_pose,
-        "alert_triggered": alert_triggered,
-        "recommendations": recommendations
-    }
+    except HTTPException:
+        raise
+    except Exception as e:
+        upload_time = time.time() - start_time
+        logger.error(f"❌ Driver monitoring upload failed after {upload_time:.1f}s: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Driver monitoring upload failed: {str(e)}. Please try again or contact support."
+        )
 
 
 @router.post("/driver-status")

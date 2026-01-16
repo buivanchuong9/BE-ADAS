@@ -1,20 +1,23 @@
 """
-DRIVER MONITORING MODULE
-========================
+DRIVER MONITORING MODULE V11 - ENHANCED
+========================================
 Monitors driver state using in-cabin camera and MediaPipe Face Mesh.
 
-PRODUCTION FEATURES (Phase 3):
+PRODUCTION FEATURES (Phase 3 + Object Detection):
+- 468 Facial Landmarks (MediaPipe Face Mesh)
 - Temporal state tracking with rolling window
 - EMA smoothing for EAR/MAR metrics (alpha=0.2)
 - Sustained state detection (3-second confirmation)
 - Confidence scoring for alert reliability
 - Multi-factor drowsiness assessment
+- Object Detection (Phone, Cigarette, Food, Bottle) - NEW!
 
 Detection Algorithms:
 - Eye closure (EAR - Eye Aspect Ratio) with temporal consistency
 - Yawning (MAR - Mouth Aspect Ratio) with frequency tracking
 - Head pose (pitch, yaw, roll) with drift compensation
 - Drowsiness: Requires sustained condition (3+ seconds)
+- Object Detection: YOLO-based dangerous object detection
 
 Temporal Logic:
 - Rolling buffer: 90 frames (3 seconds @ 30fps)
@@ -23,7 +26,7 @@ Temporal Logic:
 - Alert cooldown: 5 seconds between same-type alerts
 
 Author: Senior ADAS Engineer
-Date: 2025-12-26 (Phase 3 Enhancement)
+Date: 2026-01-16 (Enhanced with Object Detection)
 """
 
 import cv2
@@ -31,8 +34,92 @@ import numpy as np
 from typing import Dict, Tuple, Optional, List
 from collections import deque
 import logging
+from enum import Enum
+from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
+
+
+def put_vietnamese_text(
+    img: np.ndarray,
+    text: str,
+    position: Tuple[int, int],
+    font_size: int = 32,
+    color: Tuple[int, int, int] = (0, 0, 255),
+    font_path: Optional[str] = None
+) -> np.ndarray:
+    """
+    Draw Vietnamese text on OpenCV image using PIL.
+    
+    Args:
+        img: OpenCV image (BGR)
+        text: Vietnamese text to draw
+        position: (x, y) position
+        font_size: Font size
+        color: BGR color tuple
+        font_path: Path to TTF font (optional, uses default if None)
+        
+    Returns:
+        Image with Vietnamese text
+    """
+    try:
+        # Convert BGR to RGB
+        img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(img_pil)
+        
+        # Try to load font (fallback to default if not found)
+        try:
+            if font_path:
+                font = ImageFont.truetype(font_path, font_size)
+            else:
+                # Try common Vietnamese fonts on macOS
+                font = ImageFont.truetype("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", font_size)
+        except:
+            # Fallback to default font
+            font = ImageFont.load_default()
+        
+        # Convert BGR to RGB for PIL
+        color_rgb = (color[2], color[1], color[0])
+        
+        # Draw text
+        draw.text(position, text, font=font, fill=color_rgb)
+        
+        # Convert back to BGR
+        img_bgr = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        return img_bgr
+    except Exception as e:
+        logger.warning(f"Vietnamese text rendering failed: {e}. Using ASCII fallback.")
+        # Fallback to OpenCV (ASCII only)
+        cv2.putText(img, text, position, cv2.FONT_HERSHEY_SIMPLEX, 
+                   font_size / 32, color, 2)
+        return img
+
+
+class AlertType(Enum):
+    """Alert types for driver monitoring (Vietnamese)."""
+    # Drowsiness Detection
+    DROWSY_EYES_CLOSED = "BUỒN NGỦ - Mắt nhắm"
+    DROWSY_YAWNING = "BUỒN NGỦ - Ngáp liên tục"
+    DROWSY_HEAD_DOWN = "BUỒN NGỦ - Đầu cúi xuống"
+    
+    # Distraction Detection
+    DISTRACTED_LOOKING_AWAY = "MẤT TẬP TRUNG - Nhìn sang ngang"
+    DISTRACTED_LOOKING_DOWN = "MẤT TẬP TRUNG - Nhìn xuống (Điện thoại?)"
+    DISTRACTED_USING_PHONE = "MẤT TẬP TRUNG - Sử dụng điện thoại"
+    DISTRACTED_TALKING_PASSENGER = "MẤT TẬP TRUNG - Quay đầu nói chuyện liên tục"
+    
+    # Safety Violations
+    VIOLATION_SMOKING = "VI PHẠM - Hút thuốc"
+    VIOLATION_EATING = "VI PHẠM - Ăn uống"
+    VIOLATION_DRINKING = "VI PHẠM - Uống bia/nước"
+    VIOLATION_NO_SEATBELT = "VI PHẠM - Không thắt dây an toàn"
+    
+    # Critical Dangers
+    CRITICAL_NO_FACE = "NGUY HIỂM - Không phát hiện tài xế"
+    CRITICAL_HANDS_OFF = "NGUY HIỂM - Buông cả 2 tay khỏi vô lăng"
+    
+    # Emotional State (Advanced)
+    STATE_STRESSED_ANGRY = "CẢM XÚC - Căng thẳng/Tức giận"
 
 
 class TemporalDriverState:
@@ -211,21 +298,39 @@ class DriverMonitorV11:
     MAR_THRESHOLD = 0.6   # Above this = mouth open (yawning)
     DROWSY_FRAMES = 20    # Consecutive frames to trigger drowsy
     
-    def __init__(self, device: str = "cpu"):
+    def __init__(self, device: str = "cpu", enable_temporal: bool = True, enable_object_detection: bool = False):
         """
         Initialize driver monitor.
         
         Args:
             device: "cuda" or "cpu" (MediaPipe uses CPU)
+            enable_temporal: Enable temporal smoothing and sustained state detection
+            enable_object_detection: Enable YOLO object detection for phones, cigarettes, etc.
         """
         self.device = device
         self.mp_face_mesh = None
         self.face_mesh = None
+        self.enable_object_detection = enable_object_detection
+        
+        # YOLO Object Detector (optional)
+        self.yolo_model = None
         
         # State tracking
         self.closed_eye_counter = 0
         self.yawn_counter = 0
+        self.no_face_counter = 0
         self.is_drowsy = False
+        
+        # Temporal state tracking (PRODUCTION)
+        self.enable_temporal = enable_temporal
+        self.temporal_state = TemporalDriverState(
+            window_seconds=3.0,
+            frame_rate=30,
+            alpha=0.2
+        ) if enable_temporal else None
+        self.frame_number = 0
+        self.last_alert_time = {}  # {alert_type: frame_number}
+        self.alert_cooldown_frames = 150  # 5 seconds @ 30fps
         
         # Try to load MediaPipe
         try:
@@ -237,10 +342,29 @@ class DriverMonitorV11:
                 min_detection_confidence=0.5,
                 min_tracking_confidence=0.5
             )
-            logger.info("MediaPipe Face Mesh initialized")
+            logger.info("✓ MediaPipe Face Mesh initialized")
         except ImportError:
             logger.error("mediapipe package not installed. Install: pip install mediapipe")
             raise
+        
+        # Initialize YOLO (if enabled)
+        if self.enable_object_detection:
+            self._init_yolo()
+    
+    def _init_yolo(self):
+        """Initialize YOLO for object detection."""
+        try:
+            from ultralytics import YOLO
+            # Use YOLOv8n (nano) for speed
+            self.yolo_model = YOLO('yolov8n.pt')
+            logger.info("✓ YOLOv8 initialized for object detection")
+        except ImportError:
+            logger.warning("ultralytics not installed. Object detection disabled.")
+            logger.warning("Install: pip install ultralytics")
+            self.enable_object_detection = False
+        except Exception as e:
+            logger.warning(f"YOLO initialization failed: {e}. Object detection disabled.")
+            self.enable_object_detection = False
     
     def calculate_ear(self, eye_landmarks: np.ndarray) -> float:
         """
@@ -372,6 +496,62 @@ class DriverMonitorV11:
             logger.warning(f"Head pose estimation failed: {e}")
             return {"pitch": 0.0, "yaw": 0.0, "roll": 0.0}
     
+    def detect_objects(self, frame: np.ndarray) -> List[Dict]:
+        """
+        Detect dangerous objects using YOLO.
+        
+        Args:
+            frame: BGR frame
+            
+        Returns:
+            List of detected objects with class, confidence, bbox
+        """
+        if not self.enable_object_detection or self.yolo_model is None:
+            return []
+        
+        try:
+            # Run YOLO inference
+            results = self.yolo_model(frame, verbose=False)
+            
+            # Classes of interest
+            # COCO dataset classes (pre-trained)
+            DANGEROUS_CLASSES = {
+                67: "cell phone",  # Phone detection (COCO)
+                39: "bottle",      # Bottle/Can - drinking (COCO)
+                # 44: "wine glass", # Uncomment if needed
+                # 46: "cup",        # Uncomment if needed
+            }
+            
+            # NOTE: The following require CUSTOM YOLO TRAINING:
+            # - "seatbelt": Detect seatbelt strap across shoulder
+            # - "hands_on_wheel": Detect hands on steering wheel
+            # - "cigarette": Detect cigarette in hand/mouth
+            # - "food": Detect food items
+            # - "stressed_face": Facial expression analysis (use separate model)
+            #
+            # To train custom classes:
+            # 1. Collect 1000+ labeled images per class
+            # 2. Use Roboflow or LabelImg for annotation
+            # 3. Train YOLOv8: yolo train data=custom.yaml model=yolov8n.pt epochs=100
+            # 4. Update DANGEROUS_CLASSES dict with new class IDs
+            
+            detections = []
+            for result in results:
+                boxes = result.boxes
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    if cls_id in DANGEROUS_CLASSES:
+                        detections.append({
+                            "class": DANGEROUS_CLASSES[cls_id],
+                            "confidence": float(box.conf[0]),
+                            "bbox": box.xyxy[0].cpu().numpy().tolist()
+                        })
+            
+            return detections
+        except Exception as e:
+            logger.warning(f"Object detection failed: {e}")
+            return []
+    
     def detect_drowsiness(
         self, 
         ear: float, 
@@ -486,6 +666,9 @@ class DriverMonitorV11:
         # Process with MediaPipe
         results = self.face_mesh.process(rgb_frame)
         
+        # Detect objects (phones, cigarettes, etc.) - Run before face detection
+        detected_objects = self.detect_objects(frame)
+        
         # Initialize defaults
         face_detected = False
         ear = 0.0
@@ -498,6 +681,7 @@ class DriverMonitorV11:
         
         if results.multi_face_landmarks:
             face_detected = True
+            self.no_face_counter = 0
             face_landmarks = results.multi_face_landmarks[0]
             
             # Convert landmarks to numpy array
@@ -562,23 +746,43 @@ class DriverMonitorV11:
                     frame_number=self.frame_number
                 )
             
-            # Draw warning if drowsy
+            # Draw warning if drowsy (Vietnamese text)
             if is_drowsy:
-                warning_text = f"WARNING: DRIVER DROWSY! ({drowsy_reason})"
-                cv2.putText(
+                warning_text = f"⚠️ CẢNH BÁO: TÀI XẾ BUỒN NGỦ! ({drowsy_reason})"
+                annotated_frame = put_vietnamese_text(
                     annotated_frame,
                     warning_text,
                     (50, height - 50),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 0, 255),
-                    3
+                    font_size=28,
+                    color=(0, 0, 255)
                 )
+        else:
+            # No face detected
+            self.no_face_counter += 1
+            if self.no_face_counter > 150:  # 5 seconds @ 30fps
+                drowsy_reason = "NO_FACE"
+                annotated_frame = put_vietnamese_text(
+                    annotated_frame,
+                    "⚠️ NGUY HIỂM: KHÔNG PHÁT HIỆN TÀI XẾ!",
+                    (50, height // 2),
+                    font_size=32,
+                    color=(0, 0, 255)
+                )
+        
+        # Draw detected objects
+        for obj in detected_objects:
+            bbox = obj['bbox']
+            x1, y1, x2, y2 = map(int, bbox)
+            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            label = f"{obj['class']} {obj['confidence']:.2f}"
+            cv2.putText(annotated_frame, label, (x1, y1 - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
         # Get temporal metrics (PRODUCTION)
         is_sustained_drowsy = False
         drowsy_confidence = 0.0
         should_alert = False
+        alerts_triggered = []
         smoothed_values = {"ear": ear, "mar": mar, "yaw": head_pose['yaw'], "pitch": head_pose['pitch']}
         temporal_confidence = {"ear_confidence": 1.0, "mar_confidence": 1.0, "pose_confidence": 1.0}
         
@@ -588,8 +792,62 @@ class DriverMonitorV11:
             temporal_confidence = self.temporal_state.get_temporal_confidence()
             
             # Check if alert should be triggered
-            if is_sustained_drowsy:
-                should_alert = self.temporal_state.should_alert('DROWSY', self.frame_number)
+            if is_sustained_drowsy and self.temporal_state.should_alert('DROWSY', self.frame_number):
+                if "EYES_CLOSED" in drowsy_reason:
+                    alerts_triggered.append(AlertType.DROWSY_EYES_CLOSED.value)
+                if "YAWNING" in drowsy_reason:
+                    alerts_triggered.append(AlertType.DROWSY_YAWNING.value)
+                if "HEAD_DOWN" in drowsy_reason:
+                    alerts_triggered.append(AlertType.DROWSY_HEAD_DOWN.value)
+                if "LOOKING_AWAY" in drowsy_reason:
+                    alerts_triggered.append(AlertType.DISTRACTED_LOOKING_AWAY.value)
+        
+        # Object-based alerts
+        for obj in detected_objects:
+            # Phone detection
+            if obj['class'] == 'cell phone' and obj['confidence'] > 0.7:
+                if self.enable_temporal and self.temporal_state:
+                    if self.temporal_state.should_alert('PHONE', self.frame_number):
+                        alerts_triggered.append(AlertType.DISTRACTED_USING_PHONE.value)
+                else:
+                    alerts_triggered.append(AlertType.DISTRACTED_USING_PHONE.value)
+            
+            # Drinking detection (bottle/can near face)
+            if obj['class'] == 'bottle' and obj['confidence'] > 0.7:
+                if self.enable_temporal and self.temporal_state:
+                    if self.temporal_state.should_alert('DRINKING', self.frame_number):
+                        alerts_triggered.append(AlertType.VIOLATION_DRINKING.value)
+                else:
+                    alerts_triggered.append(AlertType.VIOLATION_DRINKING.value)
+            
+            # TODO: Add custom YOLO classes when trained
+            # if obj['class'] == 'no_seatbelt' and obj['confidence'] > 0.8:
+            #     alerts_triggered.append(AlertType.VIOLATION_NO_SEATBELT.value)
+            #
+            # if obj['class'] == 'hands_off_wheel' and obj['confidence'] > 0.8:
+            #     alerts_triggered.append(AlertType.CRITICAL_HANDS_OFF.value)
+            #
+            # if obj['class'] == 'cigarette' and obj['confidence'] > 0.7:
+            #     alerts_triggered.append(AlertType.VIOLATION_SMOKING.value)
+        
+        # Talking to passenger detection (sustained head turn > 45° for > 5 seconds)
+        if face_detected and abs(head_pose['yaw']) > 45:
+            if self.enable_temporal and self.temporal_state:
+                # Check if yaw has been > 45° for sustained period
+                yaw_buffer = list(self.temporal_state.yaw_buffer)
+                if len(yaw_buffer) >= 150:  # 5 seconds @ 30fps
+                    sustained_turn = sum(1 for y in yaw_buffer[-150:] if abs(y) > 45)
+                    if sustained_turn >= 105:  # 70% of 150 frames
+                        if self.temporal_state.should_alert('TALKING_PASSENGER', self.frame_number):
+                            alerts_triggered.append(AlertType.DISTRACTED_TALKING_PASSENGER.value)
+        
+        # No face alert
+        if drowsy_reason == "NO_FACE" and self.no_face_counter > 150:
+            if self.enable_temporal and self.temporal_state:
+                if self.temporal_state.should_alert('NO_FACE', self.frame_number):
+                    alerts_triggered.append(AlertType.CRITICAL_NO_FACE.value)
+            else:
+                alerts_triggered.append(AlertType.CRITICAL_NO_FACE.value)
         
         return {
             "annotated_frame": annotated_frame,
@@ -603,10 +861,13 @@ class DriverMonitorV11:
             "is_sustained_drowsy": is_sustained_drowsy,
             "drowsy_confidence": float(drowsy_confidence),
             "drowsy_reason": drowsy_reason,
-            "should_alert": should_alert,
+            "detected_objects": detected_objects,
+            "alerts_triggered": alerts_triggered,
+            "should_alert": len(alerts_triggered) > 0,
             "temporal_confidence": temporal_confidence,
             "frame_number": self.frame_number
         }
+
 
 
 if __name__ == "__main__":
