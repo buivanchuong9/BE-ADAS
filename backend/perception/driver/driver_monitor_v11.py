@@ -95,6 +95,265 @@ def put_vietnamese_text(
         return img
 
 
+def draw_premium_hud(
+    frame: np.ndarray,
+    ear: float,
+    mar: float,
+    head_pose: Dict,
+    is_drowsy: bool,
+    drowsy_reason: str,
+    detected_objects: List[Dict],
+    frame_number: int
+) -> np.ndarray:
+    """
+    Draw premium HUD overlay with glassmorphism and animations.
+    
+    Features:
+    - Real-time metrics dashboard
+    - Animated alerts
+    - Professional visualization
+    - Glassmorphism effects
+    """
+    height, width = frame.shape[:2]
+    overlay = frame.copy()
+    
+    # === 1. TOP LEFT: METRICS DASHBOARD ===
+    # Background panel with glassmorphism
+    panel_width = 280
+    panel_height = 180
+    panel_x, panel_y = 20, 20
+    
+    # Semi-transparent dark background
+    cv2.rectangle(
+        overlay,
+        (panel_x, panel_y),
+        (panel_x + panel_width, panel_y + panel_height),
+        (20, 20, 20),
+        -1
+    )
+    
+    # Glassmorphism border
+    cv2.rectangle(
+        overlay,
+        (panel_x, panel_y),
+        (panel_x + panel_width, panel_y + panel_height),
+        (100, 200, 255),
+        2
+    )
+    
+    # Blend overlay
+    frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
+    
+    # Title
+    cv2.putText(
+        frame,
+        "DRIVER MONITORING",
+        (panel_x + 10, panel_y + 30),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (100, 200, 255),
+        2,
+        cv2.LINE_AA
+    )
+    
+    # EAR metric with color coding
+    ear_color = (0, 255, 0) if ear > 0.25 else (0, 165, 255) if ear > 0.20 else (0, 0, 255)
+    cv2.putText(
+        frame,
+        f"EAR: {ear:.3f}",
+        (panel_x + 10, panel_y + 65),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        ear_color,
+        2,
+        cv2.LINE_AA
+    )
+    
+    # EAR progress bar
+    bar_width = int((ear / 0.4) * 200)  # Max EAR = 0.4
+    bar_width = min(bar_width, 200)
+    cv2.rectangle(
+        frame,
+        (panel_x + 10, panel_y + 75),
+        (panel_x + 10 + bar_width, panel_y + 85),
+        ear_color,
+        -1
+    )
+    cv2.rectangle(
+        frame,
+        (panel_x + 10, panel_y + 75),
+        (panel_x + 210, panel_y + 85),
+        (100, 100, 100),
+        1
+    )
+    
+    # MAR metric with color coding
+    mar_color = (0, 255, 0) if mar < 0.6 else (0, 165, 255) if mar < 0.7 else (0, 0, 255)
+    cv2.putText(
+        frame,
+        f"MAR: {mar:.3f}",
+        (panel_x + 10, panel_y + 110),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        mar_color,
+        2,
+        cv2.LINE_AA
+    )
+    
+    # MAR progress bar
+    bar_width = int((mar / 0.8) * 200)  # Max MAR = 0.8
+    bar_width = min(bar_width, 200)
+    cv2.rectangle(
+        frame,
+        (panel_x + 10, panel_y + 120),
+        (panel_x + 10 + bar_width, panel_y + 130),
+        mar_color,
+        -1
+    )
+    cv2.rectangle(
+        frame,
+        (panel_x + 10, panel_y + 120),
+        (panel_x + 210, panel_y + 130),
+        (100, 100, 100),
+        1
+    )
+    
+    # Head pose
+    pitch = head_pose.get('pitch', 0)
+    yaw = head_pose.get('yaw', 0)
+    cv2.putText(
+        frame,
+        f"HEAD: P:{pitch:.1f} Y:{yaw:.1f}",
+        (panel_x + 10, panel_y + 155),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (200, 200, 200),
+        1,
+        cv2.LINE_AA
+    )
+    
+    # === 2. TOP RIGHT: STATUS INDICATOR ===
+    status_x = width - 200
+    status_y = 20
+    
+    if is_drowsy:
+        # Animated red alert (pulsing effect)
+        pulse = int(abs(np.sin(frame_number * 0.1) * 50))
+        status_color = (0, 0, 255 - pulse)
+        status_text = "⚠ DROWSY"
+    else:
+        status_color = (0, 255, 0)
+        status_text = "✓ ALERT"
+    
+    # Status circle
+    cv2.circle(frame, (status_x + 30, status_y + 30), 25, status_color, -1)
+    cv2.circle(frame, (status_x + 30, status_y + 30), 25, (255, 255, 255), 2)
+    
+    # Status text
+    cv2.putText(
+        frame,
+        status_text,
+        (status_x + 65, status_y + 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        status_color,
+        2,
+        cv2.LINE_AA
+    )
+    
+    # === 3. BOTTOM: ALERT BANNER ===
+    if is_drowsy or detected_objects:
+        banner_height = 100
+        banner_y = height - banner_height - 20
+        
+        # Semi-transparent red background
+        overlay = frame.copy()
+        cv2.rectangle(
+            overlay,
+            (20, banner_y),
+            (width - 20, banner_y + banner_height),
+            (0, 0, 139),  # Dark red
+            -1
+        )
+        frame = cv2.addWeighted(frame, 0.6, overlay, 0.4, 0)
+        
+        # Border
+        cv2.rectangle(
+            frame,
+            (20, banner_y),
+            (width - 20, banner_y + banner_height),
+            (0, 0, 255),
+            3
+        )
+        
+        # Alert text
+        if is_drowsy:
+            alert_text = f"⚠ CẢNH BÁO: {drowsy_reason}"
+            frame = put_vietnamese_text(
+                frame,
+                alert_text,
+                (40, banner_y + 35),
+                font_size=32,
+                color=(255, 255, 255)
+            )
+        
+        # Detected objects
+        if detected_objects:
+            obj_text = "PHÁT HIỆN: " + ", ".join([obj['class'].upper() for obj in detected_objects])
+            frame = put_vietnamese_text(
+                frame,
+                obj_text,
+                (40, banner_y + 75),
+                font_size=24,
+                color=(255, 200, 0)
+            )
+    
+    # === 4. OBJECT BOUNDING BOXES (Enhanced) ===
+    for obj in detected_objects:
+        bbox = obj['bbox']
+        x1, y1, x2, y2 = map(int, bbox)
+        
+        # Thick red box
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+        
+        # Label background
+        label = f"{obj['class'].upper()} {obj['confidence']:.0%}"
+        (label_w, label_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+        cv2.rectangle(
+            frame,
+            (x1, y1 - label_h - 10),
+            (x1 + label_w + 10, y1),
+            (0, 0, 255),
+            -1
+        )
+        
+        # Label text
+        cv2.putText(
+            frame,
+            label,
+            (x1 + 5, y1 - 5),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA
+        )
+    
+    # === 5. FRAME COUNTER (Bottom right) ===
+    cv2.putText(
+        frame,
+        f"Frame: {frame_number}",
+        (width - 150, height - 20),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (150, 150, 150),
+        1,
+        cv2.LINE_AA
+    )
+    
+    return frame
+
+
 class AlertType(Enum):
     """Alert types for driver monitoring (Vietnamese)."""
     # Drowsiness Detection
@@ -703,27 +962,6 @@ class DriverMonitorV11:
             # Draw landmarks
             annotated_frame = self.draw_facial_landmarks(frame, landmarks)
             
-            # Draw metrics
-            cv2.putText(
-                annotated_frame,
-                f"EAR: {ear:.2f}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2
-            )
-            
-            cv2.putText(
-                annotated_frame,
-                f"MAR: {mar:.2f}",
-                (10, 60),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2
-            )
-            
             # Update temporal state (PRODUCTION)
             if self.enable_temporal and self.temporal_state:
                 self.temporal_state.update(
@@ -735,37 +973,34 @@ class DriverMonitorV11:
                     frame_number=self.frame_number
                 )
             
-            # Draw warning if drowsy (Vietnamese text)
-            if is_drowsy:
-                warning_text = f"⚠️ CẢNH BÁO: TÀI XẾ BUỒN NGỦ! ({drowsy_reason})"
-                annotated_frame = put_vietnamese_text(
-                    annotated_frame,
-                    warning_text,
-                    (50, height - 50),
-                    font_size=28,
-                    color=(0, 0, 255)
-                )
+            # === PREMIUM HUD OVERLAY ===
+            annotated_frame = draw_premium_hud(
+                frame=annotated_frame,
+                ear=ear,
+                mar=mar,
+                head_pose=head_pose,
+                is_drowsy=is_drowsy,
+                drowsy_reason=drowsy_reason,
+                detected_objects=detected_objects,
+                frame_number=self.frame_number
+            )
         else:
             # No face detected
             self.no_face_counter += 1
             if self.no_face_counter > 150:  # 5 seconds @ 30fps
-                drowsy_reason = "NO_FACE"
-                annotated_frame = put_vietnamese_text(
-                    annotated_frame,
-                    "⚠️ NGUY HIỂM: KHÔNG PHÁT HIỆN TÀI XẾ!",
-                    (50, height // 2),
-                    font_size=32,
-                    color=(0, 0, 255)
+                drowsy_reason = "KHÔNG PHÁT HIỆN TÀI XẾ"
+                # Draw no-face warning with premium HUD
+                annotated_frame = draw_premium_hud(
+                    frame=annotated_frame,
+                    ear=0.0,
+                    mar=0.0,
+                    head_pose={'pitch': 0, 'yaw': 0, 'roll': 0},
+                    is_drowsy=True,
+                    drowsy_reason=drowsy_reason,
+                    detected_objects=detected_objects,
+                    frame_number=self.frame_number
                 )
         
-        # Draw detected objects
-        for obj in detected_objects:
-            bbox = obj['bbox']
-            x1, y1, x2, y2 = map(int, bbox)
-            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            label = f"{obj['class']} {obj['confidence']:.2f}"
-            cv2.putText(annotated_frame, label, (x1, y1 - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
         # Get temporal metrics (PRODUCTION)
         is_sustained_drowsy = False
