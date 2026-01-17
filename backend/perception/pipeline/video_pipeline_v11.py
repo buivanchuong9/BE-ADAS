@@ -260,6 +260,35 @@ class VideoPipelineV11:
         front_vehicles = self.object_detector.filter_front_vehicles(detections, height)
         closest = self.object_detector.get_closest_vehicle(front_vehicles)
         
+        # ========================================
+        # VIETNAM CUSTOM MODEL - Check Rider Danger
+        # ========================================
+        rider_danger, danger_rider, danger_warning = self.object_detector.check_rider_danger(
+            detections, width, height
+        )
+        
+        if rider_danger and danger_rider:
+            # Log DANGER event for Rider
+            self.events.append({
+                "frame": frame_idx,
+                "time": round(timestamp, 2),
+                "type": "rider_danger",
+                "level": "danger",
+                "data": {
+                    "warning": danger_warning,
+                    "confidence": danger_rider['confidence'],
+                    "bbox": danger_rider['bbox'],
+                    "position": danger_rider['center']
+                }
+            })
+            
+            # Draw big warning banner
+            cv2.rectangle(annotated, (0, 0), (width, 60), (0, 0, 255), -1)
+            cv2.putText(
+                annotated, danger_warning, (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 3, cv2.LINE_AA
+            )
+        
         # 3. Distance & Collision
         if closest:
             dist_result = self.distance_estimator.process_detection(
@@ -296,7 +325,8 @@ class VideoPipelineV11:
             "annotated_frame": annotated,
             "lane": lane_result,
             "objects": {"detections": detections, "front_vehicles": front_vehicles, "closest_vehicle": closest},
-            "traffic_signs": traffic_result
+            "traffic_signs": traffic_result,
+            "rider_danger": rider_danger  # Add rider danger flag
         }
     
     def _log_progress(self, frame_idx: int, total_frames: int, start_time: datetime):
@@ -345,6 +375,7 @@ class VideoPipelineV11:
         Returns:
             Dict with annotated frame and analysis results
         """
+        height, width = frame.shape[:2]
         annotated = frame.copy()
         
         # 1. Lane Detection
@@ -369,10 +400,31 @@ class VideoPipelineV11:
         object_result = self.object_detector.process_frame(annotated)
         annotated = object_result['annotated_frame']
         
+        # ========================================
+        # VIETNAM CUSTOM MODEL - Check Rider Danger
+        # ========================================
+        rider_danger = object_result.get('rider_danger', False)
+        danger_rider = object_result.get('danger_rider')
+        danger_warning = object_result.get('danger_warning', '')
+        
+        if rider_danger and danger_rider:
+            # Log DANGER event for Rider
+            self.events.append({
+                "frame": frame_idx,
+                "time": round(timestamp, 2),
+                "type": "rider_danger",
+                "level": "danger",
+                "data": {
+                    "warning": danger_warning,
+                    "confidence": danger_rider['confidence'],
+                    "bbox": danger_rider['bbox'],
+                    "position": danger_rider['center']
+                }
+            })
+        
         # 3. Distance Estimation & FCW
         if object_result['closest_vehicle']:
             closest = object_result['closest_vehicle']
-            height = frame.shape[0]
             
             dist_result = self.distance_estimator.process_detection(
                 closest, 
@@ -427,7 +479,8 @@ class VideoPipelineV11:
             "annotated_frame": annotated,
             "lane": lane_result,
             "objects": object_result,
-            "traffic_signs": traffic_result
+            "traffic_signs": traffic_result,
+            "rider_danger": rider_danger  # Add rider danger flag
         }
     
     def process_incabin_frame(

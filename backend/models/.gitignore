@@ -1,0 +1,8 @@
+# Model weights - too large for git
+*.pt
+*.pth
+*.onnx
+*.weights
+
+# Keep directory structure
+!.gitkeep
