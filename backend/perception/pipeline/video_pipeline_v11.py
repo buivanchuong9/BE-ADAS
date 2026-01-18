@@ -725,10 +725,13 @@ class VideoPipelineV11:
             cmd = [
                 'ffmpeg',
                 '-i', input_path,
-                '-c:v', 'libx264',           # H.264 codec
+                '-c:v', 'libx264',            # H.264 codec
+                '-profile:v', 'high',         # High Profile (Required for iOS)
+                '-level:v', '4.0',            # Level 4.0 (Required for iOS)
                 '-preset', 'medium',          # Balance speed/quality
                 '-crf', '23',                 # Quality (18-28, lower=better)
-                '-pix_fmt', 'yuv420p',       # Web compatibility
+                '-pix_fmt', 'yuv420p',        # Web compatibility (CRITICAL)
+                '-c:a', 'aac',                # AAC Audio (if audio exists)
                 '-movflags', '+faststart',    # Enable streaming
                 '-y',                         # Overwrite output
                 output_path
