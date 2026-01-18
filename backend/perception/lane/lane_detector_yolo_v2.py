@@ -62,7 +62,7 @@ class LaneDetectorYOLOv2:
         logger.info(f"✅ YOLO Detection Lane Detector initialized on {device}")
     
     def _load_model(self, model_path: Optional[str] = None):
-        """Load YOLO Detection model."""
+        """Load YOLO Detection model with validation."""
         try:
             from ultralytics import YOLO
             
@@ -71,7 +71,8 @@ class LaneDetectorYOLOv2:
                 candidates = [
                     Path(__file__).parent.parent.parent / "models" / "lane_vip_v1.pt",
                     Path(__file__).parent.parent.parent / "models" / "lane_best.pt",
-                    Path("best_training.pt"),  # Root directory
+                    Path(__file__).parent.parent.parent / "best_training.pt",  # Root directory
+                    Path("best_training.pt"),  # Current directory
                     Path("models/lane_vip_v1.pt"),
                     Path("backend/models/lane_vip_v1.pt"),
                 ]
@@ -79,20 +80,66 @@ class LaneDetectorYOLOv2:
                 for candidate in candidates:
                     if candidate.exists():
                         model_path = str(candidate)
-                        logger.info(f"🎯 Found YOLO Detection model: {model_path}")
+                        logger.info(f"🎯 Found model file: {model_path}")
                         break
                 
                 if model_path is None:
                     raise FileNotFoundError(
-                        "❌ No YOLO lane detection model found!\n"
-                        "Place your model at: backend/models/lane_vip_v1.pt"
+                        "❌ No lane detection model found!\n"
+                        "Expected files:\n"
+                        "  - best_training.pt (root directory)\n"
+                        "  - backend/models/lane_vip_v1.pt\n"
+                        "  - backend/models/lane_best.pt"
                     )
             
             # Load model
+            logger.info(f"📦 Loading YOLO model from: {model_path}")
             self.model = YOLO(model_path)
+            
+            # 🛑 CRITICAL VALIDATION: Check if this is a lane detection model
+            model_classes = self.model.names
+            logger.info(f"📋 Model classes: {model_classes}")
+            
+            # Expected class for lane detection: 'drivable_area' or 'lane'
+            expected_classes = ['drivable_area', 'lane', 'road']
+            
+            if len(model_classes) == 0:
+                raise ValueError(
+                    f"❌ Model has no classes! This is not a valid YOLO model.\n"
+                    f"File: {model_path}"
+                )
+            
+            # Check if model is for vehicle detection (wrong model!)
+            vehicle_classes = ['person', 'car', 'truck', 'bus', 'motorcycle', 'bicycle']
+            if any(cls in str(model_classes.values()).lower() for cls in vehicle_classes):
+                raise ValueError(
+                    f"❌ WRONG MODEL! This is a VEHICLE detection model, not LANE detection!\n"
+                    f"Model classes: {model_classes}\n"
+                    f"Expected: {expected_classes}\n"
+                    f"File: {model_path}\n\n"
+                    f"Please use the correct lane detection model (best_training.pt with 'drivable_area' class)"
+                )
+            
+            # Check if model has expected lane classes
+            has_lane_class = any(
+                expected in str(model_classes.values()).lower() 
+                for expected in expected_classes
+            )
+            
+            if not has_lane_class:
+                logger.warning(
+                    f"⚠️ Model classes don't match expected lane classes.\n"
+                    f"Found: {model_classes}\n"
+                    f"Expected one of: {expected_classes}\n"
+                    f"Proceeding anyway, but results may be incorrect."
+                )
+            
             self.model.to(self.device)
             
-            logger.info(f"✅ YOLO Detection model loaded: {model_path}")
+            logger.info(f"✅ YOLO Lane Detection model loaded successfully")
+            logger.info(f"   Model: {model_path}")
+            logger.info(f"   Classes: {model_classes}")
+            logger.info(f"   Device: {self.device}")
             
         except ImportError:
             logger.error("❌ ultralytics not installed! Run: pip install ultralytics")
