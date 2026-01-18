@@ -48,6 +48,7 @@ from app.api.upload_storage import router as upload_storage_router
 from app.api.auth import router as auth_router
 from app.api.websocket_alerts import router as websocket_alerts_router  # Phase 6: WebSocket streaming
 from app.api.video_progress_ws import router as video_progress_ws_router  # WebSocket video progress
+from app.api.logs_stream import router as logs_stream_router  # Live log streaming for mobile app
 
 # Setup structured logging
 setup_logging(log_level="INFO" if not settings.DEBUG else "DEBUG")
@@ -314,6 +315,7 @@ app.include_router(upload_storage_router)
 app.include_router(auth_router)
 app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
 app.include_router(video_progress_ws_router)  # WebSocket video progress streaming
+app.include_router(logs_stream_router)  # Live log streaming for mobile app
 
 
 @app.get("/")
