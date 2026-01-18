@@ -1,8 +1,13 @@
-# Model weights - too large for git
+# Model weights - too large for git (EXCEPT trained lane models)
 *.pt
 *.pth
 *.onnx
 *.weights
+
+# ALLOW trained lane detection models (Vietnamese roads)
+!lane_vip_v1.pt
+!lane_best.pt
+!lane_last.pt
 
 # Keep directory structure
 !.gitkeep
