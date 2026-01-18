@@ -26,7 +26,7 @@ import json
 from datetime import datetime
 
 # Import perception modules
-from ..lane.lane_detector_yolo_seg import LaneDetectorYOLOSeg
+from ..lane.lane_detector_yolo_v2 import LaneDetectorYOLOv2
 from ..object.object_detector_v11 import ObjectDetectorV11
 from ..distance.distance_estimator import DistanceEstimator
 from ..driver.driver_monitor_v11 import DriverMonitorV11
@@ -113,7 +113,7 @@ class VideoPipelineV11:
         if video_type == "dashcam":
             logger.info("Initializing dashcam pipeline modules...")
             try:
-                self.lane_detector = LaneDetectorYOLOSeg(device=self.device)
+                self.lane_detector = LaneDetectorYOLOv2(device=self.device)
                 logger.info("  ✓ Lane detector initialized")
                 
                 self.object_detector = ObjectDetectorV11(device=self.device)
