@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     SUPABASE_JWT_ALGORITHM: str = "ES256"
     # Anon key for Supabase client (public, safe to expose)
     SUPABASE_ANON_KEY: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtpamRqZHR1eWV5d210aGh1b2FjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjczMzY0MTUsImV4cCI6MjA4MjkxMjQxNX0.T2UOrxb53Op_xfMMoaTvQIUs0c_PJbPdlezz4B1-9Lg"  # Set via environment variable
+    SUPABASE_SERVICE_ROLE_KEY: Optional[str] = None  # Required for server-side logging (bypassing RLS)
     
     # Storage Paths
     STORAGE_ROOT: str = "./backend/storage"
