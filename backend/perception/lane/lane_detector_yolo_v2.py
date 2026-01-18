@@ -71,6 +71,7 @@ class LaneDetectorYOLOv2:
                 candidates = [
                     Path(__file__).parent.parent.parent / "models" / "lane_vip_v1.pt",
                     Path(__file__).parent.parent.parent / "models" / "lane_best.pt",
+                    Path("best_training.pt"),  # Root directory
                     Path("models/lane_vip_v1.pt"),
                     Path("backend/models/lane_vip_v1.pt"),
                 ]
