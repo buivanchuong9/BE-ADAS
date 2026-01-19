@@ -241,20 +241,10 @@ async def mobile_upload_video(
     start_time = time.time()
     
     try:
+        if not file.filename:
+            file.filename = f"upload_{uuid.uuid4()}.mp4"
+
         logger.info(f"📱 [Mobile Upload] Starting: {file.filename} (type={video_type}, device={device})")
-        
-        # Validate file exists
-        if not file or not file.filename:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "success": False,
-                    "error": {
-                        "code": "INVALID_FORMAT",
-                        "message": "No file provided. Please select a video file to upload."
-                    }
-                }
-            )
         
         # Map video_type from mobile (phone -> dashcam)
         if video_type == "phone":
@@ -369,6 +359,10 @@ async def mobile_upload_video(
                 }
             }
         )
+    finally:
+        # CRITICAL: Always close the file handle to prevent temp file leaks
+        if file:
+            await file.close()
 
 
 @router.get("/video/status/{job_id}", response_model=StatusResponse)

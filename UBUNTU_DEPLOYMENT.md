@@ -82,8 +82,6 @@ SUPABASE_ANON_KEY: str = "eyJhbGc..."
 # 1. Kill process cũ
 pkill -u phonglv -9 uvicorn
 
-pkill -f uvicorn
-
 # 2. Di chuyển đến thư mục project
 cd ~/BE-ADAS
 
@@ -95,6 +93,10 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
 
 # 5. Start server với nohup (chạy background)
 nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
+
+nohup python -m celery -A backend.app.core.celery_config worker --loglevel=info --concurrency=2 > logs/worker.log 2>&1 &
+
+nohup python -m celery -A backend.app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
 
 # 6. Xem log real-time
 tail -f backend.log

@@ -498,7 +498,7 @@ curl http://localhost:52000/
 ❌ systemctl restart supervisord
 ❌ redis-server                  # Tự start Redis mới
 ❌ systemctl restart redis
-```
+```đê
 
 **Chỉ dùng**:
 ```bash
