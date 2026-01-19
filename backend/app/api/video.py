@@ -132,20 +132,23 @@ async def upload_video(
         }
         
         # Now submit to background processing (after extracting all data)
-        logger.info(f"[Upload] Submitting job {job.job_id} for AI processing...")
+        logger.info(f"[Upload] Submitting job {job.job_id} to Celery queue...")
         
-        # Generate output path
-        output_path = video_service.get_output_path(job.job_id)
+        # Submit to Celery task queue (non-blocking)
+        from app.tasks import process_video_task
         
-        job_service = get_job_service()
-        await job_service.submit_job(
-            session=db,
-            job_id=job.job_id,
-            input_path=job.video_path,
-            output_path=output_path,
-            video_type=video_type,
-            device=device
-        )
+        try:
+            task = process_video_task.delay(str(job.job_id))
+            logger.info(f"   ✅ Celery task submitted")
+            logger.info(f"   Task ID: {task.id}")
+            logger.info(f"   Job ID: {job.job_id}")
+        except Exception as e:
+            logger.error(f"   ❌ Failed to submit Celery task: {e}")
+            # Even if Celery fails, the job is in database for retry
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to queue video processing: {str(e)}"
+            )
         
         total_time = time.time() - start_time
         logger.info(f"✅ Upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")

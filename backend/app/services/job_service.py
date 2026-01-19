@@ -69,33 +69,73 @@ class JobService:
             video_type: "dashcam" or "in_cabin"
             device: "cpu" or "cuda"
         """
+        from pathlib import Path
+        import os
+        
+        logger.info(f"=" * 60)
+        logger.info(f"🚀 [Job {job_id}] SUBMIT_JOB CALLED")
+        logger.info(f"=" * 60)
+        logger.info(f"  📁 Input path: {input_path}")
+        logger.info(f"  📁 Output path: {output_path}")
+        logger.info(f"  📺 Video type: {video_type}")
+        logger.info(f"  💻 Device: {device}")
+        
+        # Validate input file exists
+        input_file = Path(input_path)
+        if not input_file.exists():
+            logger.error(f"❌ [Job {job_id}] INPUT FILE DOES NOT EXIST: {input_path}")
+            # Try to find what files DO exist
+            parent_dir = input_file.parent
+            if parent_dir.exists():
+                files = list(parent_dir.iterdir())[:5]
+                logger.error(f"   Files in {parent_dir}: {[f.name for f in files]}")
+            return
+        else:
+            file_size_mb = input_file.stat().st_size / (1024 * 1024)
+            logger.info(f"  ✅ Input file verified: {file_size_mb:.2f} MB")
+        
+        # Ensure output directory exists
+        output_dir = Path(output_path).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"  ✅ Output directory ready: {output_dir}")
+        
         repo = JobQueueRepository(session)
         
         # Update status to PROCESSING
-        await repo.update_status(job_id, JobStatus.PROCESSING)
-        await session.commit()
+        try:
+            await repo.update_status(job_id, JobStatus.PROCESSING)
+            await session.commit()
+            logger.info(f"  ✅ Job status updated to PROCESSING")
+        except Exception as e:
+            logger.error(f"  ❌ Failed to update job status: {e}")
         
-        logger.info(f"Submitting job {job_id} for processing")
+        logger.info(f"🎯 [Job {job_id}] Submitting to ThreadPoolExecutor...")
         
         # Create async task
-        loop = asyncio.get_event_loop()
-        future = loop.run_in_executor(
-            self.executor,
-            self._process_video_sync,
-            job_id,
-            input_path,
-            output_path,
-            video_type,
-            device
-        )
-        
-        # Store future
-        self.active_jobs[job_id] = future
-        
-        # Add callback to clean up when done
-        future.add_done_callback(lambda f: self._on_job_complete(job_id, f))
-        
-        logger.info(f"Job {job_id} submitted to executor")
+        try:
+            loop = asyncio.get_event_loop()
+            future = loop.run_in_executor(
+                self.executor,
+                self._process_video_sync,
+                job_id,
+                input_path,
+                output_path,
+                video_type,
+                device
+            )
+            
+            # Store future
+            self.active_jobs[job_id] = future
+            
+            # Add callback to clean up when done
+            future.add_done_callback(lambda f: self._on_job_complete(job_id, f))
+            
+            logger.info(f"✅ [Job {job_id}] SUBMITTED TO EXECUTOR SUCCESSFULLY")
+            logger.info(f"   Active jobs: {list(self.active_jobs.keys())}")
+            logger.info(f"=" * 60)
+            
+        except Exception as e:
+            logger.error(f"❌ [Job {job_id}] FAILED TO SUBMIT TO EXECUTOR: {e}", exc_info=True)
     
     def _process_video_sync(
         self,
@@ -117,14 +157,30 @@ class JobService:
         start_time = datetime.now()
         
         try:
-            # Import AI pipeline
+            # Import AI pipeline with detailed error handling
             logger.info(f"[Job {job_id}] 📦 Loading AI pipeline modules...")
             import sys
+            import os
             from pathlib import Path as PathlibPath
-            sys.path.insert(0, str(PathlibPath(__file__).parent.parent.parent))
             
-            from perception.pipeline.video_pipeline_v11 import process_video
-            logger.info(f"[Job {job_id}] ✓ AI pipeline loaded")
+            # Ensure backend dir is in path
+            backend_path = str(PathlibPath(__file__).parent.parent.parent)
+            if backend_path not in sys.path:
+                sys.path.insert(0, backend_path)
+            
+            logger.debug(f"[Job {job_id}] Sys path: {sys.path[:3]}")
+            
+            try:
+                from perception.pipeline.video_pipeline_v11 import process_video
+                logger.info(f"[Job {job_id}] ✓ AI pipeline loaded successfully")
+            except ImportError as ie:
+                logger.error(f"[Job {job_id}] ❌ FAILED TO IMPORT AI PIPELINE: {ie}")
+                logger.error(f"[Job {job_id}] Current dir: {os.getcwd()}")
+                logger.error(f"[Job {job_id}] Backend path: {backend_path}")
+                raise
+            except Exception as e:
+                logger.error(f"[Job {job_id}] ❌ UNEXPECTED ERROR LOADING AI: {e}")
+                raise
             
             # Process video
             logger.info(f"[Job {job_id}] 🚀 Starting AI inference...")

@@ -44,6 +44,7 @@ from app.api.auth import router as auth_router
 from app.api.websocket_alerts import router as websocket_alerts_router  # Phase 6: WebSocket streaming
 from app.api.video_progress_ws import router as video_progress_ws_router  # WebSocket video progress
 from app.api.logs_stream import router as logs_stream_router  # Live log streaming for mobile app
+from app.api.mobile import router as mobile_router  # Mobile-specific API endpoints
 
 # Setup structured logging
 setup_logging(log_level="INFO" if not settings.DEBUG else "DEBUG")
@@ -306,6 +307,128 @@ app.include_router(auth_router)
 app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
 app.include_router(video_progress_ws_router)  # WebSocket video progress streaming
 app.include_router(logs_stream_router)  # Live log streaming for mobile app
+app.include_router(mobile_router)  # Mobile-specific API endpoints
+
+# ============================================================
+# Public Results API (for Mobile App)
+# ============================================================
+# Serves processed videos with:
+# - CORS: Access-Control-Allow-Origin: *
+# - Range Request: HTTP 206 Partial Content (for streaming)
+# - Cache: public, max-age=86400
+from fastapi import Response
+from fastapi.responses import StreamingResponse
+
+@app.get("/public/results/{filename}")
+async def serve_public_result(
+    filename: str,
+    request: Request
+):
+    """
+    Serve processed video files with streaming support.
+    
+    Features:
+    - Public access (no auth required)
+    - Range request support (HTTP 206)
+    - CORS headers for cross-origin access
+    - Proper caching headers
+    """
+    from pathlib import Path
+    import os
+    
+    public_results_dir = Path(settings.PROCESSED_VIDEO_DIR)
+    file_path = public_results_dir / filename
+    
+    # Security: prevent path traversal
+    if ".." in filename or not file_path.resolve().is_relative_to(public_results_dir.resolve()):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Invalid filename"}
+        )
+    
+    if not file_path.exists():
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=404,
+            content={"error": "File not found"},
+            headers={
+                "Access-Control-Allow-Origin": "*"
+            }
+        )
+    
+    file_size = file_path.stat().st_size
+    
+    # Determine content type
+    content_type = "video/mp4"
+    if filename.endswith(".jpg") or filename.endswith(".jpeg"):
+        content_type = "image/jpeg"
+    elif filename.endswith(".png"):
+        content_type = "image/png"
+    
+    # Handle Range request (for video streaming)
+    range_header = request.headers.get("range")
+    
+    if range_header:
+        # Parse Range header
+        try:
+            range_spec = range_header.replace("bytes=", "")
+            start_end = range_spec.split("-")
+            start = int(start_end[0]) if start_end[0] else 0
+            end = int(start_end[1]) if len(start_end) > 1 and start_end[1] else file_size - 1
+            
+            # Clamp values
+            start = max(0, start)
+            end = min(end, file_size - 1)
+            chunk_size = end - start + 1
+            
+            def iter_file():
+                with open(file_path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk_size
+                    while remaining > 0:
+                        read_size = min(65536, remaining)  # 64KB chunks
+                        data = f.read(read_size)
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+            
+            return StreamingResponse(
+                iter_file(),
+                status_code=206,
+                media_type=content_type,
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Content-Length": str(chunk_size),
+                    "Accept-Ranges": "bytes",
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Cache-Control": "public, max-age=86400",
+                    "Content-Disposition": f'inline; filename="{filename}"'
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Invalid Range header: {range_header} - {e}")
+    
+    # Full file response (no Range)
+    def iter_full_file():
+        with open(file_path, "rb") as f:
+            while chunk := f.read(65536):
+                yield chunk
+    
+    return StreamingResponse(
+        iter_full_file(),
+        media_type=content_type,
+        headers={
+            "Content-Length": str(file_size),
+            "Accept-Ranges": "bytes",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+            "Cache-Control": "public, max-age=86400",
+            "Content-Disposition": f'inline; filename="{filename}"'
+        }
+    )
 
 
 @app.get("/")
@@ -315,14 +438,25 @@ async def root():
     """
     return {
         "service": "ADAS Video Analysis API",
-        "version": "1.0.0",
+        "version": "3.1.0",
         "status": "running",
         "endpoints": {
-            "upload": "POST /api/video/upload",
-            "result": "GET /api/video/result/{job_id}",
-            "download": "GET /api/video/download/{job_id}/{filename}",
-            "health": "GET /api/video/health",
-            "docs": "GET /docs"
+            "legacy": {
+                "upload": "POST /api/video/upload",
+                "result": "GET /api/video/result/{job_id}",
+                "download": "GET /api/video/download/{job_id}/{filename}",
+                "health": "GET /api/video/health"
+            },
+            "mobile": {
+                "upload": "POST /api/mobile/video/upload",
+                "status": "GET /api/mobile/video/status/{job_id}",
+                "download": "GET /api/mobile/video/download/{job_id}",
+                "history": "GET /api/mobile/video/history",
+                "health": "GET /api/mobile/health"
+            },
+            "public": {
+                "video": "GET /public/results/{job_id}_result.mp4"
+            }
         },
         "documentation": "/docs"
     }
