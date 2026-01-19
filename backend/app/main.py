@@ -32,16 +32,11 @@ from app.services.job_service import get_job_service
 
 # Import API routers (absolute import)
 from app.api.video import router as video_router
-from app.api.video_v3 import router as video_v3_router  # v3.0: SHA256 deduplication
 from app.api.video_sse import router as video_sse_router  # NEW: SSE streaming
 from app.api.dataset import router as dataset_router
 from app.api.detections import router as detections_router
-from app.api.models_api import router as models_router
-from app.api.streaming import router as streaming_router
-from app.api.events_alerts import router as events_alerts_router
 from app.api.videos_api import router as videos_router
 from app.api.driver_monitor import router as driver_monitor_router
-from app.api.trips_stats import router as trips_stats_router
 from app.api.ai_chat import router as ai_chat_router
 from app.api.settings import router as settings_router
 from app.api.upload_storage import router as upload_storage_router
@@ -299,16 +294,11 @@ async def options_handler(full_path: str):
 
 # Include routers
 app.include_router(video_router)  # Legacy API (backward compatible with v3.0)
-app.include_router(video_v3_router)  # v3.0 API with SHA256 deduplication
 app.include_router(video_sse_router)  # NEW: SSE streaming for realtime partial results
 app.include_router(dataset_router)
 app.include_router(detections_router)
-app.include_router(models_router)
-app.include_router(streaming_router)
-app.include_router(events_alerts_router)
 app.include_router(videos_router)
 app.include_router(driver_monitor_router)
-app.include_router(trips_stats_router)
 app.include_router(ai_chat_router)
 app.include_router(settings_router)
 app.include_router(upload_storage_router)
