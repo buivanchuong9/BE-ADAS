@@ -113,8 +113,8 @@ class Settings(BaseSettings):
         return self.CORS_ORIGINS
     
     class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+        # env_file = ".env"  # DISABLED: Use hardcoded values instead
+        # env_file_encoding = "utf-8"
         case_sensitive = False
         extra = "allow"  # Allow extra env vars from old MSSQL config
     
