@@ -35,12 +35,12 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 52000
     
-    # Database - PostgreSQL
-    PG_HOST: str = "localhost"
+    # Database - PostgreSQL (HARDCODED for Ubuntu Production)
+    PG_HOST: str = "127.0.0.1"  # Hardcoded for reliability
     PG_PORT: int = 5432
-    PG_NAME: str = "adas_db"  # Database created
-    PG_USER: str = os.getenv("USER", "postgres")  # Current macOS user
-    PG_PASSWORD: str = ""
+    PG_NAME: str = "adas_db"
+    PG_USER: str = "adas_user"  # Hardcoded user
+    PG_PASSWORD: str = "!@Chuong2006!@"  # Hardcoded password
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False  # Set True for SQL query logging
