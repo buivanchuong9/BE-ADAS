@@ -35,12 +35,12 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 52000
     
-    # Database - PostgreSQL (HARDCODED for Ubuntu Production)
-    PG_HOST: str = "127.0.0.1"  # Hardcoded for reliability
+    # Database - PostgreSQL
+    PG_HOST: str = "127.0.0.1"
     PG_PORT: int = 5432
     PG_NAME: str = "adas_db"
-    PG_USER: str = "adas_user"  # Hardcoded user
-    PG_PASSWORD: str = "!@Chuong2006!@"  # Hardcoded password
+    PG_USER: str = "adas_user"
+    PG_PASSWORD: str = "adas123"
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False  # Set True for SQL query logging
@@ -113,8 +113,8 @@ class Settings(BaseSettings):
         return self.CORS_ORIGINS
     
     class Config:
-        # env_file = ".env"  # DISABLED: Use hardcoded values instead
-        # env_file_encoding = "utf-8"
+        env_file = ".env"
+        env_file_encoding = "utf-8"
         case_sensitive = False
         extra = "allow"  # Allow extra env vars from old MSSQL config
     
