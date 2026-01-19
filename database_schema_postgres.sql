@@ -339,11 +339,16 @@ ON CONFLICT (model_name, version) DO NOTHING;
 -- FROM video_jobs_old
 -- ON CONFLICT (sha256_hash) DO NOTHING;
 
+
 -- ================================================
--- MIGRATION: Fix Database Issues (Run this to update existing DB)
--- Date: 2026-01-09
--- Purpose: Add missing columns for Supabase Auth integration
+-- MIGRATION: Fix SafetyEvents Timestamp (Standardized)
+-- Date: 2026-01-19
+-- Purpose: Add missing event_time column (Standardized, UTC-aware)
 -- ================================================
+ALTER TABLE safety_events ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ DEFAULT NOW();
+
+-- Create index on new column
+CREATE INDEX IF NOT EXISTS idx_events_time ON safety_events(event_time); UNIQUE;
 
 -- Add auth_id column to users table (if not exists)
 ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_id VARCHAR(255) UNIQUE;

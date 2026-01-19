@@ -26,7 +26,7 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
         event_type: EventType,
         severity: EventSeverity,
         description: str,
-        timestamp: datetime,
+        event_time: datetime,
         **kwargs
     ) -> SafetyEvent:
         """Create a safety event"""
@@ -36,7 +36,7 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
             event_type=event_type,
             severity=severity,
             description=description,
-            timestamp=timestamp,
+            event_time=event_time,
             **kwargs
         )
     
@@ -55,7 +55,7 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
         if severity:
             query = query.where(SafetyEvent.severity == severity)
         
-        query = query.order_by(desc(SafetyEvent.timestamp)).limit(limit)
+        query = query.order_by(desc(SafetyEvent.event_time)).limit(limit)
         
         result = await self.session.execute(query)
         return list(result.scalars().all())
@@ -65,7 +65,7 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
         result = await self.session.execute(
             select(SafetyEvent)
             .where(SafetyEvent.job_id == job_id)
-            .order_by(SafetyEvent.timestamp)
+            .order_by(SafetyEvent.event_time)
         )
         return list(result.scalars().all())
     
@@ -82,7 +82,7 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
         if trip_id:
             query = query.where(SafetyEvent.trip_id == trip_id)
         
-        query = query.order_by(desc(SafetyEvent.timestamp)).limit(limit)
+        query = query.order_by(desc(SafetyEvent.event_time)).limit(limit)
         
         result = await self.session.execute(query)
         return list(result.scalars().all())
@@ -110,15 +110,15 @@ class SafetyEventRepository(BaseRepository[SafetyEvent]):
         """Get events within time range"""
         query = select(SafetyEvent).where(
             and_(
-                SafetyEvent.timestamp >= start_time,
-                SafetyEvent.timestamp <= end_time
+                SafetyEvent.event_time >= start_time,
+                SafetyEvent.event_time <= end_time
             )
         )
         
         if event_type:
             query = query.where(SafetyEvent.event_type == event_type)
         
-        query = query.order_by(SafetyEvent.timestamp)
+        query = query.order_by(SafetyEvent.event_time)
         
         result = await self.session.execute(query)
         return list(result.scalars().all())

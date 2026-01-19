@@ -376,7 +376,7 @@ class JobService:
                     event_type=event_type,
                     severity=severity,
                     description=event_data.get('data', {}).get('message', 'Event detected'),
-                    timestamp=timestamp,
+                    event_time=timestamp,
                     frame_number=event_data.get('frame'),
                     meta_data=event_data.get('data')
                 )

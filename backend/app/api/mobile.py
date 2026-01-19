@@ -320,7 +320,8 @@ async def mobile_upload_video(
         logger.info(f"✅ [Mobile Upload] Complete! Job {job_id} queued (total: {total_time:.1f}s)")
         
         # Estimate processing time based on file size
-        file_size_mb = job.video_size_mb if hasattr(job, 'video_size_mb') else 100
+        # FIX: Avoid accessing job.video (lazy load) to prevent MissingGreenlet error
+        file_size_mb = 100 
         estimated_time = estimate_processing_time(file_size_mb)
         
         # Return response immediately

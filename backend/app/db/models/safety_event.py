@@ -49,7 +49,7 @@ class SafetyEvent(Base):
     # Event details
     event_type = Column(String(50), nullable=False, index=True)
     severity = Column(String(20), nullable=False, index=True)  # CRITICAL, WARNING, INFO
-    timestamp = Column(DateTime, nullable=False, index=True)
+    event_time = Column(DateTime(timezone=True), nullable=False, index=True)  # Was timestamp (renamed for best practice)
     frame_number = Column(Integer, nullable=True)
     description = Column(Text, nullable=True)
     
