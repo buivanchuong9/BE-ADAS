@@ -79,24 +79,26 @@ SUPABASE_ANON_KEY: str = "eyJhbGc..."
 **Cách chạy thực tế trên server:**
 
 ```bash
-# 1. Kill process cũ
+# 1. Kill hết
+pkill -9 -f "celery"
 pkill -u phonglv -9 uvicorn
 
-# 2. Di chuyển đến thư mục project
+# 2. Vào thư mục GỐC
 cd ~/BE-ADAS
 
-# 3. Load environment variables từ .env
+# 3. Env & Path
 export $(grep -v '^#' .env | xargs)
-
-# 4. Set PYTHONPATH
 export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
 
-# 5. Start server với nohup (chạy background)
+# 4. START API (Giữ nguyên)
 nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
 
-nohup python -m celery -A backend.app.core.celery_config worker --loglevel=info --concurrency=2 > logs/worker.log 2>&1 &
+# 5. START CELERY (SỬA LẠI: Bỏ chữ backend. ở đầu)
+# Lưu ý: Vì PYTHONPATH đã trỏ vào backend rồi, nên start từ "app" là đủ.
+nohup python -m celery -A app.core.celery_config worker --loglevel=info --concurrency=2 > logs/worker.log 2>&1 &
 
-nohup python -m celery -A backend.app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+# 6. Start Beat (SỬA LẠI tương tự)
+nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
 
 # 6. Xem log real-time
 tail -f backend.log
