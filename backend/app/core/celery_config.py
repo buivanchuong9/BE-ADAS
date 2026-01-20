@@ -65,10 +65,11 @@ celery_app.conf.update(
 )
 
 # Task routes for prioritization (optional)
-celery_app.conf.task_routes = {
-    'app.tasks.process_video_task': {'queue': 'video_processing'},
-    'app.tasks.cleanup_old_files': {'queue': 'maintenance'},
-}
+# Task routes for prioritization (optional)
+# celery_app.conf.task_routes = {
+#     'app.tasks.process_video_task': {'queue': 'video_processing'},
+#     'app.tasks.cleanup_old_files': {'queue': 'maintenance'},
+# }
 
 # Set up task logging
 @celery_app.task(bind=True)
