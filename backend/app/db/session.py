@@ -130,3 +130,46 @@ async def async_session_maker():
             await session.rollback()
             raise
 
+
+# ============================================================
+# Synchronous Session (For Celery Tasks)
+# ============================================================
+
+def get_sync_postgres_url() -> str:
+    """Generate synchronous PostgreSQL connection URL."""
+    # Use psycopg2 driver instead of asyncpg
+    url = get_postgres_url()
+    return url.replace("postgresql+asyncpg://", "postgresql://")
+
+_sync_engine = None
+_sync_session_factory = None
+
+def get_sync_engine():
+    global _sync_engine
+    if not _sync_engine:
+        _sync_engine = create_engine(
+            get_sync_postgres_url(),
+            echo=settings.DB_ECHO,
+            pool_size=settings.DB_POOL_SIZE,
+            max_overflow=settings.DB_MAX_OVERFLOW,
+            pool_pre_ping=True
+        )
+    return _sync_engine
+
+def SessionLocal():
+    """
+    Synchronous Database Session for Celery/Threads.
+    Use this ONLY in background tasks where async is not available.
+    """
+    global _sync_session_factory
+    
+    if not _sync_session_factory:
+        from sqlalchemy.orm import sessionmaker
+        engine = get_sync_engine()
+        _sync_session_factory = sessionmaker(
+            autocommit=False,
+            autoflush=False,
+            bind=engine
+        )
+    
+    return _sync_session_factory()
