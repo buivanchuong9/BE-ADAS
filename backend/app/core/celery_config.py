@@ -39,12 +39,13 @@ celery_app.conf.update(
     
     # Task execution settings
     task_track_started=True,           # Track when task starts
-    task_time_limit=3600,              # 1 hour hard timeout
-    task_soft_time_limit=3500,         # 58 minute soft timeout (allow cleanup)
+    task_time_limit=600,               # 10 minutes hard timeout (Fail fast)
+    task_soft_time_limit=540,          # 9 minutes soft timeout
+    worker_concurrency=1,              # Strict single worker
     
     # Worker settings
     worker_prefetch_multiplier=1,      # Fetch one task at a time (don't prefetch)
-    worker_max_tasks_per_child=1000,   # Restart worker after 1000 tasks
+    worker_max_tasks_per_child=50,     # Restart worker often to clear GPU memory leaks
     
     # Retry settings
     task_acks_late=True,               # Acknowledge task after completion
