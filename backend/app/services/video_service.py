@@ -6,6 +6,7 @@ Handles video upload, validation, and storage.
 
 import os
 import uuid
+import asyncio
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 import logging
@@ -352,3 +353,52 @@ class VideoService:
         """
         output_filename = f"{job_id}_result{ext}"
         return str(self.processed_dir / output_filename)
+    
+    async def analyze_video(
+        self,
+        input_path: str,
+        output_path: str,
+        device: str = "cuda",
+        video_type: str = "dashcam",
+        on_progress: Optional[callable] = None
+    ) -> dict:
+        """
+        Analyze video using AI perception pipeline.
+        
+        Args:
+            input_path: Path to input video
+            output_path: Path to save output video
+            device: "cuda" or "cpu"
+            video_type: "dashcam" or "in_cabin"
+            on_progress: Progress callback function(percent: int)
+            
+        Returns:
+            Analysis results dictionary
+        """
+        import sys
+        from pathlib import Path
+        
+        # Import AI pipeline
+        sys.path.append(str(Path(__file__).parent.parent.parent))
+        from perception.pipeline.video_pipeline_v11 import process_video
+        
+        logger.info(f"[AI] Starting video analysis: {input_path}")
+        logger.info(f"[AI] Device: {device}, Type: {video_type}")
+        
+        try:
+            # Call AI pipeline (synchronous)
+            result = await asyncio.to_thread(
+                process_video,
+                input_path=input_path,
+                output_path=output_path,
+                device=device,
+                video_type=video_type,
+                on_progress=on_progress
+            )
+            
+            logger.info(f"[AI] Analysis completed successfully")
+            return result
+            
+        except Exception as e:
+            logger.error(f"[AI] Analysis failed: {e}", exc_info=True)
+            raise
