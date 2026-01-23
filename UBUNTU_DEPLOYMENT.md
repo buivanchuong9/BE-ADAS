@@ -102,6 +102,8 @@ nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/bea
 
 # 6. Xem log real-time
 tail -f backend.log
+
+tail -f logs/worker.log
 ```
 
 **Giải thích từng lệnh:**
