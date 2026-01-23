@@ -370,7 +370,7 @@ class VideoService:
             output_path: Path to save output video
             device: "cuda" or "cpu"
             video_type: "dashcam" or "in_cabin"
-            on_progress: Progress callback function(percent: int)
+            on_progress: Progress callback (ignored - for API compatibility)
             
         Returns:
             Analysis results dictionary
@@ -386,14 +386,13 @@ class VideoService:
         logger.info(f"[AI] Device: {device}, Type: {video_type}")
         
         try:
-            # Call AI pipeline (synchronous)
+            # Call AI pipeline (synchronous) - Note: on_progress not supported by pipeline
             result = await asyncio.to_thread(
                 process_video,
                 input_path=input_path,
                 output_path=output_path,
                 device=device,
-                video_type=video_type,
-                on_progress=on_progress
+                video_type=video_type
             )
             
             logger.info(f"[AI] Analysis completed successfully")
