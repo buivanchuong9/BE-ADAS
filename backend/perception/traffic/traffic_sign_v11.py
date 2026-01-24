@@ -670,19 +670,6 @@ class TrafficSignV11:
         }
     
     def process_frame(self, frame: np.ndarray) -> Dict:
-        """
-        Process frame for traffic sign recognition.
-        
-        Args:
-            frame: RGB frame from video
-            
-        Returns:
-            Dict containing:
-                - annotated_frame: Frame with sign overlays
-                - detections: List of sign detections
-                - sign_count: Number of detected signs
-                - critical_signs: List of critical signs (STOP, etc.)
-        """
         # Detect signs
         detections = self.detect(frame)
         
