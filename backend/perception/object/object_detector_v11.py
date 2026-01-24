@@ -96,7 +96,7 @@ class ObjectDetectorV11:
         self, 
         model_path: str = None, 
         device: str = "cpu", 
-        conf_threshold: float = 0.25,
+        conf_threshold: float = 0.20,  # Lowered for better recall
         enable_tracking: bool = True
     ):
         """
@@ -136,11 +136,15 @@ class ObjectDetectorV11:
         try:
             from ultralytics import YOLO
             
-            # Priority 1: Check for best_vehicle.pt (Vietnam custom)
+            # Priority 1: Check for best_vehicle.pt or best.pt (Vietnam custom)
             vietnam_model_paths = [
-                Path(__file__).parent.parent.parent / "models" / "best_vehicle.pt",  # backend/models/
-                Path("models/best_vehicle.pt"),  # Relative path
-                Path("backend/models/best_vehicle.pt"),  # From root
+                # Path("best_training.pt"),  # REMOVED: User confirmed this is LANE model
+                Path("best_vehicle.pt"),   # Root file
+                Path(__file__).parent.parent.parent / "models" / "best_vehicle.pt",
+                Path("models/best_vehicle.pt"),
+                Path("backend/models/best_vehicle.pt"),
+                Path("best.pt"),
+                Path("runs/detect/train/weights/best.pt"),
             ]
             
             vietnam_model = None

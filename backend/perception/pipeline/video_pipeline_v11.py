@@ -199,44 +199,31 @@ class VideoPipelineV11:
         
         # Process based on video type
         if self.video_type == "dashcam":
-            # 1. Batch Object Detection (GPU optimized)
+            # 1. Batch Object Detection ONLY (High Performance & Stability)
+            # We keep Object Box/Track in batch because it's the heaviest task
             if hasattr(self.object_detector, 'detect_batch'):
                 batch_detections = self.object_detector.detect_batch(frames)
             else:
                 batch_detections = [self.object_detector.detect(f) for f in frames]
-                
-            # 2. Batch Lane Detection (GPU optimized)
-            # Check if lane detector supports batching (we just added it)
-            if hasattr(self.lane_detector, 'process_batch'):
-                batch_lane_results = self.lane_detector.process_batch(frames)
-            else:
-                batch_lane_results = [self.lane_detector.process_frame(f) for f in frames]
             
-            # 3. Batch Traffic Sign Detection (GPU optimized)
-            if hasattr(self.traffic_sign_detector, 'process_batch'):
-                 batch_sign_results = self.traffic_sign_detector.process_batch(frames)
-            else:
-                 batch_sign_results = [self.traffic_sign_detector.process_frame(f) for f in frames]
-
-            # 4. Merge Results & Draw (CPU bound)
+            # 2. Sequential Processing for Lane & Signs (High Visual Quality)
+            # Running these sequentially ensures perfect layering (Lane -> Object -> Sign)
+            # and avoids race conditions in drawing.
             for i, (frame, frame_idx, timestamp) in enumerate(zip(frames, frame_indices, timestamps)):
                 detections = batch_detections[i]
-                lane_result = batch_lane_results[i]
-                sign_result = batch_sign_results[i]
                 
-                # We need to manually merge results since we can't use _process_dashcam_frame_with_detections directly
-                # as it calls lane_detector.process_frame() internally.
-                # So we inline the logic here or modify the helper.
-                # For safety/simplicity, let's modify the helper to accept optional lane_result
-                
-                result = self._process_dashcam_frame_with_detections(
-                    frame, frame_idx, timestamp, detections, 
-                    precomputed_lane_result=lane_result,
-                    precomputed_sign_result=sign_result
-                )
-                
-                bgr_frame = cv2.cvtColor(result['annotated_frame'], cv2.COLOR_RGB2BGR)
-                video_writer.write(bgr_frame)
+                # Use standard helper which now correctly handles headers/footers/overlays
+                # This ensures lane is drawn FIRST, then objects, then signs.
+                try:
+                    result = self._process_dashcam_frame_with_detections(
+                        frame, frame_idx, timestamp, detections
+                    )
+                    bgr_frame = cv2.cvtColor(result['annotated_frame'], cv2.COLOR_RGB2BGR)
+                    video_writer.write(bgr_frame)
+                except Exception as e:
+                    logger.error(f"Error processing frame {frame_idx}: {e}")
+                    # Write original frame as fallback to not break video
+                    video_writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
                 
                 if frame_idx % 30 == 0:
                     self._log_progress(frame_idx, total_frames, start_time)

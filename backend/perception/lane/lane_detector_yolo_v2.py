@@ -69,10 +69,10 @@ class LaneDetectorYOLOv2:
             if model_path is None:
                 # Auto-detect Vietnamese lane model
                 candidates = [
+                    Path("best_training.pt"),  # Priority 1: User confirmed this is the BEST lane model
+                    Path(__file__).parent.parent.parent / "best_training.pt",
+                    Path("lane_vip_v1.pt"),    # Priority 2
                     Path(__file__).parent.parent.parent / "models" / "lane_vip_v1.pt",
-                    Path(__file__).parent.parent.parent / "models" / "lane_best.pt",
-                    Path(__file__).parent.parent.parent / "best_training.pt",  # Root directory
-                    Path("best_training.pt"),  # Current directory
                     Path("models/lane_vip_v1.pt"),
                     Path("backend/models/lane_vip_v1.pt"),
                 ]
@@ -170,7 +170,33 @@ class LaneDetectorYOLOv2:
         
         result = results[0]
         
-        # Check for bounding boxes
+        # PRIORITY: Check for segmentation masks (much better than boxes)
+        if hasattr(result, 'masks') and result.masks is not None:
+            # Process masks
+            # masks.xy is a list of points for each mask
+            for xy in result.masks.xy:
+                if len(xy) == 0: continue
+                
+                # Convert to integer points
+                points = xy.astype(np.int32)
+                
+                # Calculate centroid
+                M = cv2.moments(points)
+                if M['m00'] != 0:
+                    cx = int(M['m10'] / M['m00'])
+                    cy = int(M['m01'] / M['m00'])
+                    
+                    # Determine side
+                    if cx < mid_x:
+                        cv2.fillPoly(left_mask, [points], 255)
+                    else:
+                        cv2.fillPoly(right_mask, [points], 255)
+                        
+            # Use masks directly if found
+            if np.any(left_mask) or np.any(right_mask):
+                return left_mask if np.any(left_mask) else None, right_mask if np.any(right_mask) else None
+
+        # FALLBACK: Check for bounding boxes
         if not hasattr(result, 'boxes') or result.boxes is None:
             return None, None
         
@@ -352,7 +378,8 @@ class LaneDetectorYOLOv2:
         
         # Run YOLO detection
         try:
-            results = self.model(frame, verbose=False, conf=0.25)
+            # Lower confidence for better detection on challenging roads
+            results = self.model(frame, verbose=False, conf=0.15)
         except Exception as e:
             logger.error(f"YOLO inference failed: {e}")
             return self._empty_result(frame)
@@ -380,11 +407,28 @@ class LaneDetectorYOLOv2:
         self.left_confidence = left_conf
         self.right_confidence = right_conf
         
+        annotated_frame = frame.copy()
+
+        # VISUALIZATION: Overlay Masks (The "Premium Green" Look for Single Frame)
+        lane_overlay = np.zeros_like(annotated_frame)
+        has_seg = False
+        
+        if left_region is not None:
+            lane_overlay[left_region > 0] = [0, 255, 0]
+            has_seg = True
+        if right_region is not None:
+            lane_overlay[right_region > 0] = [0, 255, 0]
+            has_seg = True
+            
+        if has_seg:
+            cv2.addWeighted(lane_overlay, 0.4, annotated_frame, 1.0, 0, annotated_frame)
+        
         # Draw lanes
         if self.left_confidence >= self.min_confidence or self.right_confidence >= self.min_confidence:
-            annotated_frame = self._draw_lane(frame, left_fit, right_fit)
+            annotated_frame = self._draw_lane(annotated_frame, left_fit, right_fit)
         else:
-            annotated_frame = frame.copy()
+            # Keep the overlay if we have it
+            pass
         
         # Compute offset
         offset, direction = self._compute_lane_offset(left_fit, right_fit, width, height)
@@ -447,15 +491,15 @@ class LaneDetectorYOLOv2:
         results = []
         
         try:
-            # Run YOLO batch inference
-            batch_results = self.model(frames, verbose=False, conf=0.25)
+            # Run YOLO batch inference - LOWER CONFIDENCE for Vietnamese roads (often obscure)
+            batch_results = self.model(frames, verbose=False, conf=0.15)
             
             # Post-process each frame (CPU bound, but unavoidable)
             for i, frame in enumerate(frames):
                 yolo_result = batch_results[i]
                 
-                # Extract regions
-                left_region, right_region = self._extract_lane_regions(yolo_result, (height, width))
+                # Extract regions - Wrap yolo_result in list because helper expects a list
+                left_region, right_region = self._extract_lane_regions([yolo_result], (height, width))
                 
                 # Extract lines
                 left_points, left_conf_raw = self._extract_lane_line_from_region(left_region, frame, 'left')
@@ -472,11 +516,31 @@ class LaneDetectorYOLOv2:
                 left_conf *= left_conf_raw
                 right_conf *= right_conf_raw
                 
-                # Draw lanes
+                annotated_frame = frame.copy()
+
+                # VISUALIZATION: Draw Segmentation Masks (The "Premium Green" Look)
+                # Ensure we have uint8 masks
+                lane_overlay = np.zeros_like(annotated_frame)
+                has_seg = False
+                
+                if left_region is not None:
+                    lane_overlay[left_region > 0] = [0, 255, 0] # Green for left
+                    has_seg = True
+                    
+                if right_region is not None:
+                    lane_overlay[right_region > 0] = [0, 255, 0] # Green for right (or maybe same color)
+                    has_seg = True
+                    
+                if has_seg:
+                    # Apply semi-transparent overlay
+                    cv2.addWeighted(lane_overlay, 0.4, annotated_frame, 1.0, 0, annotated_frame)
+                
+                # Draw lanes (Polynomial Lines - Borders)
                 if left_conf >= self.min_confidence or right_conf >= self.min_confidence:
-                    annotated_frame = self._draw_lane(frame, left_fit, right_fit)
+                    annotated_frame = self._draw_lane(annotated_frame, left_fit, right_fit)
                 else:
-                    annotated_frame = frame.copy()
+                    # If low confidence on fit but we have seg, we still have the overlay
+                    pass
                     
                 # Offset
                 offset, direction = self._compute_lane_offset(left_fit, right_fit, width, height)
