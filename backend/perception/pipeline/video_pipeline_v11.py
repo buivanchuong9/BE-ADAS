@@ -199,17 +199,40 @@ class VideoPipelineV11:
         
         # Process based on video type
         if self.video_type == "dashcam":
-            # Batch object detection (GPU optimized)
+            # 1. Batch Object Detection (GPU optimized)
             if hasattr(self.object_detector, 'detect_batch'):
                 batch_detections = self.object_detector.detect_batch(frames)
             else:
                 batch_detections = [self.object_detector.detect(f) for f in frames]
+                
+            # 2. Batch Lane Detection (GPU optimized)
+            # Check if lane detector supports batching (we just added it)
+            if hasattr(self.lane_detector, 'process_batch'):
+                batch_lane_results = self.lane_detector.process_batch(frames)
+            else:
+                batch_lane_results = [self.lane_detector.process_frame(f) for f in frames]
             
-            # Process each frame with batch detections
+            # 3. Batch Traffic Sign Detection (GPU optimized)
+            if hasattr(self.traffic_sign_detector, 'process_batch'):
+                 batch_sign_results = self.traffic_sign_detector.process_batch(frames)
+            else:
+                 batch_sign_results = [self.traffic_sign_detector.process_frame(f) for f in frames]
+
+            # 4. Merge Results & Draw (CPU bound)
             for i, (frame, frame_idx, timestamp) in enumerate(zip(frames, frame_indices, timestamps)):
                 detections = batch_detections[i]
+                lane_result = batch_lane_results[i]
+                sign_result = batch_sign_results[i]
+                
+                # We need to manually merge results since we can't use _process_dashcam_frame_with_detections directly
+                # as it calls lane_detector.process_frame() internally.
+                # So we inline the logic here or modify the helper.
+                # For safety/simplicity, let's modify the helper to accept optional lane_result
+                
                 result = self._process_dashcam_frame_with_detections(
-                    frame, frame_idx, timestamp, detections
+                    frame, frame_idx, timestamp, detections, 
+                    precomputed_lane_result=lane_result,
+                    precomputed_sign_result=sign_result
                 )
                 
                 bgr_frame = cv2.cvtColor(result['annotated_frame'], cv2.COLOR_RGB2BGR)
@@ -236,15 +259,21 @@ class VideoPipelineV11:
         frame: np.ndarray,
         frame_idx: int,
         timestamp: float,
-        detections: List[Dict]
+        detections: List[Dict],
+        precomputed_lane_result: Optional[Dict] = None,
+        precomputed_sign_result: Optional[Dict] = None
     ) -> Dict:
         """Process dashcam frame with pre-computed detections."""
         height, width = frame.shape[:2]
-        annotated = frame.copy()
         
         # 1. Lane Detection
-        lane_result = self.lane_detector.process_frame(annotated)
-        annotated = lane_result['annotated_frame']
+        if precomputed_lane_result:
+            lane_result = precomputed_lane_result
+            annotated = lane_result['annotated_frame'].copy() # Use pre-annotated frame from lane detector
+        else:
+            annotated = frame.copy()
+            lane_result = self.lane_detector.process_frame(annotated)
+            annotated = lane_result['annotated_frame']
         
         if lane_result['is_departed']:
             self.events.append({
@@ -310,8 +339,28 @@ class VideoPipelineV11:
                 })
         
         # 4. Traffic Signs
-        traffic_result = self.traffic_sign_detector.process_frame(annotated)
-        annotated = traffic_result['annotated_frame']
+        if precomputed_sign_result:
+            traffic_result = precomputed_sign_result
+            # Merge annotations: Draw signs on top of current annotated frame
+            # The precomputed result has annotations on raw/lane frame, but we want to draw on 'annotated' which has objects
+            # So instead of using traffic_result['annotated_frame'], we use self.traffic_sign_detector.draw_signs
+            # But process_batch already drew them?
+            # Let's check process_batch in TrafficSignV11: yes, it calls draw_signs.
+            
+            # Better approach: pass just detections to helper if possible, or redraw here.
+            # Redrawing is cheap.
+            annotated = self.traffic_sign_detector.draw_signs(annotated, traffic_result['detections'])
+            
+            # Also add overlays like sign count etc if needed, logic is in process_frame but we skipped it
+            # We can replicate overlays here or just stick to draw_signs
+            
+            if traffic_result['detections']:
+                 count_text = f"Traffic Signs: {len(traffic_result['detections'])}"
+                 cv2.putText(annotated, count_text, (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            
+        else:
+            traffic_result = self.traffic_sign_detector.process_frame(annotated)
+            annotated = traffic_result['annotated_frame']
         
         if traffic_result['critical_signs']:
             for sign in traffic_result['critical_signs']:

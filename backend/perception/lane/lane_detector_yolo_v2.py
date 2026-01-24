@@ -426,6 +426,83 @@ class LaneDetectorYOLOv2:
             "model_type": "YOLO_DETECTION"
         }
     
+    
+    def process_batch(self, frames: List[np.ndarray]) -> List[Dict]:
+        """
+        Process batch of frames for lane detection (GPU Optimized).
+        
+        Args:
+            frames: List of RGB frames
+            
+        Returns:
+            List of result dicts
+        """
+        if not frames:
+            return []
+            
+        if self.model is None:
+            return [self._empty_result(f) for f in frames]
+            
+        height, width = frames[0].shape[:2]
+        results = []
+        
+        try:
+            # Run YOLO batch inference
+            batch_results = self.model(frames, verbose=False, conf=0.25)
+            
+            # Post-process each frame (CPU bound, but unavoidable)
+            for i, frame in enumerate(frames):
+                yolo_result = batch_results[i]
+                
+                # Extract regions
+                left_region, right_region = self._extract_lane_regions(yolo_result, (height, width))
+                
+                # Extract lines
+                left_points, left_conf_raw = self._extract_lane_line_from_region(left_region, frame, 'left')
+                right_points, right_conf_raw = self._extract_lane_line_from_region(right_region, frame, 'right')
+                
+                # Create result dict (simplified version of process_frame logic)
+                # Note: We skip Kalman filter in batch mode for simplicity or implement it if need consistent tracking
+                # Here we use basic fit without tracking state update for speed
+                
+                left_fit, left_conf = self._fit_polynomial(left_points)
+                right_fit, right_conf = self._fit_polynomial(right_points)
+                
+                # Calc confidence
+                left_conf *= left_conf_raw
+                right_conf *= right_conf_raw
+                
+                # Draw lanes
+                if left_conf >= self.min_confidence or right_conf >= self.min_confidence:
+                    annotated_frame = self._draw_lane(frame, left_fit, right_fit)
+                else:
+                    annotated_frame = frame.copy()
+                    
+                # Offset
+                offset, direction = self._compute_lane_offset(left_fit, right_fit, width, height)
+                
+                # Departure
+                is_departed = (abs(offset) > self.departure_threshold and min(left_conf, right_conf) >= 0.5)
+                
+                if is_departed:
+                    self._draw_warning(annotated_frame, direction)
+                
+                results.append({
+                    "annotated_frame": annotated_frame,
+                    "is_departed": is_departed,
+                    "offset": float(offset),
+                    "departure_direction": direction,
+                    # Add minimum fields expected by pipeline
+                    "left_fit": left_fit,
+                    "right_fit": right_fit
+                })
+                
+        except Exception as e:
+            logger.error(f"Batch lane detection failed: {e}")
+            return [self.process_frame(f) for f in frames] # Fallback
+            
+        return results
+
     def _draw_warning(self, frame: np.ndarray, direction: str):
         """Draw lane departure warning."""
         if "LEFT" in direction.upper():

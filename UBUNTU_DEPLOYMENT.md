@@ -82,6 +82,7 @@ SUPABASE_ANON_KEY: str = "eyJhbGc..."
 # 1. Kill hết
 pkill -9 -f "celery"
 pkill -u phonglv -9 uvicorn
+redis-cli FLUSHALL
 
 # 2. Vào thư mục GỐC
 cd ~/BE-ADAS

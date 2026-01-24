@@ -281,8 +281,92 @@ class TrafficSignV11:
         except Exception as e:
             logger.error(f"Detection failed: {e}")
             return []
-    
-    def classify_sign(self, class_name: str, class_id: int) -> Tuple[Optional[str], Optional[int]]:
+    def detect_batch(self, frames: List[np.ndarray]) -> List[List[Dict]]:
+        """
+        Batch detect traffic signs (GPU Optimized).
+        
+        Args:
+            frames: List of RGB frames
+            
+        Returns:
+            List of lists of detections (one list per frame)
+        """
+        if self.model is None or not frames:
+            return [[] for _ in frames]
+            
+        try:
+            # Batch infer
+            results = self.model(
+                frames, 
+                device=self.device,
+                conf=self.conf_threshold,
+                verbose=False
+            )
+            
+            batch_detections = []
+            
+            for result in results:
+                frame_detections = []
+                boxes = result.boxes
+                
+                for box in boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                    conf = float(box.conf[0])
+                    cls_id = int(box.cls[0])
+                    cls_name = result.names[cls_id]
+                    
+                    sign_type, speed_limit = self.classify_sign(cls_name, cls_id)
+                    
+                    if sign_type:
+                        detection = {
+                            "class_id": cls_id,
+                            "class_name": cls_name,
+                            "sign_type": sign_type,
+                            "confidence": conf,
+                            "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                            "speed_limit": speed_limit
+                        }
+                        frame_detections.append(detection)
+                        
+                batch_detections.append(frame_detections)
+                
+            return batch_detections
+            
+        except Exception as e:
+            logger.error(f"Batch sign detection failed: {e}")
+            return [self.detect(f) for f in frames] # Fallback
+
+    def process_batch(self, frames: List[np.ndarray]) -> List[Dict]:
+        """
+        Process batch of frames for traffic signs.
+        
+        Args:
+            frames: List of RGB frames
+            
+        Returns:
+            List of result dicts
+        """
+        batch_detections = self.detect_batch(frames)
+        results = []
+        
+        for i, frame in enumerate(frames):
+            detections = batch_detections[i]
+            
+            # Identify critical signs
+            critical_types = ['STOP', 'YIELD', 'NO_ENTRY']
+            critical_signs = [d for d in detections if d['sign_type'] in critical_types]
+            
+            # Simple draw (no tracking/speed check in pure batch process for now)
+            annotated_frame = self.draw_signs(frame, detections)
+            
+            results.append({
+                "annotated_frame": annotated_frame,
+                "detections": detections,
+                "sign_count": len(detections),
+                "critical_signs": critical_signs
+            })
+            
+        return results
         """
         Classify detected object as traffic sign type (Vietnamese context).
         
