@@ -586,23 +586,6 @@ class TrafficSignV11:
         frame: np.ndarray,
         vehicle_speed: Optional[float] = None
     ) -> Dict:
-        """
-        Process frame with sign tracking and speed violation detection (PRODUCTION).
-        
-        Args:
-            frame: RGB frame from video
-            vehicle_speed: Current vehicle speed in km/h (optional)
-            
-        Returns:
-            Dict containing:
-                - annotated_frame: Frame with sign overlays
-                - detections: List of ALL sign detections
-                - new_signs: List of NEW signs (not seen recently)
-                - sign_count: Number of detected signs
-                - critical_signs: List of critical signs (STOP, etc.)
-                - current_speed_limit: Active speed limit (km/h)
-                - speed_violation: Violation info if speeding
-        """
         # Detect signs
         detections = self.detect(frame)
         
