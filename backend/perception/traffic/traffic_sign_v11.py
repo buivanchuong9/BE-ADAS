@@ -400,36 +400,7 @@ class TrafficSignV11:
                 return (sign_type, None)
         
         return (None, None)
-        Classify detected object as traffic sign type (Vietnamese context).
-        
-        Args:
-            class_name: YOLO class name
-            class_id: YOLO class ID
-            
-        Returns:
-            Tuple of (sign_type, speed_limit) or (None, None) if not a traffic sign
-        """
-        # COCO model classes
-        if class_name == 'stop sign':
-            return ('STOP', None)
-        elif class_name == 'traffic light':
-            return ('TRAFFIC_LIGHT', None)
-        
-        # Custom model classes (if using trained model for Vietnamese signs)
-        if self.is_custom_model:
-            if 'speed_limit' in class_name:
-                # Extract speed from class name (e.g., "speed_limit_50" → 50)
-                try:
-                    speed = int(class_name.split('_')[-1])
-                    if speed in self.VIETNAMESE_SPEED_LIMITS:
-                        return (f'SPEED_LIMIT_{speed}', speed)
-                except ValueError:
-                    pass
-            elif class_name in self.CUSTOM_SIGNS:
-                sign_type = class_name.upper().replace('_', ' ')
-                return (sign_type, None)
-        
-        return (None, None)
+
     
     def get_sign_action(self, sign_type: str) -> str:
         """
@@ -551,16 +522,6 @@ class TrafficSignV11:
         self,
         vehicle_speed: Optional[float] = None
     ) -> Optional[Dict[str, Any]]:
-        """
-        Check if vehicle speed violates current speed limit.
-        
-        Args:
-            vehicle_speed: Current vehicle speed in km/h
-                          (from GPS, CAN bus, or estimation)
-            
-        Returns:
-            Dict with violation info, or None if no violation
-        """
         if self.current_speed_limit is None or vehicle_speed is None:
             return None
         
