@@ -101,25 +101,11 @@ class VideoService:
             except Exception as e:
                 logger.warning(f"[Validation] Could not get size from tell(): {e}")
         
-        # Method 3: Only read small chunk to validate (DON'T read entire file!)
+        # Method 3: Skip chunk reading for performance/stability
+        # Reading chunks and seeking back can cause timeouts on large files
         if file_size is None:
-            try:
-                # Read only first 1MB to validate file is readable
-                chunk = await file.read(1024 * 1024)  # 1MB only
-                if len(chunk) == 1024 * 1024:
-                    # File is at least 1MB, will validate full size during streaming
-                    logger.warning(f"[Validation] Could not determine size, will validate during upload")
-                    file_size = 0  # Placeholder - will check during streaming
-                else:
-                    file_size = len(chunk)
-                await file.seek(0)  # Reset to beginning
-                logger.info(f"[Validation] Got size from chunk read: {file_size / 1024 / 1024:.2f} MB")
-            except Exception as e:
-                logger.error(f"[Validation] Failed to read file: {e}")
-                raise ValidationError(
-                    f"Cannot read uploaded file: {str(e)}",
-                    details={"filename": filename, "error": str(e)}
-                )
+            logger.info(f"[Validation] Size checking skipped for stream/spooled file")
+            file_size = 0  # Will be validated during streaming upload
         
         # Check size if we have it
         if file_size > 0 and file_size > self.MAX_SIZE_BYTES:

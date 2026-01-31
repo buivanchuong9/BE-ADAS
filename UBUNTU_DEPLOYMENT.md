@@ -24,7 +24,7 @@ git pull origin main
 ```
 
 Kết quả sẽ hiển thị:
-```
+``` 
 Updating b61a9a4..c6aedcf
 Fast-forward
  18 files changed, 1033 insertions(+), 7887 deletions(-)
@@ -99,7 +99,7 @@ nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >
 nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
 
 # 6. Start Beat (SỬA LẠI tương tự)
-nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+  nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
 
 # 6. Xem log real-time
 tail -f backend.log
