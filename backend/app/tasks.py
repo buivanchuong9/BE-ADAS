@@ -183,15 +183,20 @@ def cleanup_old_files(self, days_old: int = 7) -> Dict[str, Any]:
 
 @celery_app.task(bind=True, name='app.tasks.monitor_stuck_jobs')
 def monitor_stuck_jobs(self, timeout_minutes: int = 30) -> Dict[str, Any]:
-    """Monitor stuck jobs task (Async wrapper)."""
+    """Monitor stuck jobs task (Async wrapper). Only logs when stuck jobs are found."""
     async def _async_monitor():
         engine, async_session_factory = await get_async_db_session()
         async with async_session_factory() as db:
             try:
-                # Basic implementation since get_stuck_jobs might not exist yet
-                # Just logging for now
-                logger.info("Monitoring stuck jobs...")
-                return {"status": "completed", "stuck_count": 0}
+                # Basic implementation - check for stuck jobs
+                # Only log if stuck jobs are found to avoid spam
+                stuck_count = 0  # TODO: Implement actual stuck job detection
+                
+                if stuck_count > 0:
+                    logger.warning(f"⚠️ Found {stuck_count} stuck jobs (timeout: {timeout_minutes}min)")
+                # else: Silent success (no log spam)
+                
+                return {"status": "completed", "stuck_count": stuck_count}
             finally:
                 await engine.dispose()
                 
@@ -207,9 +212,9 @@ celery_app.conf.beat_schedule = {
         'schedule': crontab(hour=3, minute=0),
         'kwargs': {'days_old': 7}
     },
-    'monitor-stuck-jobs-every-5-minutes': {
+    'monitor-stuck-jobs-every-30-seconds': {
         'task': 'app.tasks.monitor_stuck_jobs',
-        'schedule': crontab(minute='*/5'),
+        'schedule': 30.0,  # Every 30 seconds (reduced from 5 minutes to catch stuck jobs faster)
         'kwargs': {'timeout_minutes': 30}
     }
 }

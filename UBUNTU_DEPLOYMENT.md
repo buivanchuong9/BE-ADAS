@@ -96,12 +96,14 @@ nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >
 
 # 5. START CELERY (SỬA LẠI: Dùng pool=solo để an toàn cho GPU)
 # Lưu ý: Vì PYTHONPATH đã trỏ vào backend rồi, nên start từ "app" là đủ.
+cd ~/BE-ADAS
 nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
 
 # 6. Start Beat (SỬA LẠI tương tự)
-  nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+cd ~/BE-ADAS
+nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
 
-# 6. Xem log real-time
+# 7. Xem log real-time
 tail -f backend.log
 
 tail -f logs/worker.log
@@ -170,17 +172,31 @@ git pull origin main
 # 4. Install dependencies mới
 pip install -r requirements.txt
 
-# 5. Restart server
+# 5. Kill tất cả services cũ
+pkill -9 -f "celery"
 pkill -u phonglv -9 uvicorn
+redis-cli FLUSHALL
+
+# 6. Export env và path
 cd ~/BE-ADAS
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+
+# 7. Start API
 nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
 
-# 6. Xem log
+# 8. Start Celery Worker
+cd ~/BE-ADAS
+nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
+
+# 9. Start Celery Beat
+cd ~/BE-ADAS
+nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+
+# 10. Xem log
 tail -f backend.log
 
-# 7. Test (Ctrl+C để thoát tail, rồi test)
+# 11. Test (Ctrl+C để thoát tail, rồi test)
 curl http://localhost:52000/health
 curl http://localhost:52000/api/auth/status
 ```
@@ -310,10 +326,28 @@ ssh phonglv@adas-api.aiotlab.edu.vn
 cd ~/BE-ADAS
 git pull origin main
 pip install -r requirements.txt
+
+# Kill tất cả services cũ
+pkill -9 -f "celery"
 pkill -u phonglv -9 uvicorn
+redis-cli FLUSHALL
+
+# Export env và path
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+
+# Start API
 nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
+
+# Start Celery Worker
+cd ~/BE-ADAS
+nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
+
+# Start Celery Beat
+cd ~/BE-ADAS
+nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+
+# Xem log
 tail -f backend.log
 ```
 
