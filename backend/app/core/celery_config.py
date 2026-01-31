@@ -39,8 +39,8 @@ celery_app.conf.update(
     
     # Task execution settings
     task_track_started=True,           # Track when task starts
-    task_time_limit=600,               # 10 minutes hard timeout (Fail fast)
-    task_soft_time_limit=540,          # 9 minutes soft timeout
+    task_time_limit=1800,              # 30 minutes hard timeout (for long videos)
+    task_soft_time_limit=1740,         # 29 minutes soft timeout
     worker_concurrency=1,              # Strict single worker
     
     # Worker settings

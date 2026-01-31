@@ -115,19 +115,16 @@ def process_video_task(self, job_id: str) -> Dict[str, Any]:
                 output_path = video_service.get_output_path(job_id)
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                 
-                async def on_progress_callback(percent: int):
-                    try:
-                        await repo.update_progress(job_id, percent)
-                    except Exception as e:
-                        logger.warning(f"Progress update failed: {e}")
-
+                # NOTE: Progress callback removed - pipeline doesn't support it
+                # Progress is tracked internally by the pipeline
+                
                 # Note: analyze_video MUST be awaited
                 result = await video_service.analyze_video(
                     input_path=str(input_path),
                     output_path=output_path,
                     device=job.device,
                     video_type=job.video_type,
-                    on_progress=on_progress_callback
+                    on_progress=None  # Disabled - not supported by pipeline
                 )
                 
                 # 5. COMPLETE
