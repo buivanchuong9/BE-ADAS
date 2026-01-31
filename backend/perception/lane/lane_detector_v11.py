@@ -25,8 +25,6 @@ from typing import Optional, Tuple, List, Dict
 from collections import deque
 import logging
 import warnings
-import torch
-import torch.nn.functional as F
 
 from .kalman_filter import LaneKalmanFilter  # NEW: Kalman Filter for smoothing
 
@@ -196,121 +194,43 @@ class LaneDetectorV11:
         self.departure_threshold = 0.3  # 30% offset from center
         self.min_confidence = 0.3  # Minimum confidence to use detection
         
-        # ========== GPU OPTIMIZATION: Pre-compute kernels ==========
-        # RGB to Grayscale weights (cached on GPU)
-        self.rgb_to_gray_weights = torch.tensor(
-            [0.299, 0.587, 0.114], device=self.device
-        ).view(1, 3, 1, 1)
-        
-        # Gaussian blur kernel (5x5, sigma=1.0) - cached on GPU
-        kernel_size = 5
-        sigma = 1.0
-        kernel_1d = torch.arange(kernel_size, device=self.device, dtype=torch.float32)
-        kernel_1d = kernel_1d - (kernel_size - 1) / 2
-        kernel_1d = torch.exp(-0.5 * (kernel_1d / sigma) ** 2)
-        kernel_1d = kernel_1d / kernel_1d.sum()
-        kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
-        self.gaussian_kernel = kernel_2d.view(1, 1, kernel_size, kernel_size)
-        self.gaussian_padding = kernel_size // 2
-        
-        # Sobel kernels for edge detection - cached on GPU
-        self.sobel_x = torch.tensor(
-            [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
-            device=self.device, dtype=torch.float32
-        ).view(1, 1, 3, 3)
-        
-        self.sobel_y = torch.tensor(
-            [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
-            device=self.device, dtype=torch.float32
-        ).view(1, 1, 3, 3)
-        
-        # Canny thresholds (normalized to [0, 1])
-        self.canny_low_threshold = 30.0 / 255.0
-        self.canny_high_threshold = 90.0 / 255.0
-        
-        # ROI mask cache (key: (height, width), value: GPU tensor)
-        self.roi_mask_cache = {}
-        
         logger.info(f"LaneDetectorV11 initialized on {device} with Kalman Filter smoothing")
     
     def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """
-        Preprocess frame for lane detection - GPU ACCELERATED VERSION.
-        
-        PERFORMANCE CRITICAL: All operations run on GPU to prevent CPU bottleneck.
-        Logic: Read image → Push to GPU → GPU processing → Return to CPU only for final result
+        Preprocess frame for lane detection.
         
         Args:
-            frame: RGB frame from video (NumPy array on CPU)
+            frame: RGB frame from video
             
         Returns:
-            Binary edge map (NumPy array on CPU, ready for Hough transform)
+            Binary edge map
         """
-        height, width = frame.shape[:2]
+        # Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         
-        # STEP 1: Push raw frame to GPU immediately (NO CPU resize!)
-        # Convert NumPy (H, W, C) to PyTorch (1, C, H, W) and move to GPU
-        frame_tensor = torch.from_numpy(frame).to(self.device).float()
-        frame_tensor = frame_tensor.permute(2, 0, 1).unsqueeze(0)  # (H,W,C) -> (1,C,H,W)
+        # Apply Gaussian blur
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
         
-        # STEP 2: GPU Normalize (divide by 255)
-        frame_tensor = frame_tensor / 255.0
+        # Canny edge detection - tuned for faded Vietnamese lanes
+        edges = cv2.Canny(blur, 30, 90)  # Lowered from (50, 150) for better faded lane detection
         
-        # STEP 3: GPU RGB to Grayscale conversion (using cached weights)
-        gray_tensor = (frame_tensor * self.rgb_to_gray_weights).sum(dim=1, keepdim=True)
+        # Region of interest (lower half of frame)
+        height, width = edges.shape
+        mask = np.zeros_like(edges)
         
-        # STEP 4: GPU Gaussian Blur (using cached kernel)
-        blurred_tensor = F.conv2d(gray_tensor, self.gaussian_kernel, padding=self.gaussian_padding)
+        # Define ROI polygon (trapezoid for perspective)
+        roi_vertices = np.array([[
+            (int(width * 0.1), height),
+            (int(width * 0.45), int(height * 0.6)),
+            (int(width * 0.55), int(height * 0.6)),
+            (int(width * 0.9), height)
+        ]], dtype=np.int32)
         
-        # STEP 5: GPU Canny Edge Detection (using cached Sobel kernels)
-        # Compute gradients
-        grad_x = F.conv2d(blurred_tensor, self.sobel_x, padding=1)
-        grad_y = F.conv2d(blurred_tensor, self.sobel_y, padding=1)
+        cv2.fillPoly(mask, roi_vertices, 255)
+        masked_edges = cv2.bitwise_and(edges, mask)
         
-        # Gradient magnitude
-        grad_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2)
-        
-        # Thresholding (using cached thresholds)
-        strong_edges = (grad_magnitude > self.canny_high_threshold).float()
-        weak_edges = ((grad_magnitude >= self.canny_low_threshold) & 
-                      (grad_magnitude <= self.canny_high_threshold)).float()
-        
-        # Combine edges (simplified Canny)
-        edges_tensor = strong_edges + 0.5 * weak_edges
-        edges_tensor = (edges_tensor > 0.5).float()  # Binary
-        
-        # STEP 6: GPU ROI Masking (Region of Interest) - CACHED
-        # Check if we have a cached mask for this frame size
-        cache_key = (height, width)
-        if cache_key not in self.roi_mask_cache:
-            # Create ROI mask (one-time operation per resolution)
-            roi_vertices = [
-                (int(width * 0.1), height),
-                (int(width * 0.45), int(height * 0.6)),
-                (int(width * 0.55), int(height * 0.6)),
-                (int(width * 0.9), height)
-            ]
-            
-            # Create mask on CPU
-            mask_np = np.zeros((height, width), dtype=np.uint8)
-            roi_vertices_np = np.array([roi_vertices], dtype=np.int32)
-            cv2.fillPoly(mask_np, roi_vertices_np, 255)
-            
-            # Move to GPU and cache
-            mask_tensor = torch.from_numpy(mask_np).to(self.device).float().unsqueeze(0).unsqueeze(0) / 255.0
-            self.roi_mask_cache[cache_key] = mask_tensor
-        else:
-            # Reuse cached mask (FAST!)
-            mask_tensor = self.roi_mask_cache[cache_key]
-        
-        # Apply ROI mask
-        masked_edges_tensor = edges_tensor * mask_tensor
-        
-        # STEP 7: Return to CPU only at the very end
-        # Convert back to NumPy for Hough transform (cv2.HoughLinesP requires NumPy)
-        masked_edges_np = (masked_edges_tensor.squeeze().cpu().numpy() * 255).astype(np.uint8)
-        
-        return masked_edges_np
+        return masked_edges
     
     def detect_lane_lines(self, edges: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """
