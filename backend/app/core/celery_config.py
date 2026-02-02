@@ -75,12 +75,7 @@ celery_app.conf.update(
         'visibility_timeout': 3600,    # 1 hour visibility
         'fanout_prefix': True,
         'fanout_patterns': True,
-        'socket_keepalive': True,
-        'socket_keepalive_options': {
-            1: 1,  # TCP_KEEPIDLE
-            2: 1,  # TCP_KEEPINTVL  
-            3: 3,  # TCP_KEEPCNT
-        },
+        # REMOVED: socket_keepalive causes "Invalid argument" on some systems
     },
 )
 
