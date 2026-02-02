@@ -32,6 +32,7 @@ import logging
 from pathlib import Path
 
 from .object_tracker import ByteTracker
+from ...core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -131,60 +132,44 @@ class ObjectDetectorV11:
             self.tracker = None
         
         # ========================================
-        # SMART MODEL DETECTION
+        # 🚀 SMART MODEL DETECTION - DÙNG CONFIG LINH HOẠT
         # ========================================
         try:
             from ultralytics import YOLO
             
-            # Priority 1: Check for best_vehicle.pt or best.pt (Vietnam custom)
-            vietnam_model_paths = [
-                # Path("best_training.pt"),  # REMOVED: User confirmed this is LANE model
-                Path("best_vehicle.pt"),   # Root file
-                Path(__file__).parent.parent.parent / "models" / "best_vehicle.pt",
-                Path("models/best_vehicle.pt"),
-                Path("backend/models/best_vehicle.pt"),
-                Path("best.pt"),
-                Path("runs/detect/train/weights/best.pt"),
-            ]
+            # Priority 1: Dùng model_path nếu user chỉ định manual
+            if model_path is not None:
+                logger.info(f"📌 Using MANUAL model path: {model_path}")
+            else:
+                # Priority 2: Dùng settings.get_yolo_model_path() - TỰ ĐỘNG TÌM MODEL!
+                model_path = settings.get_yolo_model_path()
+                logger.info(f"🔍 AUTO-DETECTED model from config: {model_path}")
             
-            vietnam_model = None
-            for vn_path in vietnam_model_paths:
-                if vn_path.exists():
-                    vietnam_model = str(vn_path)
-                    break
+            # Kiểm tra file có tồn tại không
+            model_file = Path(model_path)
+            if not model_file.exists():
+                raise FileNotFoundError(f"❌ Model file not found: {model_path}")
             
-            # Determine which model to use
-            if vietnam_model and model_path is None:
-                # Use Vietnam custom model
-                model_path = vietnam_model
+            # Phát hiện loại model (Vietnam custom hay COCO standard)
+            # Check by filename - nếu có "vehicle" hoặc "best" thì là Vietnam custom
+            model_name = model_file.stem.lower()
+            if "vehicle" in model_name or ("best" in model_name and "lane" not in model_name):
                 self.is_vietnam_custom = True
                 logger.info(f"🇻🇳 VIETNAM CUSTOM MODEL detected: {model_path}")
-                
-                # Set Vietnam custom class mapping
                 self.CLASS_NAMES = self.VIETNAM_CUSTOM_CLASSES.copy()
                 self.VIETNAMESE_LABELS = self.VIETNAM_LABELS_VI.copy()
-                
-            elif model_path is None:
-                # Fallback to standard YOLO
-                model_path = "yolo11n.pt"
-                self.is_vietnam_custom = False
-                logger.info(f"📦 Using standard COCO model: {model_path}")
-                
-                # Set COCO class mapping
-                self.CLASS_NAMES = {v: k for k, v in self.COCO_ADAS_CLASSES.items()}
-                self.VIETNAMESE_LABELS = self.COCO_LABELS_VI.copy()
             else:
-                # User specified model - assume COCO format
                 self.is_vietnam_custom = False
-                logger.info(f"📦 Using user-specified model: {model_path}")
+                logger.info(f"📦 STANDARD COCO MODEL: {model_path}")
                 self.CLASS_NAMES = {v: k for k, v in self.COCO_ADAS_CLASSES.items()}
                 self.VIETNAMESE_LABELS = self.COCO_LABELS_VI.copy()
             
             # Load model
+            logger.info(f"⏳ Loading YOLO model: {model_path}...")
             self.model = YOLO(model_path)
             logger.info(f"✅ Model loaded successfully on {device}")
-            logger.info(f"   Model type: {'Vietnam Custom' if self.is_vietnam_custom else 'Standard COCO'}")
-            logger.info(f"   Classes: {list(self.CLASS_NAMES.values())}")
+            logger.info(f"   📊 Model type: {'Vietnam Custom' if self.is_vietnam_custom else 'Standard COCO'}")
+            logger.info(f"   🏷️  Classes: {list(self.CLASS_NAMES.values())}")
             
         except ImportError:
             logger.error("❌ ultralytics package not installed. Install: pip install ultralytics")
