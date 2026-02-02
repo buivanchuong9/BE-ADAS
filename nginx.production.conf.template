@@ -1,0 +1,92 @@
+
+# --------------------------------------------------------------------------------------------------
+# OPTION A: Nginx Reverse Proxy (Backend-For-Frontend) Configuration
+# --------------------------------------------------------------------------------------------------
+# This configuration implements the "Option A" architecture:
+# 1. Serves the Frontend (Static Files)
+# 2. Proxies /api requests to the Backend (http://localhost:52000)
+# 3. Handles CORS at the Nginx level (if needed) or eliminates it by same-origin.
+# 4. Hides the Backend port 52000 from the public internet.
+#
+# Usage:
+# 1. Install Nginx: sudo apt install nginx
+# 2. Copy to: /etc/nginx/sites-available/adas
+# 3. Link: sudo ln -s /etc/nginx/sites-available/adas /etc/nginx/sites-enabled/
+# 4. Test: sudo nginx -t
+# 5. Reload: sudo systemctl reload nginx
+#
+# Security:
+# - Ensure Certbot is run for SSL: sudo certbot --nginx -d adas.aiotlab.edu.vn
+# --------------------------------------------------------------------------------------------------
+
+server {
+    listen 80;
+    server_name adas.aiotlab.edu.vn;
+
+    # Redirect HTTP to HTTPS
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl http2;
+    server_name adas.aiotlab.edu.vn;
+
+    # SSL Certificates (Managed by Certbot recommended)
+    # ssl_certificate /etc/letsencrypt/live/adas.aiotlab.edu.vn/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/adas.aiotlab.edu.vn/privkey.pem;
+    
+    # SSL Best Practices
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+    ssl_prefer_server_ciphers on;
+
+    # Root Directory for Frontend (React/Next.js/Vite build output)
+    root /var/www/adas-frontend/dist;
+    index index.html;
+
+    # Access Logs & Error Logs
+    access_log /var/log/nginx/adas_access.log;
+    error_log /var/log/nginx/adas_error.log;
+
+    # 1. Frontend: Serve Static Files (SPA Support)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # 2. Backend API Proxy (Reverse Proxy)
+    # This proxies detailed requests from https://adas.aiotlab.edu.vn/api -> http://localhost:52000/api
+    # This ELIMINATES CORS issues because the browser sees Same-Origin.
+    location /api {
+        proxy_pass http://localhost:52000;
+        
+        # Proxy Headers
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # Timeout Configuration (for long video uploads)
+        proxy_read_timeout 300s;
+        proxy_connect_timeout 300s;
+        proxy_send_timeout 300s;
+        
+        # Max Upload Size (Allow large video uploads)
+        client_max_body_size 1024M;
+        
+        # OPTIONAL: Add CORS headers strictly for this location if accessed cross-origin
+        # (Not strictly needed if accessing via same origin, but good for safety)
+        # add_header 'Access-Control-Allow-Origin' 'https://adas.aiotlab.edu.vn' always;
+    }
+
+    # 3. Public Video Results (streaming support)
+    location /public {
+        proxy_pass http://localhost:52000/public;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+    }
+}

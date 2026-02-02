@@ -93,16 +93,20 @@ class Settings(BaseSettings):
     # CORS - Production domain with all variations (http/https, with/without port)
     # IMPORTANT: Must include all possible Origin header values browsers might send
     CORS_ORIGINS: str = (
+        "https://adas.aiotlab.edu.vn,"
+        "https://www.adas.aiotlab.edu.vn,"
         "https://adas-api.aiotlab.edu.vn,"
         "https://adas-api.aiotlab.edu.vn:52000,"
         "http://adas-api.aiotlab.edu.vn,"
         "http://adas-api.aiotlab.edu.vn:52000,"
         "http://localhost:52000,"
         "http://localhost:3000,"
+        "http://localhost:5173,"
         "http://localhost:8080,"
         "http://127.0.0.1:52000,"
         "http://127.0.0.1:3000,"
-        "http://127.0.0.1:8080"
+        "http://127.0.0.1:8080,"
+        "http://127.0.0.1:5173"
     )
     
     @property

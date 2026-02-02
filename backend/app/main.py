@@ -248,49 +248,22 @@ app.add_middleware(CloudflareLoggingMiddleware)
 # When credentials=True, browsers enforce strict CORS checks that block multipart uploads
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        # Production domain (all variations)
+    # Use settings.cors_origins_list for consistent configuration
+    # Safari requires exact strict origin matching when credentials are true
+    allow_origins=settings.cors_origins_list + [
+        "https://adas.aiotlab.edu.vn",
         "https://adas-api.aiotlab.edu.vn",
-        "https://adas-api.aiotlab.edu.vn:52000",
-        "http://adas-api.aiotlab.edu.vn",
-        "https://www.adas.aiotlab.edu.vn",
-        "http://adas-api.aiotlab.edu.vn:52000",
-        # Frontend domains (add your actual frontend URLs here)
-        "https://adas.aiotlab.edu.vn",  # Replace with actual frontend domain
-        "http://localhost:3000",  # React/Next.js dev
-        "http://localhost:5173",  # Vite dev
-        "http://localhost:8080",  # Vue dev
-        # Development
-        "http://localhost:52000",
-        "http://127.0.0.1:52000",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:8080",
     ],
     allow_credentials=True,  # Set to True to allow cookies/auth headers
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicit methods
     allow_headers=["*"],  # Allow all headers including Authorization
     expose_headers=["*"],  # Allow browsers to read all response headers
-    max_age=3600,  # Cache preflight requests for 1 hour
+    max_age=86400,  # Cache preflight requests for 24 hours (Safari respects up to 1 day)
 )
 
-
-# ⚠️ CRITICAL: Handle OPTIONS preflight requests BEFORE routers
-# This ensures preflight requests don't hit authentication dependencies
-from fastapi import Response
-
-@app.options("/{full_path:path}")
-async def options_handler(full_path: str):
-    """
-    Handle all OPTIONS preflight requests.
-    
-    This endpoint catches all OPTIONS requests and returns 200 OK
-    with appropriate CORS headers (added by CORSMiddleware).
-    
-    This prevents OPTIONS requests from reaching protected endpoints
-    that require authentication, which would cause 401/400 errors.
-    """
-    return Response(status_code=200)
+# NOTE: We removed the manual @app.options handler.
+# Starlette's CORSMiddleware automatically handles OPTIONS requests.
+# Adding a manual handler can cause conflicts or return 200 without CORS headers.
 
 
 # Include routers
