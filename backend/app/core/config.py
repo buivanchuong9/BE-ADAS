@@ -18,6 +18,7 @@ from pydantic_settings import BaseSettings
 from typing import Optional, List
 from functools import lru_cache
 import os
+from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "ADAS Backend API"
-    APP_VERSION: str = "3.0.0"
+    APP_VERSION: str = "3.0.1"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"  # development or production
     
@@ -74,10 +75,71 @@ class Settings(BaseSettings):
     AUDIO_CACHE_DIR: str = "./backend/storage/audio_cache"
     LOG_DIR: str = "./backend/logs"
     
-    # AI Models
-    YOLO_MODEL_PATH: str = "./backend/models/yolov11n.pt"
+    # AI Models - LINH HOẠT: Có thể override qua env hoặc auto-detect
+    YOLO_MODEL_PATH: str = "./backend/models/yolov11n.pt"  # Default fallback
     MEDIAPIPE_MODEL_PATH: str = "./backend/models"
     DEFAULT_DEVICE: str = "cpu"  # cpu or cuda
+    
+    # Auto-detect: Tự động tìm model mới nhất
+    AUTO_USE_LATEST_MODEL: bool = False  # Set True để tự động dùng model mới nhất
+    TRAINING_DIR: str = "./backend/training"  # Folder chứa model train
+    MODEL_PRIORITY: str = "best"  # "best", "last", hoặc "latest" (newest file)
+    
+    def get_yolo_model_path(self) -> str:
+        """
+        🚀 TỰ ĐỘNG TÌM MODEL - LINH HOẠT 100%
+        
+        Thứ tự ưu tiên:
+        1. Env YOLO_MODEL_PATH (cao nhất - manual override)
+        2. Auto-detect từ training/ nếu AUTO_USE_LATEST_MODEL=True
+           - MODEL_PRIORITY="best" → training/best_training.pt
+           - MODEL_PRIORITY="last" → training/last.pt  
+           - MODEL_PRIORITY="latest" → file .pt mới nhất theo thời gian
+        3. Fallback: models/yolov11n.pt (default)
+        
+        Ví dụ sử dụng:
+        - export AUTO_USE_LATEST_MODEL=true MODEL_PRIORITY=best
+        - export YOLO_MODEL_PATH=./backend/training/lane_vip_v1.pt
+        """
+        # Priority 1: Manual override qua env
+        env_path = os.getenv("YOLO_MODEL_PATH")
+        if env_path and env_path != self.YOLO_MODEL_PATH:
+            if Path(env_path).exists():
+                print(f"✅ Using MANUAL model: {env_path}")
+                return env_path
+            else:
+                print(f"⚠️ WARNING: {env_path} not found, falling back...")
+        
+        # Priority 2: Auto-detect từ training/
+        auto_use = os.getenv("AUTO_USE_LATEST_MODEL", str(self.AUTO_USE_LATEST_MODEL)).lower() == "true"
+        if auto_use:
+            training_dir = Path(os.getenv("TRAINING_DIR", self.TRAINING_DIR))
+            if training_dir.exists():
+                priority = os.getenv("MODEL_PRIORITY", self.MODEL_PRIORITY).lower()
+                
+                # Tìm theo tên cụ thể
+                if priority == "best":
+                    best_path = training_dir / "best_training.pt"
+                    if best_path.exists():
+                        print(f"🔥 AUTO: Using BEST model: {best_path}")
+                        return str(best_path)
+                elif priority == "last":
+                    last_path = training_dir / "last.pt"
+                    if last_path.exists():
+                        print(f"🔥 AUTO: Using LAST model: {last_path}")
+                        return str(last_path)
+                
+                # Tìm file .pt mới nhất
+                if priority == "latest" or priority not in ["best", "last"]:
+                    pt_files = list(training_dir.glob("*.pt"))
+                    if pt_files:
+                        latest = max(pt_files, key=lambda p: p.stat().st_mtime)
+                        print(f"🔥 AUTO: Using LATEST model: {latest}")
+                        return str(latest)
+        
+        # Priority 3: Fallback default
+        print(f"ℹ️ Using DEFAULT model: {self.YOLO_MODEL_PATH}")
+        return self.YOLO_MODEL_PATH
     
     # Processing Configuration
     MAX_VIDEO_SIZE_MB: int = 1024  # 1GB - Server mạnh, GPU T4 16GB VRAM
