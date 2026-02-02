@@ -279,7 +279,14 @@ app.include_router(auth_router)
 app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
 app.include_router(video_progress_ws_router)  # WebSocket video progress streaming
 app.include_router(logs_stream_router)  # Live log streaming for mobile app
+from app.api.mobile import router as mobile_router  # Mobile-specific API endpoints
+from app.api.admin import router as admin_router  # New Admin Dashboard API
+
+# ... (omitted code) ...
+
+app.include_router(logs_stream_router)  # Live log streaming for mobile app
 app.include_router(mobile_router)  # Mobile-specific API endpoints
+app.include_router(admin_router)  # Admin Dashboard endpoints (/admin/overview, etc.)
 
 # ============================================================
 # Public Results API (for Mobile App)
