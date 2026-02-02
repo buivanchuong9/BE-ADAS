@@ -22,7 +22,7 @@ from ..core.config import settings
 logger = logging.getLogger(__name__)
 
 # ============================================================
-# PostgreSQL Configuration
+# PostgreSQL Configuration (Main ADAS DB)
 # ============================================================
 
 _async_engine: Optional[AsyncEngine] = None
@@ -30,17 +30,8 @@ _async_session_factory: Optional[async_sessionmaker] = None
 
 
 def get_postgres_url() -> str:
-    """Generate PostgreSQL connection URL."""
-    if settings.PG_PASSWORD:
-        return (
-            f"postgresql+asyncpg://{settings.PG_USER}:{settings.PG_PASSWORD}"
-            f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_NAME}"
-        )
-    else:
-        return (
-            f"postgresql+asyncpg://{settings.PG_USER}"
-            f"@{settings.PG_HOST}:{settings.PG_PORT}/{settings.PG_NAME}"
-        )
+    """Generate PostgreSQL connection URL (Main DB)."""
+    return settings.database_url
 
 
 async def init_db():
@@ -89,7 +80,7 @@ async def close_db():
 
 async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
-    Dependency for PostgreSQL database sessions.
+    Dependency for Main ADAS database sessions.
     
     Usage:
         @router.post("/api/v3/videos")

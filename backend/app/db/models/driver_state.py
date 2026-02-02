@@ -31,7 +31,11 @@ class DriverState(Base):
     ear_value = Column(Float, nullable=True)  # Eye Aspect Ratio
     mar_value = Column(Float, nullable=True)  # Mouth Aspect Ratio
     head_pose = Column(String(100), nullable=True)
+
     snapshot_path = Column(String(500), nullable=True)
+    
+    # Telemetry
+    speed_kmh = Column(Float, nullable=True)
     
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

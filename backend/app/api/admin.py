@@ -169,3 +169,169 @@ async def get_statistics(db: AsyncSession = Depends(get_db)):
             ]
         )
     )
+
+
+# --- NEW DASHBOARD ENDPOINTS ---
+
+@router.get("/dashboard/cards")
+async def get_dashboard_cards(db: AsyncSession = Depends(get_db)):
+    """
+    Get data for the 4 top cards:
+    1. System Status (Active/Offline)
+    2. Active Cameras
+    3. Total Detections (Events)
+    4. Today's Alerts
+    """
+    from datetime import date
+    from app.db.models.safety_event import SafetyEvent
+    
+    # 1. System Status & Active Cameras (Approximate via recent jobs)
+    # We consider "Active" if there are jobs in 'processing' or 'pending' state
+    active_jobs_count = await db.scalar(
+        select(func.count(JobQueue.id)).where(JobQueue.status.in_(['processing', 'pending']))
+    ) or 0
+    
+    system_status = "Trực tuyến" if active_jobs_count > 0 else "Ngoại tuyến"
+    
+    # 2. Total Detections (Count all safety events)
+    total_detections = await db.scalar(select(func.count(SafetyEvent.id))) or 0
+    
+    # 3. Today's Alerts (Events created today)
+    today = date.today()
+    today_alerts = await db.scalar(
+        select(func.count(SafetyEvent.id)).where(func.date(SafetyEvent.created_at) == today)
+    ) or 0
+    
+    # 4. Active Cameras (Mock logic or count distinct videos processed today)
+    # For now, we return active_jobs_count as a proxy for active streams
+    active_cameras = active_jobs_count
+    
+    return {
+        "system_status": system_status,
+        "active_cameras": active_cameras,
+        "total_detections": total_detections,
+        "today_alerts": today_alerts
+    }
+
+
+@router.get("/dashboard/charts/distribution")
+async def get_distribution_chart(db: AsyncSession = Depends(get_db)):
+    """
+    Get Detection Distribution Pie Chart (SafetyEvent types).
+    Group by event_type.
+    """
+    from app.db.models.safety_event import SafetyEvent
+    
+    query = select(SafetyEvent.event_type, func.count(SafetyEvent.id)).group_by(SafetyEvent.event_type)
+    result = await db.execute(query)
+    data = result.all()
+    
+    # Map to frontend format
+    labels = []
+    values = []
+    
+    label_map = {
+        "lane_departure": "Làn đường",
+        "collision_warning": "Va chạm",
+        "process_vehicle": "Xe cộ",
+        "process_person": "Người",
+        "driver_fatigue": "Mệt mỏi",
+        "driver_distraction": "Mất tập trung" 
+    }
+    
+    for event_type, count in data:
+        labels.append(label_map.get(event_type, event_type))
+        values.append(count)
+        
+    return {
+        "labels": labels,
+        "datasets": [{
+            "data": values,
+            "backgroundColor": [
+                "#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40"
+            ]
+        }]
+    }
+
+
+@router.get("/dashboard/charts/system-performance")
+async def get_system_performance_chart(db: AsyncSession = Depends(get_db)):
+    """
+    Get System Performance (VideoAnalytics FPS over time).
+    """
+    from app.db.models.video_analytics import VideoAnalytics
+    
+    # Get last 20 entries
+    query = select(VideoAnalytics).order_by(VideoAnalytics.created_at.desc()).limit(20)
+    result = await db.execute(query)
+    analytics_nodes = result.scalars().all()
+    
+    # Sort back to chronological
+    analytics_nodes.reverse()
+    
+    labels = [a.created_at.strftime("%H:%M") for a in analytics_nodes]
+    data = [a.processing_fps or 0 for a in analytics_nodes]
+    
+    return {
+        "labels": labels,
+        "datasets": [{
+            "label": "FPS Xử lý",
+            "data": data,
+            "borderColor": "#36A2EB",
+            "tension": 0.4
+        }]
+    }
+
+
+@router.get("/dashboard/trip/latest")
+async def get_latest_trip_analysis(db: AsyncSession = Depends(get_db)):
+    """
+    Get analysis for the latest Trip (Speed, Fatigue, Summary).
+    Used for the bottom part of the dashboard.
+    """
+    from app.db.models.trip import Trip
+    from app.db.models.driver_state import DriverState
+    
+    # 1. Get latest trip
+    result = await db.execute(select(Trip).order_by(Trip.created_at.desc()).limit(1))
+    trip = result.scalars().first()
+    
+    if not trip:
+        return {"found": False}
+        
+    # 2. Get Driver States for this trip (for charts)
+    # Limit to 100 points to avoid overwhelming chart
+    states_query = (
+        select(DriverState)
+        .where(DriverState.trip_id == trip.id)
+        .order_by(DriverState.timestamp.asc())
+        .limit(100)
+    )
+    states_result = await db.execute(states_query)
+    driver_states = states_result.scalars().all()
+    
+    # Prepare Chart Data
+    labels = [s.timestamp.strftime("%H:%M") for s in driver_states]
+    speed_data = [s.speed_kmh or 0 for s in driver_states] # New field
+    fatigue_data = [s.is_drowsy * 100 if s.is_drowsy else (s.ear_value or 0) * 20 for s in driver_states] # Approximation
+    
+    return {
+        "found": True,
+        "summary": {
+            "distance_km": trip.distance_km or 0,
+            "duration": f"{trip.duration_minutes or 0} mins",
+            "avg_speed": trip.avg_speed or 0,
+            "safety_score": 100 - (trip.total_alerts * 5) # Mock formula
+        },
+        "charts": {
+            "speed": {
+                "labels": labels,
+                "data": speed_data
+            },
+            "fatigue": {
+                "labels": labels,
+                "data": fatigue_data
+            }
+        }
+    }
+

@@ -248,6 +248,10 @@ class GPUWorker:
             # Mark as completed
             await self.complete_job(job_id, output_path, processing_time)
             
+            # Feature: Add to Sample Gallery if Driver Monitoring
+            if job.get('video_type') == 'in_cabin':
+                await self._save_to_sample_gallery(job, output_path, result)
+
             logger.info(
                 f"[{self.worker_id}] Completed job {job_id} in {processing_time}s, "
                 f"events: {len(result.get('events', []))}"
@@ -286,8 +290,45 @@ class GPUWorker:
                     event.get('frame'),
                     event.get('data', {}).get('message', ''),
                     str(event.get('data', {}))
+                    str(event.get('data', {}))
                 )
     
+    async def _save_to_sample_gallery(self, job: dict, output_path: str, result: dict):
+        """Save completed driver monitoring job to the sample gallery table."""
+        try:
+            import json
+            
+            # Prepare summary stats
+            events = result.get('events', [])
+            summary = {
+                "total_events": len(events),
+                "fatigue_events": len([e for e in events if e.get('type') == 'driver_fatigue']),
+                "distraction_events": len([e for e in events if e.get('type') == 'driver_distraction']),
+                "duration_seconds": result.get('duration', 0)
+            }
+            
+            # Generate a title
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            title = f"Driver Monitor - {timestamp}"
+            
+            async with self.pool.acquire() as conn:
+                await conn.execute("""
+                    INSERT INTO driver_monitoring_videos 
+                    (job_id, title, original_video_path, processed_video_path, analysis_summary, is_sample, created_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                """,
+                    str(job['job_id']),
+                    title,
+                    job['input_path'],
+                    output_path,
+                    json.dumps(summary),
+                    True  # Auto-add to gallery as per user request
+                )
+            logger.info(f"[{self.worker_id}] Saved job {job['job_id']} to Driver Sample Gallery")
+            
+        except Exception as e:
+            logger.error(f"Failed to save to sample gallery: {e}")
+
     async def run(self):
         """Main worker loop."""
         await self.init()

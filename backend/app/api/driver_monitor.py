@@ -387,8 +387,51 @@ async def download_driver_monitoring_result(
             }
         )
     
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Download failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@router.get("/samples/list")
+async def list_sample_videos(
+    limit: int = 20,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    List Sample Driver Videos (Video Mẫu).
+    These are processed videos saved for demonstration/gallery purposes.
+    
+    Args:
+        limit: Max videos to return
+        offset: Pagination offset
+        
+    Returns:
+        List of driver monitoring videos
+    """
+    try:
+        from sqlalchemy import select, desc
+        from app.db.models.driver_video import DriverMonitoringVideo
+        
+        # Select all videos, ordered by newest first
+        # Ideally, we filter by is_sample=True, but for now show all "Driver Monitoring" videos
+        query = select(DriverMonitoringVideo).order_by(desc(DriverMonitoringVideo.created_at)).limit(limit).offset(offset)
+        
+        result = await db.execute(query)
+        samples = result.scalars().all()
+        
+        return {
+            "success": True,
+            "samples": samples,
+            "total": len(samples)
+        }
+            
+    except Exception as e:
+        logger.error(f"Failed to list samples: {e}", exc_info=True)
+        # Return empty list instead of erroring out to keep frontend safe
+        return {
+            "success": False,
+            "samples": [],
+            "error": str(e)
+        }
+

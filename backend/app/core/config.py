@@ -126,13 +126,6 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """Generate PostgreSQL database URL."""
-        from urllib.parse import quote_plus
-        password_encoded = quote_plus(self.PG_PASSWORD) if self.PG_PASSWORD else ""
-        
-        if password_encoded:
-            return f"postgresql+asyncpg://{self.PG_USER}:{password_encoded}@{self.PG_HOST}:{self.PG_PORT}/{self.PG_NAME}"
-        else:
-            return f"postgresql+asyncpg://{self.PG_USER}@{self.PG_HOST}:{self.PG_PORT}/{self.PG_NAME}"
 
 
 @lru_cache()

@@ -17,6 +17,7 @@ from .video import Video  # Must come before JobQueue
 from .job_queue import JobQueue, JobStatus  # References Video
 from .safety_event import SafetyEvent, EventType, EventSeverity
 from .driver_state import DriverState
+from .driver_video import DriverMonitoringVideo  # New Video Sample Table
 from .traffic_sign import TrafficSign
 from .alert import Alert
 from .model_version import ModelVersion
@@ -33,6 +34,7 @@ __all__ = [
     "EventType",
     "EventSeverity",
     "DriverState",
+    "DriverMonitoringVideo",
     "TrafficSign",
     "Alert",
     "ModelVersion",
