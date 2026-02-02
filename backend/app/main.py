@@ -248,17 +248,16 @@ app.add_middleware(CloudflareLoggingMiddleware)
 # When credentials=True, browsers enforce strict CORS checks that block multipart uploads
 app.add_middleware(
     CORSMiddleware,
-    # Use settings.cors_origins_list for consistent configuration
-    # Safari requires exact strict origin matching when credentials are true
-    allow_origins=settings.cors_origins_list + [
-        "https://adas.aiotlab.edu.vn",
-        "https://adas-api.aiotlab.edu.vn",
-    ],
+    # Use allow_origin_regex to automatically allow all subdomains and http/https
+    # This specifically fixes the issue where Safari reports "Origin http://... is not allowed"
+    # even when the site is accessed via HTTPS (due to Cloudflare flexible SSL or redirects).
+    allow_origin_regex=r"https?://.*\.aiotlab\.edu\.vn|https?://localhost:\d+",
+    
     allow_credentials=True,  # Set to True to allow cookies/auth headers
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicit methods
     allow_headers=["*"],  # Allow all headers including Authorization
     expose_headers=["*"],  # Allow browsers to read all response headers
-    max_age=86400,  # Cache preflight requests for 24 hours (Safari respects up to 1 day)
+    max_age=86400,  # Cache preflight requests for 24 hours
 )
 
 # NOTE: We removed the manual @app.options handler.

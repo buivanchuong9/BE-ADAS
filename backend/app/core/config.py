@@ -95,6 +95,7 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = (
         "https://adas.aiotlab.edu.vn,"
         "https://www.adas.aiotlab.edu.vn,"
+        "http://adas.aiotlab.edu.vn,"  # Fix: Add HTTP origin for Safari/Cloudflare edge cases
         "https://adas-api.aiotlab.edu.vn,"
         "https://adas-api.aiotlab.edu.vn:52000,"
         "http://adas-api.aiotlab.edu.vn,"
