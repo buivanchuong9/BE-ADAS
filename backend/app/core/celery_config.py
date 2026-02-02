@@ -43,9 +43,17 @@ celery_app.conf.update(
     task_soft_time_limit=1740,         # 29 minutes soft timeout
     worker_concurrency=1,              # Strict single worker
     
-    # Worker settings
+    # Worker settings - AGGRESSIVE POLLING for INSTANT response
     worker_prefetch_multiplier=1,      # Fetch one task at a time (don't prefetch)
     worker_max_tasks_per_child=50,     # Restart worker often to clear GPU memory leaks
+    broker_pool_limit=None,            # No limit on broker connections
+    broker_heartbeat=10,               # Heartbeat every 10 seconds (faster detection)
+    broker_connection_timeout=4,       # Quick connection timeout
+    event_queue_expires=60,            # Event queue expires quickly
+    
+    # CRITICAL: Poll broker VERY frequently for instant task pickup
+    worker_send_task_events=True,     # Send task events immediately
+    task_send_sent_event=True,        # Send event when task is sent
     
     # Retry settings
     task_acks_late=True,               # Acknowledge task after completion
@@ -59,10 +67,21 @@ celery_app.conf.update(
         'socket_timeout': 5,
     },
     
-    # Broker settings
+    # Broker settings - AGGRESSIVE polling
     broker_connection_retry_on_startup=True,
     broker_connection_retry=True,
     broker_connection_max_retries=10,
+    broker_transport_options={
+        'visibility_timeout': 3600,    # 1 hour visibility
+        'fanout_prefix': True,
+        'fanout_patterns': True,
+        'socket_keepalive': True,
+        'socket_keepalive_options': {
+            1: 1,  # TCP_KEEPIDLE
+            2: 1,  # TCP_KEEPINTVL  
+            3: 3,  # TCP_KEEPCNT
+        },
+    },
 )
 
 # Task routes for prioritization (optional)

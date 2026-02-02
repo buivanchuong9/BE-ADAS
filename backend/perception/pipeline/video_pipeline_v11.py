@@ -441,9 +441,12 @@ class VideoPipelineV11:
                 # Model B: Lane Segmentation
                 # Skip frames (chạy mỗi 2 frame) để tối ưu throughput
                 # Lane không cần real-time như object detection
-                lane_raw_output = None
+                lane_result = None
                 if self.lane_detector and (frame_counter % 2 == 0):
-                    lane_raw_output = self.lane_detector.model(preprocessed)
+                    # LaneDetectorV11 dùng process_frame(), KHÔNG có .model
+                    # Convert GPU tensor về numpy để lane detector xử lý
+                    frame_np = payload.gpu_tensor.cpu().numpy()
+                    lane_result = self.lane_detector.process_frame(frame_np)
             
             inference_time = (time.perf_counter() - inference_start) * 1000
             
@@ -463,14 +466,16 @@ class VideoPipelineV11:
                 payload.original_shape
             )
             
-            # Trích xuất lane coordinates từ segmentation mask
+            # Trích xuất lane info từ lane_result
             lane_coords = None
-            if lane_raw_output is not None:
-                lane_coords = self._extract_lanes_from_raw(
-                    lane_raw_output,
-                    metadata,
-                    payload.original_shape
-                )
+            if lane_result is not None:
+                # lane_result đã là Dict với lane info
+                lane_coords = {
+                    "detected": lane_result.get("lane_detected", False),
+                    "confidence": lane_result.get("lane_confidence", 0.0),
+                    "center_offset": lane_result.get("offset", 0.0),
+                    "is_departed": lane_result.get("is_departed", False)
+                }
             
             # =================================================================
             # BƯỚC 4: VIETNAM-SPECIFIC RISK ASSESSMENT
@@ -597,42 +602,6 @@ class VideoPipelineV11:
         except Exception as e:
             logger.error(f"❌ Trích xuất detections thất bại: {e}")
             return []
-    
-    def _extract_lanes_from_raw(
-        self,
-        model_output,
-        metadata: Dict,
-        original_shape: Tuple
-    ) -> Optional[Dict]:
-        """
-        Trích xuất lane coordinates từ segmentation mask
-        
-        Args:
-            model_output: Raw output từ Lane Segmentation model
-            metadata: Dict chứa scale, padding info
-            original_shape: (H, W) của frame gốc
-            
-        Returns:
-            Dict chứa lane info hoặc None
-        """
-        try:
-            # Get segmentation mask from YOLO-Seg output
-            if hasattr(model_output[0], 'masks') and model_output[0].masks is not None:
-                masks = model_output[0].masks.data  # [N, H, W] on GPU
-                
-                if len(masks) > 0:
-                    # Simple approach: Use first mask or combine
-                    # Trong production, dùng LaneSegmentationProcessor
-                    return {
-                        "detected": True,
-                        "confidence": 0.8,
-                        "center_offset": 0.0  # Placeholder
-                    }
-            
-            return None
-        except Exception as e:
-            logger.error(f"❌ Trích xuất lanes thất bại: {e}")
-            return None
     
     def _check_rider_danger(
         self,

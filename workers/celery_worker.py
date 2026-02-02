@@ -83,10 +83,22 @@ def main():
         f'--concurrency={args.concurrency}',
         f'--loglevel={args.loglevel}',
         f'--queues={args.queues}',
-        '--prefetch-multiplier=1',  # Fetch one task at a time
-        '--time-limit=3600',         # Hard timeout: 1 hour
-        '--soft-time-limit=3500',    # Soft timeout: 58 minutes
-        '--max-tasks-per-child=1000', # Restart worker after 1000 tasks
+        
+        # CRITICAL: Instant task pickup configuration
+        '--prefetch-multiplier=1',      # Fetch ONLY 1 task at a time (no prefetch queue)
+        '--pool=solo',                  # Solo pool: NO delay, instant execution
+        
+        # Timeouts
+        '--time-limit=3600',            # Hard timeout: 1 hour
+        '--soft-time-limit=3500',       # Soft timeout: 58 minutes
+        
+        # Worker lifecycle
+        '--max-tasks-per-child=100',    # Restart after 100 tasks (GPU memory cleanup)
+        
+        # Optimizations for INSTANT response
+        '--without-gossip',             # Disable gossip (faster)
+        '--without-mingle',             # Disable mingle (faster startup)
+        '--without-heartbeat',          # Disable heartbeat overhead
     ]
     
     # Add beat scheduler if requested
