@@ -126,6 +126,7 @@ class Settings(BaseSettings):
     @property
     def database_url(self) -> str:
         """Generate PostgreSQL database URL."""
+        return f"postgresql+asyncpg://{self.PG_USER}:{self.PG_PASSWORD}@{self.PG_HOST}:{self.PG_PORT}/{self.PG_NAME}"
 
 
 @lru_cache()
