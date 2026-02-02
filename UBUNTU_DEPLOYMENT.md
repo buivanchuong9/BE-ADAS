@@ -74,6 +74,79 @@ SUPABASE_ANON_KEY: str = "eyJhbGc..."
 
 ✅ **Đã có ANON_KEY rồi, không cần set thêm!**
 
+### 5.5️⃣ **QUAN TRỌNG: Configure Redis Unix Socket** 🔧
+
+**Lý do:** Fix lỗi "Error 22: Invalid argument" khi Celery connect Redis qua TCP.
+
+```bash
+# 1. Enable Unix socket trong Redis config
+sudo tee -a /etc/redis/redis.conf > /dev/null <<EOF
+
+# Unix socket for Celery (faster + no TCP socket errors)
+unixsocket /var/run/redis/redis-server.sock
+unixsocketperm 777
+EOF
+
+# 2. Restart Redis
+sudo systemctl restart redis-server
+
+# 3. Verify socket exists
+ls -la /var/run/redis/redis-server.sock
+
+# Expected output:
+# srwxrwxrwx 1 redis redis 0 Feb  2 10:00 /var/run/redis/redis-server.sock
+
+# 4. Test connection
+### 5.5 ⚠️ **Redis Configuration (Shared Server Warning)**
+
+#### **Option A: Shared Server (AN TOÀN - Recommended)**
+
+Nếu server có nhiều app/user dùng chung Redis → KHÔNG nên config Redis:
+
+```bash
+# 1. Kiểm tra xem Redis có bị share không
+sudo ss -tlnp | grep 6379
+# Nếu thấy nhiều process khác nhau → shared server
+
+# 2. Dùng mặc định TCP (KHÔNG cần thay đổi gì)
+# App sẽ tự động dùng TCP connection
+
+# 3. Restart Celery worker như bình thường
+pkill -9 -f "celery"
+cd ~/BE-ADAS/backend
+python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo
+```
+
+**Lý do:** Thay đổi Redis config ảnh hưởng TẤT CẢ app trên server → có thể làm sập service khác!
+
+---
+
+#### **Option B: Dedicated Redis (Nhanh nhất - Chỉ khi có Redis riêng)**
+
+Nếu bạn **chắc chắn** Redis chỉ phục vụ app này (hoặc có quyền root config riêng):
+
+```bash
+# 1. Enable Unix socket
+sudo tee -a /etc/redis/redis.conf > /dev/null <<EOF
+unixsocket /var/run/redis/redis-server.sock
+unixsocketperm 770
+EOF
+
+# 2. Set ownership
+sudo chown redis:phonglv /var/run/redis/redis-server.sock
+
+# 3. Restart Redis (⚠️ ảnh hưởng tất cả app dùng Redis!)
+sudo systemctl restart redis-server
+
+# 4. Test
+redis-cli -s /var/run/redis/redis-server.sock ping  # Should return PONG
+
+# 5. Enable trong app (set environment variable)
+export REDIS_USE_UNIX_SOCKET=true
+cd ~/BE-ADAS/backend
+python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo
+```
+
 ### 6️⃣ Restart Server (Production Setup)
 
 **Cách chạy thực tế trên server:**

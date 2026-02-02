@@ -16,9 +16,27 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Redis configuration
-REDIS_BROKER_URL = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/0')
-REDIS_BACKEND_URL = getattr(settings, 'REDIS_URL', 'redis://localhost:6379/1')
+# Redis configuration - AN TOÀN cho SHARED SERVER
+# Option A: TCP connection (mặc định) - an toàn cho server dùng chung
+# Option B: Unix socket - nhanh hơn nhưng cần config Redis riêng
+import os
+
+# Environment variables để control (set trên server)
+USE_UNIX_SOCKET = os.getenv('REDIS_USE_UNIX_SOCKET', 'false').lower() == 'true'
+REDIS_UNIX_SOCKET = os.getenv('REDIS_UNIX_SOCKET', '/var/run/redis/redis-server.sock')
+REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
+
+if USE_UNIX_SOCKET and os.path.exists(REDIS_UNIX_SOCKET):
+    # Production với Redis riêng: Unix socket (nhanh + tránh TCP Error 22)
+    REDIS_BROKER_URL = f'redis+socket://{REDIS_UNIX_SOCKET}?virtual_host=0'
+    REDIS_BACKEND_URL = f'redis+socket://{REDIS_UNIX_SOCKET}?virtual_host=1'
+    logger.info(f"🔌 Redis Unix socket: {REDIS_UNIX_SOCKET}")
+else:
+    # Shared server: TCP connection (an toàn, không ảnh hưởng người khác)
+    REDIS_BROKER_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/0'
+    REDIS_BACKEND_URL = f'redis://{REDIS_HOST}:{REDIS_PORT}/1'
+    logger.info(f"🔌 Redis TCP (shared-safe): {REDIS_HOST}:{REDIS_PORT}")
 
 # Initialize Celery app
 celery_app = Celery(
@@ -75,7 +93,7 @@ celery_app.conf.update(
         'visibility_timeout': 3600,    # 1 hour visibility
         'fanout_prefix': True,
         'fanout_patterns': True,
-        # REMOVED: socket_keepalive causes "Invalid argument" on some systems
+        # KHÔNG dùng socket_keepalive → tránh Error 22 + an toàn cho shared server
     },
 )
 
