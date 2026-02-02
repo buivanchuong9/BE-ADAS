@@ -38,7 +38,7 @@ from app.api.detections import router as detections_router
 from app.api.videos_api import router as videos_router
 from app.api.driver_monitor import router as driver_monitor_router
 from app.api.ai_chat import router as ai_chat_router
-from app.api.settings import router as settings_router
+
 from app.api.upload_storage import router as upload_storage_router
 from app.api.auth import router as auth_router
 from app.api.websocket_alerts import router as websocket_alerts_router  # Phase 6: WebSocket streaming
@@ -273,7 +273,7 @@ app.include_router(detections_router)
 app.include_router(videos_router)
 app.include_router(driver_monitor_router)
 app.include_router(ai_chat_router)
-app.include_router(settings_router)
+
 app.include_router(upload_storage_router)
 app.include_router(auth_router)
 app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
