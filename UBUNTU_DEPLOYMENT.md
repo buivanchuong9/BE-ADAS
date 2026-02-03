@@ -1,4 +1,7 @@
 # HƯỚNG DẪN DEPLOY LÊN UBUNTU SERVER
+# kết nối vào database
+
+psql -h localhost -U admin_user -d adas_db
 
 ## 📋 Các Bước Deploy
 

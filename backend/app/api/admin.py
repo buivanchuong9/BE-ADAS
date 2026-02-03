@@ -173,37 +173,34 @@ async def get_statistics(db: AsyncSession = Depends(get_db)):
 
 # --- NEW DASHBOARD ENDPOINTS ---
 
+
+# --- NEW DASHBOARD ENDPOINTS (V2 - Matched to Frontend) ---
+
 @router.get("/dashboard/cards")
 async def get_dashboard_cards(db: AsyncSession = Depends(get_db)):
     """
-    Get data for the 4 top cards:
-    1. System Status (Active/Offline)
-    2. Active Cameras
-    3. Total Detections (Events)
-    4. Today's Alerts
+    Get data for the upper 4 info cards.
     """
     from datetime import date
     from app.db.models.safety_event import SafetyEvent
     
-    # 1. System Status & Active Cameras (Approximate via recent jobs)
-    # We consider "Active" if there are jobs in 'processing' or 'pending' state
+    # Active Jobs as proxy for Active Cameras
     active_jobs_count = await db.scalar(
         select(func.count(JobQueue.id)).where(JobQueue.status.in_(['processing', 'pending']))
     ) or 0
     
     system_status = "Trực tuyến" if active_jobs_count > 0 else "Ngoại tuyến"
     
-    # 2. Total Detections (Count all safety events)
+    # Total Detections
     total_detections = await db.scalar(select(func.count(SafetyEvent.id))) or 0
     
-    # 3. Today's Alerts (Events created today)
+    # Today's Alerts
     today = date.today()
     today_alerts = await db.scalar(
         select(func.count(SafetyEvent.id)).where(func.date(SafetyEvent.created_at) == today)
     ) or 0
     
-    # 4. Active Cameras (Mock logic or count distinct videos processed today)
-    # For now, we return active_jobs_count as a proxy for active streams
+    # Active Cameras
     active_cameras = active_jobs_count
     
     return {
@@ -214,41 +211,173 @@ async def get_dashboard_cards(db: AsyncSession = Depends(get_db)):
     }
 
 
-@router.get("/dashboard/charts/distribution")
-async def get_distribution_chart(db: AsyncSession = Depends(get_db)):
+@router.get("/dashboard/charts/detection-trend")
+async def get_realtime_trend(db: AsyncSession = Depends(get_db)):
     """
-    Get Detection Distribution Pie Chart (SafetyEvent types).
-    Group by event_type.
+    Chart 1: Real-Time Detection Trend
+    Line chart: Detection count over time (last 30 mins, 5-min intervals).
+    Series: 'Xe cộ' (Vehicles), 'Người đi bộ' (Pedestrians).
     """
+    from datetime import datetime, timedelta
     from app.db.models.safety_event import SafetyEvent
     
-    query = select(SafetyEvent.event_type, func.count(SafetyEvent.id)).group_by(SafetyEvent.event_type)
-    result = await db.execute(query)
-    data = result.all()
+    now = datetime.now()
+    thirty_mins_ago = now - timedelta(minutes=30)
     
-    # Map to frontend format
+    # Buckets: 10:00, 10:05, 10:10...
     labels = []
-    values = []
+    vehicle_data = []
+    person_data = []
     
-    label_map = {
-        "lane_departure": "Làn đường",
-        "collision_warning": "Va chạm",
-        "process_vehicle": "Xe cộ",
-        "process_person": "Người",
-        "driver_fatigue": "Mệt mỏi",
-        "driver_distraction": "Mất tập trung" 
-    }
-    
-    for event_type, count in data:
-        labels.append(label_map.get(event_type, event_type))
-        values.append(count)
+    # Generate 6 buckets of 5 minutes
+    for i in range(7):
+        time_slot = thirty_mins_ago + timedelta(minutes=i*5)
+        label = time_slot.strftime("%H:%M")
+        labels.append(label)
+        
+        # Determine time range for this bucket
+        start_time = time_slot
+        end_time = time_slot + timedelta(minutes=5)
+        
+        # Query count for this range
+        # Note: In a real intense system, we'd use date_trunc in SQL. 
+        # Here we loop for simplicity and readability.
+        v_count = await db.scalar(
+            select(func.count(SafetyEvent.id))
+            .where(SafetyEvent.created_at >= start_time)
+            .where(SafetyEvent.created_at < end_time)
+            .where(SafetyEvent.event_type.in_(['vehicle_detection', 'process_vehicle']))
+        ) or 0
+        
+        p_count = await db.scalar(
+            select(func.count(SafetyEvent.id))
+            .where(SafetyEvent.created_at >= start_time)
+            .where(SafetyEvent.created_at < end_time)
+            .where(SafetyEvent.event_type.in_(['person_detection', 'process_person', 'pedestrian_detected']))
+        ) or 0
+        
+        vehicle_data.append(v_count)
+        person_data.append(p_count)
         
     return {
         "labels": labels,
+        "datasets": [
+            {
+                "label": "Xe cộ",
+                "data": vehicle_data,
+                "borderColor": "#36A2EB",
+                "backgroundColor": "rgba(54, 162, 235, 0.1)",
+                "fill": True,
+                "tension": 0.4
+            },
+            {
+                "label": "Người đi bộ",
+                "data": person_data,
+                "borderColor": "#4BC0C0",
+                "backgroundColor": "rgba(75, 192, 192, 0.1)",
+                "fill": True,
+                "tension": 0.4
+            }
+        ]
+    }
+
+
+@router.get("/dashboard/charts/detection-accuracy")
+async def get_accuracy_history(db: AsyncSession = Depends(get_db)):
+    """
+    Chart 2: Detection Accuracy Over Time (Last 7 Days)
+    Line chart: Uses Average Drowsiness Confidence as a proxy for Detection Accuracy.
+    """
+    from datetime import datetime, timedelta
+    from app.db.models.driver_state import DriverState
+    
+    today = datetime.now().date()
+    labels = []
+    accuracy_data = []
+    
+    # Last 7 days
+    for i in range(6, -1, -1):
+        day = today - timedelta(days=i)
+        # Label: "Mon", "Tue"
+        labels.append(day.strftime("%a"))
+        
+        # Real Logic: Calculate average confidence of driver state detections for this day
+        # Note: Using CAST to Date works in PostgreSQL
+        query = select(func.avg(DriverState.drowsy_confidence)).where(
+            func.date(DriverState.timestamp) == day
+        )
+        avg_conf = await db.scalar(query)
+        
+        if avg_conf is not None:
+            # Scale 0-1 to 0-100%
+            percentage = round(avg_conf * 100, 1)
+        else:
+             # If no data, use a baseline or 0. 
+             # For a dashboard to look good if empty, we might return 0 or carry over.
+             # But let's return 0 to be honest about "Real Data".
+             percentage = 0.0
+        
+        accuracy_data.append(percentage)
+
+    return {
+        "labels": labels,
+        "datasets": [
+            {
+                "label": "Độ chính xác (%)",
+                "data": accuracy_data,
+                "borderColor": "#2ECC71", # Green
+                "pointBackgroundColor": "#2ECC71",
+                "pointBorderColor": "#fff",
+                "tension": 0.4
+            }
+        ]
+    }
+
+
+@router.get("/dashboard/charts/detection-distribution")
+async def get_distribution_chart(db: AsyncSession = Depends(get_db)):
+    """
+    Chart 3: Detection Distribution (Pie Chart)
+    """
+    from app.db.models.safety_event import SafetyEvent
+    
+    # Define mapping to standard categories
+    # Map event_types to: "Xe" (Vehicles), "Người" (People), "Chu kỳ" (Cycles - if any), "Khác" (Other)
+    
+    # Query all counts by type
+    query = select(SafetyEvent.event_type, func.count(SafetyEvent.id)).group_by(SafetyEvent.event_type)
+    result = await db.execute(query)
+    raw_data = result.all()
+    
+    # Aggregate
+    distribution = {
+        "Xe": 0,
+        "Người": 0,
+        "Chu kỳ": 0,
+        "Khác": 0
+    }
+    
+    for event_type, count in raw_data:
+        etype = str(event_type).lower()
+        if "vehicle" in etype or "car" in etype or "truck" in etype:
+            distribution["Xe"] += count
+        elif "person" in etype or "pedestrian" in etype:
+            distribution["Người"] += count
+        elif "cycle" in etype or "bike" in etype:
+            distribution["Chu kỳ"] += count
+        else:
+            distribution["Khác"] += count
+            
+    # Format for chart
+    return {
+        "labels": list(distribution.keys()),
         "datasets": [{
-            "data": values,
+            "data": list(distribution.values()),
             "backgroundColor": [
-                "#FF6384", "#36A2EB", "#FFCE56", "#4BC0C0", "#9966FF", "#FF9F40"
+                "#36A2EB", # Blue - Xe
+                "#9966FF", # Purple - Người
+                "#FF9F40", # Orange - Chu kỳ (Mock color from image is Pink/Purple mixed)
+                "#4BC0C0"  # Teal - Khác
             ]
         }]
     }
@@ -257,81 +386,38 @@ async def get_distribution_chart(db: AsyncSession = Depends(get_db)):
 @router.get("/dashboard/charts/system-performance")
 async def get_system_performance_chart(db: AsyncSession = Depends(get_db)):
     """
-    Get System Performance (VideoAnalytics FPS over time).
+    Chart 4: System Performance (Processing FPS)
     """
     from app.db.models.video_analytics import VideoAnalytics
     
-    # Get last 20 entries
-    query = select(VideoAnalytics).order_by(VideoAnalytics.created_at.desc()).limit(20)
+    # Get last 7 entries (to match '0 1 2 3 4 5 6' in image)
+    query = select(VideoAnalytics).order_by(VideoAnalytics.created_at.desc()).limit(7)
     result = await db.execute(query)
     analytics_nodes = result.scalars().all()
     
-    # Sort back to chronological
     analytics_nodes.reverse()
     
-    labels = [a.created_at.strftime("%H:%M") for a in analytics_nodes]
+    # Labels: Just generic index or time? Image shows 0-6. Let's use simple index or time.
+    # User image has '0 1 2 3 4 5 6'.
+    labels = [str(i) for i in range(len(analytics_nodes))]
+    if not labels:
+        labels = ["0", "1", "2", "3", "4", "5", "6"]
+        
     data = [a.processing_fps or 0 for a in analytics_nodes]
+    # Pad with 0 if no data
+    while len(data) < 7:
+        data.insert(0, 0)
     
     return {
         "labels": labels,
         "datasets": [{
-            "label": "FPS Xử lý",
+            "label": "Hiệu suất",
             "data": data,
             "borderColor": "#36A2EB",
-            "tension": 0.4
+            "backgroundColor": "rgba(54, 162, 235, 0.2)",
+            "tension": 0.4,
+            "fill": True
         }]
     }
 
-
-@router.get("/dashboard/trip/latest")
-async def get_latest_trip_analysis(db: AsyncSession = Depends(get_db)):
-    """
-    Get analysis for the latest Trip (Speed, Fatigue, Summary).
-    Used for the bottom part of the dashboard.
-    """
-    from app.db.models.trip import Trip
-    from app.db.models.driver_state import DriverState
-    
-    # 1. Get latest trip
-    result = await db.execute(select(Trip).order_by(Trip.created_at.desc()).limit(1))
-    trip = result.scalars().first()
-    
-    if not trip:
-        return {"found": False}
-        
-    # 2. Get Driver States for this trip (for charts)
-    # Limit to 100 points to avoid overwhelming chart
-    states_query = (
-        select(DriverState)
-        .where(DriverState.trip_id == trip.id)
-        .order_by(DriverState.timestamp.asc())
-        .limit(100)
-    )
-    states_result = await db.execute(states_query)
-    driver_states = states_result.scalars().all()
-    
-    # Prepare Chart Data
-    labels = [s.timestamp.strftime("%H:%M") for s in driver_states]
-    speed_data = [s.speed_kmh or 0 for s in driver_states] # New field
-    fatigue_data = [s.is_drowsy * 100 if s.is_drowsy else (s.ear_value or 0) * 20 for s in driver_states] # Approximation
-    
-    return {
-        "found": True,
-        "summary": {
-            "distance_km": trip.distance_km or 0,
-            "duration": f"{trip.duration_minutes or 0} mins",
-            "avg_speed": trip.avg_speed or 0,
-            "safety_score": 100 - (trip.total_alerts * 5) # Mock formula
-        },
-        "charts": {
-            "speed": {
-                "labels": labels,
-                "data": speed_data
-            },
-            "fatigue": {
-                "labels": labels,
-                "data": fatigue_data
-            }
-        }
-    }
 

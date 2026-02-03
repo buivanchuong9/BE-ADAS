@@ -22,6 +22,7 @@ from .traffic_sign import TrafficSign
 from .alert import Alert
 from .model_version import ModelVersion
 from .video_analytics import VideoAnalytics  # ML tracking
+from .mobile_video import MobileVideo # New Mobile Dataset
 
 __all__ = [
     "User",
@@ -39,4 +40,5 @@ __all__ = [
     "Alert",
     "ModelVersion",
     "VideoAnalytics",
+    "MobileVideo",
 ]

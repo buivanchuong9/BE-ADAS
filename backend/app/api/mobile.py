@@ -241,6 +241,8 @@ async def mobile_upload_video(
     start_time = time.time()
     
     try:
+        from app.db.models.mobile_video import MobileVideo # Import local to avoid circular deps
+        
         if not file.filename:
             file.filename = f"upload_{uuid.uuid4()}.mp4"
 
@@ -300,6 +302,22 @@ async def mobile_upload_video(
         
         upload_time = time.time() - start_time
         logger.info(f"📱 [Mobile Upload] File saved ({upload_time:.1f}s)")
+        
+        # 3.5 Save to MobileVideo table (New Dataset for Mobile)
+        try:
+            mobile_video = MobileVideo(
+                job_id=str(job.job_id),
+                filename=file.filename,
+                original_video_path=job.video.storage_path,
+                file_size_mb=round(job.video.size_bytes / (1024 * 1024), 2) if job.video.size_bytes else 0,
+                status="queued"
+            )
+            db.add(mobile_video)
+            await db.commit()
+            logger.info(f"📱 [Mobile Upload] Saved to MobileVideo table")
+        except Exception as e:
+            logger.error(f"Failed to save MobileVideo record: {e}")
+            # Continue normally
         
         # === CRITICAL: Submit job for background AI processing ===
         logger.info(f"📱 [Mobile Upload] Step 4: Submitting to AI queue...")
@@ -584,52 +602,52 @@ async def mobile_get_history(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get user's video analysis history.
-    
-    Args:
-        page: Page number (default: 1)
-        limit: Items per page (default: 10, max: 50)
-        
-    Returns:
-        Paginated list of video jobs with results
+    Get user's video analysis history from MobileVideo dataset.
+    Joins with JobQueue to get real-time status.
     """
     try:
-        # Calculate offset
+        from app.db.models.mobile_video import MobileVideo
+        from sqlalchemy import func
+        
         offset = (page - 1) * limit
         
-        # Query jobs with pagination
-        # TODO: Filter by user_id when auth is implemented
+        # Query MobileVideo + JobQueue (Left Join to preserve history even if JobQueue is purged)
+        # Note: JobQueue.job_id is UUID, MobileVideo.job_id is String. Cast needed.
         query = (
-            select(JobQueue)
-            .options(joinedload(JobQueue.video))
-            .order_by(desc(JobQueue.created_at))
+            select(MobileVideo, JobQueue)
+            .outerjoin(JobQueue, func.cast(JobQueue.job_id, String) == MobileVideo.job_id)
+            .order_by(desc(MobileVideo.created_at))
             .limit(limit)
             .offset(offset)
         )
         
         result = await db.execute(query)
-        jobs = result.scalars().all()
+        rows = result.all()
         
-        # Count total jobs for pagination
-        count_query = select(JobQueue)
-        count_result = await db.execute(count_query)
-        total = len(count_result.scalars().all())
+        # Count total
+        count_query = select(func.count(MobileVideo.id))
+        total = await db.scalar(count_query) or 0
         
         # Build history items
         history_items = []
-        for job in jobs:
+        for vid, job in rows:
+            # Source of truth: JobQueue if available, else MobileVideo
+            current_status = job.status if job else (vid.status or "unknown")
+            completed_at = job.completed_at if job else vid.completed_at
+            
             item = HistoryItem(
-                job_id=str(job.job_id),
-                status=job.status,
-                created_at=job.created_at,
-                completed_at=job.completed_at
+                job_id=vid.job_id,
+                status=current_status,
+                created_at=vid.created_at,
+                completed_at=completed_at
             )
             
-            if job.status == 'completed':
-                item.video_url = get_public_video_url(str(job.job_id))
-                item.thumbnail_url = get_thumbnail_url(str(job.job_id))
-                item.safety_score = 85  # TODO: Calculate from events
-            
+            # Generate URLs if completed
+            if current_status == 'completed' or vid.processed_video_path:
+                item.video_url = get_public_video_url(vid.job_id)
+                item.thumbnail_url = get_thumbnail_url(vid.job_id)
+                item.safety_score = vid.safety_score or 85
+                
             history_items.append(item)
         
         return HistoryResponse(

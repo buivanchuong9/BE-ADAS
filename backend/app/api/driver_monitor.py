@@ -103,6 +103,25 @@ async def analyze_driver_video(
         upload_time = time.time() - start_time
         logger.info(f"[Driver Monitor] ✓ Video uploaded ({upload_time:.1f}s)")
         
+        # 3.5 Save to DriverMonitoringVideo table (New Dataset)
+        try:
+            from app.db.models.driver_video import DriverMonitoringVideo
+            
+            driver_video = DriverMonitoringVideo(
+                job_id=str(job.job_id),
+                title=f"Driver Video - {file.filename}",
+                description=f"Uploaded via Driver Monitor API (Camera: {camera_id})",
+                original_video_path=job.video.storage_path,
+                is_sample=False  # User upload is not a sample gallery item by default
+            )
+            db.add(driver_video)
+            await db.commit()
+            logger.info(f"[Driver Monitor] ✓ Saved to DriverMonitoringVideo table")
+            
+        except Exception as e:
+            logger.error(f"Failed to save to DriverMonitoringVideo table: {e}")
+            # Don't fail the whole request, as JobQueue is the primary execution engine
+        
         # Extract all video attributes BEFORE submitting to background
         logger.info(f"[Driver Monitor] Step 4/4: Preparing response data...")
         
