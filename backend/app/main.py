@@ -267,15 +267,15 @@ app.add_middleware(
 
 
 # Include routers
-# app.include_router(video_router)  # Legacy API Removed
+app.include_router(video_router)  # Legacy API (backward compatible with v3.0)
 app.include_router(video_sse_router)  # NEW: SSE streaming for realtime partial results
-# app.include_router(dataset_router) # Legacy Removed
-# app.include_router(detections_router) # Legacy Removed
-# app.include_router(videos_router) # Legacy Removed
+app.include_router(dataset_router)
+app.include_router(detections_router)
+app.include_router(videos_router)
 app.include_router(driver_monitor_router)
 app.include_router(ai_chat_router)
 
-# app.include_router(upload_storage_router) # Legacy Removed
+app.include_router(upload_storage_router)
 app.include_router(auth_router)
 app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
 app.include_router(video_progress_ws_router)  # WebSocket video progress streaming
