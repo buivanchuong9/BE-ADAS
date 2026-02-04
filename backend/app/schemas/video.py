@@ -56,6 +56,10 @@ class VideoJobResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     
+    # Results URLs
+    video_url: Optional[str] = None  # URL to stream/download the result video
+    full_result_video_url: Optional[str] = None  # Alias for video_url
+
     class Config:
         from_attributes = True
 

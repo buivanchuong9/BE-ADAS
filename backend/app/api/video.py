@@ -26,6 +26,8 @@ from app.services.job_service import get_job_service
 from app.schemas.video import VideoJobResponse, VideoJobCreate
 from app.schemas.event import SafetyEventResponse
 from app.core.exceptions import ValidationError
+from app.core.config import settings
+from fastapi import Body
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +130,9 @@ async def upload_video(
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "started_at": job.started_at,
-            "completed_at": job.completed_at
+            "completed_at": job.completed_at,
+            "video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None,
+            "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None
         }
         
         # Now submit to background processing (after extracting all data)
@@ -172,6 +176,116 @@ async def upload_video(
             detail=f"Upload failed: {str(e)}. Please try again or contact support if the issue persists."
         )
 
+
+
+@router.post("/analyze")
+async def analyze_video(
+    job_id: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Trigger analysis for an uploaded video.
+    
+    Args:
+        job_id: The ID of the job to analyze
+        
+    Returns:
+        Job status
+    """
+    try:
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        from app.tasks import process_video_task
+        
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+            
+        if job.status not in ['pending', 'failed']:
+             return {"message": f"Job is already {job.status}", "job_id": job_id, "status": job.status}
+
+        # Submit to Celery
+        task = process_video_task.delay(str(job.job_id))
+        logger.info(f"Analysis triggered for {job.job_id}, Task ID: {task.id}")
+        
+        # Update status to pending if it was failed
+        if job.status == 'failed':
+             # We might need to update DB status here, but the task will do it.
+             pass
+             
+        return {"message": "Analysis started", "job_id": job_id, "task_id": task.id, "status": "pending"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Analyze failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/progress/{job_id}")
+async def get_progress(
+    job_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get progress of a video analysis job.
+    """
+    try:
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+            
+        return {
+            "job_id": str(job.job_id),
+            "status": job.status,
+            "progress_percent": job.progress_percent,
+            "processing_time_seconds": job.processing_time_seconds
+        }
+    except Exception as e:
+         logger.error(f"Get progress failed: {e}")
+         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sample")
+async def get_sample_video():
+    """
+    Get a sample video file for demonstration.
+    Returns the file content of a default sample video.
+    """
+    try:
+        # Check for sample in storage/samples or storage/raw
+        sample_dir = Path(settings.STORAGE_ROOT) / "samples"
+        raw_dir = Path(settings.RAW_VIDEO_DIR)
+        
+        sample_file = None
+        
+        # 1. Try specific samples dir
+        if sample_dir.exists():
+            files = list(sample_dir.glob("*.mp4"))
+            if files:
+                sample_file = files[0]
+        
+        # 2. Try raw dir if no sample found
+        if not sample_file and raw_dir.exists():
+            files = list(raw_dir.glob("*.mp4"))
+            if files:
+                sample_file = files[0] # Just take the first one
+                
+        if not sample_file or not sample_file.exists():
+             raise HTTPException(status_code=404, detail="No sample video available")
+             
+        return FileResponse(
+            path=str(sample_file),
+            media_type="video/mp4",
+            filename="sample_video.mp4"
+        )
+    except Exception as e:
+        logger.error(f"Get sample failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/result/{job_id}", response_model=VideoJobResponse)
@@ -226,7 +340,9 @@ async def get_result(
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "started_at": job.started_at,
-            "completed_at": job.completed_at
+            "completed_at": job.completed_at,
+            "video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None,
+            "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None
         }
     
     except HTTPException:
