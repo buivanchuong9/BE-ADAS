@@ -4,7 +4,7 @@ Alert Models
 Represents real-time alerts and alert history.
 """
 
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Enum, Text, JSON
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Enum, Text, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 import enum
