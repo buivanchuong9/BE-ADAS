@@ -46,6 +46,7 @@ from app.api.video_progress_ws import router as video_progress_ws_router  # WebS
 from app.api.logs_stream import router as logs_stream_router  # Live log streaming for mobile app
 from app.api.mobile import router as mobile_router  # Mobile-specific API endpoints
 from app.api.admin import router as admin_router  # Admin Dashboard API
+from app.api.analytics import router as analytics_router  # Analytics Dashboard Charts
 
 # Setup structured logging
 setup_logging(log_level="INFO" if not settings.DEBUG else "DEBUG")
@@ -283,6 +284,7 @@ app.include_router(video_progress_ws_router)  # WebSocket video progress streami
 app.include_router(logs_stream_router)  # Live log streaming for mobile app
 app.include_router(mobile_router)  # Mobile-specific API endpoints
 app.include_router(admin_router)  # Admin Dashboard endpoints (/admin/overview, etc.)
+app.include_router(analytics_router)  # Analytics Dashboard Charts (/api/analytics/*)
 
 # ============================================================
 # Public Results API (for Mobile App)

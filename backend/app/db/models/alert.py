@@ -36,26 +36,30 @@ class Alert(Base):
     
     # Foreign keys
     trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
+    job_id = Column(Integer, ForeignKey("job_queue.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Alert details
     alert_type = Column(String(50), nullable=False, index=True)  # FCW, LDW, DMS, SPEED
     severity = Column(String(20), nullable=False, index=True)  # CRITICAL, WARNING, INFO
     message = Column(String(255), nullable=False)
     message_vi = Column(String(255), nullable=True)  # Vietnamese message
-    timestamp = Column(DateTime, nullable=False, index=True)
+    timestamp_sec = Column(Float, nullable=False)  # Time in seconds from trip start
     
     # Acknowledgement
     is_acknowledged = Column(Integer, default=0, nullable=False)  # BIT
+    is_played = Column(Integer, default=0, nullable=False)  # BIT - for audio playback
     acknowledged_at = Column(DateTime, nullable=True)
     acknowledged_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     
-    # Metadata (JSON string in NVARCHAR(MAX))
+    # Metadata (JSON string in TEXT)
     meta_data = Column(Text, nullable=True)
+    
     # Timestamps
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     
     # Relationships
     trip = relationship("Trip", back_populates="alerts")
+    job = relationship("JobQueue", back_populates="alerts")
     
     def __repr__(self):
         return f"<Alert(id={self.id}, type='{self.alert_type}', severity='{self.severity}')>"

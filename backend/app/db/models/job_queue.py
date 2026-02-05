@@ -71,6 +71,7 @@ class JobQueue(Base):
     video = relationship("Video", back_populates="jobs")
     trip = relationship("Trip", back_populates="jobs")
     events = relationship("SafetyEvent", back_populates="job", cascade="all, delete-orphan")
+    alerts = relationship("Alert", back_populates="job", cascade="all, delete-orphan")
     
     def __repr__(self):
         """Safe repr that works even when detached from session."""
