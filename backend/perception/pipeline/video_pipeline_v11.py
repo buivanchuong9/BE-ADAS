@@ -455,24 +455,40 @@ class ADASPipeline:
 
 
 def process_video(
-    video_path: str,
+    input_path: str = None,
+    video_path: str = None,
     output_path: str = "output_processed.mp4",
     device: str = "cuda",
-    enable_display: bool = False
+    video_type: str = "dashcam",
+    enable_display: bool = False,
+    **kwargs
 ) -> Dict:
     """
-    Wrapper function for backward compatibility.
-    Process video with ADAS pipeline (old API).
+    Wrapper function for backward compatibility with old API.
+    Process video with ADAS pipeline.
     
     Args:
-        video_path: Đường dẫn video input
+        input_path: Đường dẫn video input (old parameter name)
+        video_path: Đường dẫn video input (new parameter name)
         output_path: Đường dẫn video output
         device: "cuda" hoặc "cpu"
+        video_type: "dashcam" hoặc "in_cabin" (for compatibility, not used in v11)
         enable_display: Hiển thị video (default False cho worker)
+        **kwargs: Other parameters for compatibility (ignored)
         
     Returns:
-        Dictionary chứa thông tin kết quả
+        Dictionary chứa thông tin kết quả (format cũ)
     """
+    # Backward compatibility: support both input_path and video_path
+    source_path = input_path or video_path
+    
+    if source_path is None:
+        raise ValueError("Either input_path or video_path must be provided")
+    
+    logger.info(f"[process_video] Input: {source_path}")
+    logger.info(f"[process_video] Output: {output_path}")
+    logger.info(f"[process_video] Device: {device}, Type: {video_type}")
+    
     try:
         # Khởi tạo pipeline
         pipeline = ADASPipeline(
@@ -484,18 +500,27 @@ def process_video(
         )
         
         # Chạy pipeline
-        pipeline.start(video_path)
+        pipeline.start(source_path)
         
+        # Return format matching old API
         return {
+            'success': True,
             'status': 'success',
             'output_path': output_path,
             'fps': pipeline.fps,
-            'frames_processed': pipeline.frame_count
+            'frames_processed': pipeline.frame_count,
+            'events': [],  # Old API expected this
+            'stats': {     # Old API expected this
+                'total_frames': pipeline.frame_count,
+                'fps': pipeline.fps
+            }
         }
         
     except Exception as e:
-        logger.error(f"❌ Lỗi process_video: {e}")
+        logger.error(f"❌ Lỗi process_video: {e}", exc_info=True)
+        # Return format matching old API error
         return {
+            'success': False,
             'status': 'error',
             'error': str(e)
         }
