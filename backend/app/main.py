@@ -20,6 +20,7 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 import sys
+import os
 
 # Add parent directory to path for absolute imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -244,22 +245,35 @@ class CloudflareLoggingMiddleware(BaseHTTPMiddleware):
 # Add logging middleware
 app.add_middleware(CloudflareLoggingMiddleware)
 
-# Configure CORS - PRODUCTION SAFE
-# ⚠️ CRITICAL: CORSMiddleware MUST be added LAST so it runs FIRST
-# This ensures OPTIONS preflight requests are handled before authentication checks
-# When credentials=True, browsers enforce strict CORS checks that block multipart uploads
+# Configure CORS based on environment
+ENV = os.getenv("ENV", "dev")
+
+cors_config = {
+    "allow_credentials": True,
+    "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    "allow_headers": ["*"],
+    "expose_headers": ["*"],
+    "max_age": 86400,
+}
+
+if ENV == "dev":
+    logger.info("🔓 CORS: Development mode - Allowing all origins")
+    cors_config["allow_origins"] = ["*"]
+elif ENV == "staging":
+    logger.info("🔒 CORS: Staging mode - Allowing subdomains")
+    cors_config["allow_origin_regex"] = r"https?://.*\.aiotlab\.edu\.vn|https?://localhost:\d+"
+else:  # prod
+    logger.info("🛡️ CORS: Production mode - Restricting origins")
+    cors_config["allow_origins"] = [
+        "https://aiotlab.edu.vn",
+        "https://app.aiotlab.edu.vn",
+        "https://adas-api.aiotlab.edu.vn",
+        "https://adas-api.aiotlab.edu.vn/docs"
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    # Use allow_origin_regex to automatically allow all subdomains and http/https
-    # This specifically fixes the issue where Safari reports "Origin http://... is not allowed"
-    # even when the site is accessed via HTTPS (due to Cloudflare flexible SSL or redirects).
-    allow_origin_regex=r"https?://.*\.aiotlab\.edu\.vn|https?://localhost:\d+",
-    
-    allow_credentials=True,  # Set to True to allow cookies/auth headers
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],  # Explicit methods
-    allow_headers=["*"],  # Allow all headers including Authorization
-    expose_headers=["*"],  # Allow browsers to read all response headers
-    max_age=86400,  # Cache preflight requests for 24 hours
+    **cors_config
 )
 
 # NOTE: We removed the manual @app.options handler.
