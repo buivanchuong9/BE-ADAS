@@ -174,9 +174,15 @@ class LaneDetectorV11:
             return frame
         
         try:
+            # Resize mask về kích thước frame (nếu khác nhau)
+            h_frame, w_frame = frame.shape[:2]
+            h_mask, w_mask = mask.shape[:2]
+            
+            if h_frame != h_mask or w_frame != w_mask:
+                mask = cv2.resize(mask, (w_frame, h_frame), interpolation=cv2.INTER_NEAREST)
+            
             # Tạo colored mask
-            h, w = mask.shape
-            colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
+            colored_mask = np.zeros((h_frame, w_frame, 3), dtype=np.uint8)
             
             # Áp dụng màu cho vùng drivable
             colored_mask[mask > 0] = self.overlay_color
