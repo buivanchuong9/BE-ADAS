@@ -1,659 +1,304 @@
 """
-TRAFFIC SIGN RECOGNITION MODULE - YOLOv11
-==========================================
-Detects and classifies traffic signs from dashcam video.
+NHẬN DIỆN BIỂN BÁO GIAO THÔNG - GTSRB (Châu Âu)
+================================================
+Phát hiện và phân loại biển báo giao thông.
+Fallback về COCO nếu không có model GTSRB.
 
-PRODUCTION FEATURES (Phase 7):
-- Vietnamese traffic sign recognition
-- Speed limit violation detection
-- Sign persistence (avoid re-detecting same sign)
-- GPS/location association (if available)
-- Temporal consistency validation
-
-Supported Vietnamese Signs:
-- Biển báo dừng (Stop sign)
-- Biển giới hạn tốc độ (Speed limit: 30, 40, 50, 60, 70, 80, 90, 100, 110, 120 km/h)
-- Biển báo cấm (No entry, No parking)
-- Biển cảnh báo (Warning signs)
-- Đèn tín hiệu giao thông (Traffic lights)
-
-Features:
-- YOLOv11-based detection with Vietnamese customization
-- Speed violation logic (compares detected limit with vehicle speed)
-- Sign deduplication (same sign not reported multiple times)
-- Confidence-based filtering for Vietnamese road conditions
-
-Author: Senior ADAS Engineer
-Date: 2025-12-26 (Phase 7 Enhancement)
+Tác giả: Lead AI Architect
+Ngày: 2026-02-06
 """
 
 import cv2
 import numpy as np
-from typing import List, Dict, Optional, Tuple, Any
-from collections import deque
+import torch
+from pathlib import Path
+from typing import List, Dict, Optional
+from PIL import Image, ImageDraw, ImageFont
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class SignTracker:
-    """
-    Tracks detected signs to avoid duplicate alerts.
-    Uses spatial and temporal consistency.
-    """
-    
-    def __init__(self, persistence_frames: int = 90, iou_threshold: float = 0.5):
-        """
-        Initialize sign tracker.
-        
-        Args:
-            persistence_frames: Frames to remember a sign (90 = 3s @ 30fps)
-            iou_threshold: IoU threshold for same sign detection
-        """
-        self.persistence_frames = persistence_frames
-        self.iou_threshold = iou_threshold
-        
-        # Tracked signs: {sign_id: {'bbox', 'type', 'last_seen', 'count', 'speed_limit'}}
-        self.tracked_signs = {}
-        self.next_sign_id = 1
-        self.frame_number = 0
-    
-    def _iou(self, bbox1: List[int], bbox2: List[int]) -> float:
-        """Calculate Intersection over Union between two bboxes."""
-        x1_1, y1_1, x2_1, y2_1 = bbox1
-        x1_2, y1_2, x2_2, y2_2 = bbox2
-        
-        # Intersection
-        x1_i = max(x1_1, x1_2)
-        y1_i = max(y1_1, y1_2)
-        x2_i = min(x2_1, x2_2)
-        y2_i = min(y2_1, y2_2)
-        
-        if x2_i < x1_i or y2_i < y1_i:
-            return 0.0
-        
-        intersection = (x2_i - x1_i) * (y2_i - y1_i)
-        
-        # Union
-        area1 = (x2_1 - x1_1) * (y2_1 - y1_1)
-        area2 = (x2_2 - x1_2) * (y2_2 - y1_2)
-        union = area1 + area2 - intersection
-        
-        return intersection / union if union > 0 else 0.0
-    
-    def update(self, detections: List[Dict]) -> List[Dict]:
-        """
-        Update tracker with new detections.
-        
-        Args:
-            detections: List of sign detections
-            
-        Returns:
-            List of NEW signs (first time detected or re-appeared)
-        """
-        self.frame_number += 1
-        new_signs = []
-        
-        for detection in detections:
-            bbox = detection['bbox']
-            sign_type = detection['sign_type']
-            
-            # Check if matches existing sign
-            matched_id = None
-            for sign_id, sign_data in self.tracked_signs.items():
-                if sign_data['type'] == sign_type:
-                    iou = self._iou(bbox, sign_data['bbox'])
-                    if iou >= self.iou_threshold:
-                        matched_id = sign_id
-                        break
-            
-            if matched_id:
-                # Update existing sign
-                self.tracked_signs[matched_id]['last_seen'] = self.frame_number
-                self.tracked_signs[matched_id]['count'] += 1
-                self.tracked_signs[matched_id]['bbox'] = bbox  # Update position
-            else:
-                # New sign
-                sign_id = self.next_sign_id
-                self.next_sign_id += 1
-                
-                self.tracked_signs[sign_id] = {
-                    'bbox': bbox,
-                    'type': sign_type,
-                    'last_seen': self.frame_number,
-                    'count': 1,
-                    'speed_limit': detection.get('speed_limit')
-                }
-                
-                # Add sign ID to detection
-                detection['sign_id'] = sign_id
-                detection['is_new'] = True
-                new_signs.append(detection)
-        
-        # Remove old signs
-        to_remove = [
-            sign_id for sign_id, sign_data in self.tracked_signs.items()
-            if self.frame_number - sign_data['last_seen'] > self.persistence_frames
-        ]
-        
-        for sign_id in to_remove:
-            del self.tracked_signs[sign_id]
-        
-        return new_signs
-
-
 class TrafficSignV11:
     """
-    Traffic sign recognition using YOLOv11.
-    Detects and classifies traffic signs for ADAS applications.
+    Bộ nhận diện biển báo giao thông.
+    
+    Tính năng:
+    - Sử dụng GTSRB model nếu có
+    - Fallback về COCO pretrained
+    - Hiển thị tiếng Việt
     """
     
-    # Common traffic sign classes (Vietnamese road context)
-    SIGN_CLASSES = {
-        'stop sign': 11,      # COCO class ID
-        'traffic light': 9,   # COCO class ID
+    # GTSRB Classes (43 classes - Đức)
+    GTSRB_CLASSES = {
+        0: "Tốc độ 20 km/h",
+        1: "Tốc độ 30 km/h",
+        2: "Tốc độ 50 km/h",
+        3: "Tốc độ 60 km/h",
+        4: "Tốc độ 70 km/h",
+        5: "Tốc độ 80 km/h",
+        6: "Hết giới hạn 80 km/h",
+        7: "Tốc độ 100 km/h",
+        8: "Tốc độ 120 km/h",
+        9: "Cấm vượt",
+        10: "Cấm vượt (xe tải)",
+        11: "Giao lộ",
+        12: "Đường ưu tiên",
+        13: "Nhường đường",
+        14: "Dừng lại",
+        15: "Cấm xe",
+        16: "Cấm xe tải",
+        17: "Cấm vào",
+        18: "Nguy hiểm",
+        # ... có thể thêm 43 classes đầy đủ
     }
     
-    # Vietnamese speed limit signs (custom trained model)
-    VIETNAMESE_SPEED_LIMITS = [30, 40, 50, 60, 70, 80, 90, 100, 110, 120]
-    
-    # Additional sign types (if using custom trained model)
-    CUSTOM_SIGNS = [
-        'speed_limit_30', 'speed_limit_40', 'speed_limit_50', 'speed_limit_60',
-        'speed_limit_70', 'speed_limit_80', 'speed_limit_90', 'speed_limit_100',
-        'speed_limit_110', 'speed_limit_120',
-        'yield', 'no_entry', 'no_parking', 'warning', 'pedestrian_crossing',
-        'school_zone', 'construction'
-    ]
+    # COCO fallback
+    COCO_SIGN_CLASSES = {
+        11: 'Biển báo Dừng',
+        9: 'Đèn giao thông'
+    }
     
     def __init__(
-        self, 
-        model_path: str = None, 
-        device: str = "cpu",
-        conf_threshold: float = 0.4,
-        enable_tracking: bool = True
+        self,
+        model_path: str = "backend/models/traffic_sign_gtsrb.pt",
+        device: str = "cuda",
+        conf_threshold: float = 0.5
     ):
         """
-        Initialize traffic sign detector.
+        Khởi tạo Traffic Sign Detector.
         
         Args:
-            model_path: Path to YOLOv11 weights (.pt file)
-                       Use None for COCO pretrained model
-                       Use custom path for Vietnamese traffic sign trained model
-            device: "cuda" or "cpu" for inference
-            conf_threshold: Confidence threshold for detections
-            enable_tracking: Enable sign tracking to avoid duplicates
+            model_path: Đường dẫn model GTSRB (hoặc COCO fallback)
+            device: "cuda" hoặc "cpu"
+            conf_threshold: Ngưỡng confidence
         """
         self.device = device
         self.conf_threshold = conf_threshold
-        self.model = None
-        self.is_custom_model = model_path is not None
+        self.use_gtsrb = False
         
-        # Sign tracking (PRODUCTION)
-        self.enable_tracking = enable_tracking
-        self.tracker = SignTracker(persistence_frames=90, iou_threshold=0.5) if enable_tracking else None
+        # Kiểm tra CUDA
+        if device == "cuda" and not torch.cuda.is_available():
+            logger.warning("⚠️ CUDA không khả dụng, chuyển sang CPU")
+            self.device = "cpu"
         
-        # Current speed limit (updated when speed limit sign detected)
-        self.current_speed_limit = None  # km/h
-        self.speed_limit_confidence = 0.0
+        # Tối ưu GPU
+        if self.device == "cuda":
+            torch.set_float32_matmul_precision('high')
+            torch.backends.cudnn.benchmark = True
+            logger.info("🚀 GPU Optimization: Enabled")
         
-        # Try to load YOLOv11 model
+        # Load model
         try:
             from ultralytics import YOLO
             
-            # Use default YOLOv11n if no path specified
-            if model_path is None:
-                model_path = "yolo11n.pt"  # COCO pretrained
-                logger.info("Using COCO pretrained model (limited to stop signs and traffic lights)")
+            # Kiểm tra GTSRB model
+            if Path(model_path).exists():
+                logger.info(f"✅ Tìm thấy GTSRB model: {model_path}")
+                self.model = YOLO(model_path)
+                self.use_gtsrb = True
+                self.class_names = self.GTSRB_CLASSES
+                logger.info("📋 Sử dụng GTSRB (43 classes)")
+            else:
+                logger.warning(f"⚠️ Không tìm thấy GTSRB model: {model_path}")
+                logger.warning("📋 Fallback về COCO pretrained (giới hạn)")
+                
+                # Fallback: Load COCO model
+                self.model = YOLO("yolo11x.pt")  # Auto download nếu chưa có
+                self.use_gtsrb = False
+                self.class_names = self.COCO_SIGN_CLASSES
             
-            self.model = YOLO(model_path)
-            logger.info(f"Traffic Sign Detector loaded from {model_path} on {device}")
+            # Optimization
+            self.model.overrides['conf'] = conf_threshold
+            self.model.overrides['iou'] = 0.45
+            self.model.overrides['verbose'] = False
+            
+            logger.info(f"✅ Model loaded trên {self.device.upper()}")
             
         except ImportError:
-            logger.error("ultralytics package not installed. Install: pip install ultralytics")
-            raise
+            raise ImportError("❌ Chưa cài ultralytics")
+        
+        # Load font
+        try:
+            font_path = "backend/assets/fonts/Roboto-Bold.ttf"
+            self.font = ImageFont.truetype(font_path, 20)
+            logger.info(f"✅ Font tiếng Việt: {font_path}")
         except Exception as e:
-            logger.error(f"Failed to load YOLO model: {e}")
-            raise
+            logger.warning(f"⚠️ Không load được font: {e}")
+            self.font = None
     
+    @torch.no_grad()
     def detect(self, frame: np.ndarray) -> List[Dict]:
         """
-        Detect traffic signs in frame.
+        Phát hiện biển báo trong frame.
         
         Args:
-            frame: RGB frame from video
+            frame: Frame RGB
             
         Returns:
-            List of sign detections, each containing:
-                - class_id: Integer class ID
-                - class_name: String class name
-                - sign_type: Traffic sign type
-                - confidence: Detection confidence (0-1)
-                - bbox: [x1, y1, x2, y2] bounding box
+            Danh sách biển báo phát hiện được
         """
-        if self.model is None:
-            logger.warning("Model not loaded")
-            return []
-        
         try:
-            # Run inference
             results = self.model(
-                frame, 
-                device=self.device,
+                frame,
                 conf=self.conf_threshold,
+                device=self.device,
                 verbose=False
             )
             
-            detections = []
+            signs = []
             
-            # Extract detections
             for result in results:
                 boxes = result.boxes
                 
+                if boxes is None or len(boxes) == 0:
+                    continue
+                
                 for box in boxes:
-                    # Get box coordinates
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    conf = float(box.conf[0])
-                    cls_id = int(box.cls[0])
+                    cls_id = int(box.cls[0].item())
                     
-                    # Get class name
-                    cls_name = result.names[cls_id]
+                    # Filter dựa vào model type
+                    if self.use_gtsrb:
+                        # GTSRB: Lấy tất cả
+                        if cls_id not in self.class_names:
+                            continue
+                        sign_name = self.class_names[cls_id]
+                    else:
+                        # COCO: Chỉ lấy stop sign & traffic light
+                        if cls_id not in self.COCO_SIGN_CLASSES:
+                            continue
+                        sign_name = self.COCO_SIGN_CLASSES[cls_id]
                     
-                    # Classify sign type
-                    sign_type, speed_limit = self.classify_sign(cls_name, cls_id)
+                    conf = float(box.conf[0].item())
+                    xyxy = box.xyxy[0].cpu().numpy()
                     
-                    if sign_type is None:
-                        continue  # Not a traffic sign
+                    x1, y1, x2, y2 = map(int, xyxy)
                     
-                    detection = {
-                        "class_id": cls_id,
-                        "class_name": cls_name,
-                        "sign_type": sign_type,
-                        "confidence": conf,
-                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                        "speed_limit": speed_limit  # None if not a speed limit sign
-                    }
-                    
-                    detections.append(detection)
+                    signs.append({
+                        'class_id': cls_id,
+                        'sign_name': sign_name,
+                        'confidence': conf,
+                        'bbox': [x1, y1, x2, y2]
+                    })
             
-            return detections
+            return signs
             
         except Exception as e:
-            logger.error(f"Detection failed: {e}")
+            logger.error(f"❌ Lỗi detect: {e}")
             return []
-    def detect_batch(self, frames: List[np.ndarray]) -> List[List[Dict]]:
-        """
-        Batch detect traffic signs (GPU Optimized).
-        
-        Args:
-            frames: List of RGB frames
-            
-        Returns:
-            List of lists of detections (one list per frame)
-        """
-        if self.model is None or not frames:
-            return [[] for _ in frames]
-            
-        try:
-            # Batch infer
-            results = self.model(
-                frames, 
-                device=self.device,
-                conf=self.conf_threshold,
-                verbose=False
-            )
-            
-            batch_detections = []
-            
-            for result in results:
-                frame_detections = []
-                boxes = result.boxes
-                
-                for box in boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
-                    conf = float(box.conf[0])
-                    cls_id = int(box.cls[0])
-                    cls_name = result.names[cls_id]
-                    
-                    sign_type, speed_limit = self.classify_sign(cls_name, cls_id)
-                    
-                    if sign_type:
-                        detection = {
-                            "class_id": cls_id,
-                            "class_name": cls_name,
-                            "sign_type": sign_type,
-                            "confidence": conf,
-                            "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                            "speed_limit": speed_limit
-                        }
-                        frame_detections.append(detection)
-                        
-                batch_detections.append(frame_detections)
-                
-            return batch_detections
-            
-        except Exception as e:
-            logger.error(f"Batch sign detection failed: {e}")
-            return [self.detect(f) for f in frames] # Fallback
-
-    def process_batch(self, frames: List[np.ndarray]) -> List[Dict]:
-        """
-        Process batch of frames for traffic signs.
-        
-        Args:
-            frames: List of RGB frames
-            
-        Returns:
-            List of result dicts
-        """
-        batch_detections = self.detect_batch(frames)
-        results = []
-        
-        for i, frame in enumerate(frames):
-            detections = batch_detections[i]
-            
-            # Identify critical signs
-            critical_types = ['STOP', 'YIELD', 'NO_ENTRY']
-            critical_signs = [d for d in detections if d['sign_type'] in critical_types]
-            
-            # Simple draw (no tracking/speed check in pure batch process for now)
-            annotated_frame = self.draw_signs(frame, detections)
-            
-            results.append({
-                "annotated_frame": annotated_frame,
-                "detections": detections,
-                "sign_count": len(detections),
-                "critical_signs": critical_signs
-            })
-            
-        return results
-
-    def classify_sign(self, class_name: str, class_id: int) -> Tuple[Optional[str], Optional[int]]:
-        """
-        Classify detected object as traffic sign type (Vietnamese context).
-        
-        Args:
-            class_name: YOLO class name
-            class_id: YOLO class ID
-            
-        Returns:
-            Tuple of (sign_type, speed_limit) or (None, None) if not a traffic sign
-        """
-        # COCO model classes
-        if class_name == 'stop sign':
-            return ('STOP', None)
-        elif class_name == 'traffic light':
-            return ('TRAFFIC_LIGHT', None)
-        
-        # Custom model classes (if using trained model for Vietnamese signs)
-        if self.is_custom_model:
-            if 'speed_limit' in class_name:
-                # Extract speed from class name (e.g., "speed_limit_50" -> 50)
-                try:
-                    speed = int(class_name.split('_')[-1])
-                    if speed in self.VIETNAMESE_SPEED_LIMITS:
-                        return (f'SPEED_LIMIT_{speed}', speed)
-                except ValueError:
-                    pass
-            elif class_name in self.CUSTOM_SIGNS:
-                sign_type = class_name.upper().replace('_', ' ')
-                return (sign_type, None)
-        
-        return (None, None)
-
     
-    def get_sign_action(self, sign_type: str) -> str:
+    def get_speed_limit(self, sign_name: str) -> Optional[int]:
         """
-        Get recommended action for detected sign (Vietnamese).
+        Trích xuất giới hạn tốc độ từ tên biển báo.
         
-        Args:
-            sign_type: Traffic sign type
-            
         Returns:
-            Action string in Vietnamese
+            Speed limit (km/h) hoặc None
         """
-        actions = {
-            'STOP': 'STOP REQUIRED',
-            'TRAFFIC_LIGHT': 'CHECK TRAFFIC LIGHT',
-            'YIELD': 'YIELD TO TRAFFIC',
-            'NO_ENTRY': 'DO NOT ENTER',
-            'WARNING': 'CAUTION AHEAD'
-        }
-        
-        # Speed limits
-        if 'SPEED LIMIT' in sign_type:
-            return f'MAX SPEED: {sign_type.split()[-1]} km/h'
-        
-        return actions.get(sign_type, 'CHÚ Ý BIỂN BÁO')
-    
-    def draw_signs(self, frame: np.ndarray, detections: List[Dict]) -> np.ndarray:
-        """
-        Draw traffic sign detections on frame.
-        
-        Args:
-            frame: RGB frame
-            detections: List of sign detections
-            
-        Returns:
-            Annotated frame
-        """
-        annotated = frame.copy()
-        
-        for det in detections:
-            x1, y1, x2, y2 = det['bbox']
-            sign_type = det['sign_type']
-            conf = det['confidence']
-            
-            # Color based on sign type
-            if sign_type == 'STOP':
-                color = (0, 0, 255)  # Red
-            elif sign_type == 'TRAFFIC_LIGHT':
-                color = (0, 255, 255)  # Yellow
-            elif 'SPEED LIMIT' in sign_type:
-                color = (255, 0, 0)  # Blue
-            else:
-                color = (0, 165, 255)  # Orange
-            
-            # Draw bounding box
-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
-            
-            # Draw label with confidence
-            label = f"{sign_type}: {conf:.0%}"
-            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-            
-            # Background for text
-            cv2.rectangle(
-                annotated, 
-                (x1, y1 - label_size[1] - 10), 
-                (x1 + label_size[0] + 5, y1), 
-                color, 
-                -1
-            )
-            
-            # Text with anti-aliasing
-            cv2.putText(
-                annotated, 
-                label, 
-                (x1 + 2, y1 - 5), 
-                cv2.FONT_HERSHEY_SIMPLEX, 
-                0.7, 
-                (255, 255, 255), 
-                2,
-                cv2.LINE_AA
-            )
-            
-            # Get action (Vietnamese)
-            action = self.get_sign_action(sign_type)
-            action_size, _ = cv2.getTextSize(action, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-            
-            # Background for action text
-            cv2.rectangle(
-                annotated,
-                (x1, y2 + 5),
-                (x1 + action_size[0] + 5, y2 + action_size[1] + 15),
-                (0, 0, 0),
-                -1
-            )
-            
-            # Border for action text
-            cv2.rectangle(
-                annotated,
-                (x1, y2 + 5),
-                (x1 + action_size[0] + 5, y2 + action_size[1] + 15),
-                color,
-                2
-            )
-            
-            # Draw action below bbox with anti-aliasing
-            cv2.putText(
-                annotated,
-                action,
-                (x1 + 2, y2 + action_size[1] + 8),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA
-            )
-        
-        return annotated
-    
-    def check_speed_violation(
-        self,
-        vehicle_speed: Optional[float] = None
-    ) -> Optional[Dict[str, Any]]:
-        if self.current_speed_limit is None or vehicle_speed is None:
-            return None
-        
-        # Check violation (with 5 km/h tolerance)
-        tolerance = 5.0
-        if vehicle_speed > self.current_speed_limit + tolerance:
-            overspeed = vehicle_speed - self.current_speed_limit
-            violation_severity = "CRITICAL" if overspeed > 20 else "WARNING"
-            
-            return {
-                "is_violation": True,
-                "severity": violation_severity,
-                "current_speed": vehicle_speed,
-                "speed_limit": self.current_speed_limit,
-                "overspeed_amount": overspeed,
-                "message_vi": f"Vượt tốc độ! Giới hạn {self.current_speed_limit} km/h, đang đi {vehicle_speed:.0f} km/h"
-            }
-        
+        if "Tốc độ" in sign_name:
+            try:
+                # Extract số từ string
+                import re
+                match = re.search(r'\d+', sign_name)
+                if match:
+                    return int(match.group())
+            except:
+                pass
         return None
     
-    def process_frame_with_tracking(
+    def draw_signs(
         self,
         frame: np.ndarray,
-        vehicle_speed: Optional[float] = None
-    ) -> Dict:
-        # Detect signs
-        detections = self.detect(frame)
+        signs: List[Dict]
+    ) -> np.ndarray:
+        """
+        Vẽ biển báo lên frame (Tiếng Việt).
         
-        # Update speed limit if detected
-        for det in detections:
-            if det.get('speed_limit'):
-                # Update current speed limit (use highest confidence)
-                if (self.current_speed_limit is None or 
-                    det['confidence'] > self.speed_limit_confidence):
-                    self.current_speed_limit = det['speed_limit']
-                    self.speed_limit_confidence = det['confidence']
+        Args:
+            frame: Frame RGB
+            signs: Danh sách biển báo
+            
+        Returns:
+            Frame đã vẽ
+        """
+        if not signs:
+            return frame
         
-        # Track signs to identify new ones
-        new_signs = []
-        if self.enable_tracking and self.tracker:
-            new_signs = self.tracker.update(detections)
-        else:
-            new_signs = detections
+        # Convert sang PIL
+        frame_pil = Image.fromarray(frame)
+        draw = ImageDraw.Draw(frame_pil)
         
-        # Check speed violation
-        speed_violation = self.check_speed_violation(vehicle_speed)
+        for sign in signs:
+            x1, y1, x2, y2 = sign['bbox']
+            sign_name = sign['sign_name']
+            conf = sign['confidence']
+            
+            # Màu sắc
+            # Đỏ cho biển cấm/dừng
+            if any(word in sign_name for word in ["Cấm", "Dừng", "Nguy hiểm"]):
+                color = (255, 0, 0)  # Đỏ
+            # Xanh cho biển tốc độ
+            elif "Tốc độ" in sign_name:
+                color = (0, 0, 255)  # Xanh dương
+            else:
+                color = (255, 165, 0)  # Cam
+            
+            # Vẽ bbox
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+            
+            # Label
+            label = f"{sign_name}: {conf:.0%}"
+            
+            # Vẽ text
+            if self.font:
+                bbox_text = draw.textbbox((x1, y1 - 30), label, font=self.font)
+                draw.rectangle(bbox_text, fill=color)
+                draw.text((x1 + 5, y1 - 28), label, fill=(255, 255, 255), font=self.font)
+            else:
+                # Fallback
+                frame_cv = np.array(frame_pil)
+                cv2.rectangle(frame_cv, (x1, y1 - 30), (x1 + 300, y1), color, -1)
+                cv2.putText(frame_cv, label, (x1 + 5, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
+                return frame_cv
         
-        # Identify critical signs
-        critical_types = ['STOP', 'YIELD', 'NO_ENTRY']
-        critical_signs = [
-            d for d in detections 
-            if d['sign_type'] in critical_types
-        ]
-        
-        # Draw detections
-        annotated_frame = self.draw_signs(frame, detections)
-        
-        # Add speed limit overlay
-        if self.current_speed_limit:
-            cv2.putText(
-                annotated_frame,
-                f"Gioi han: {self.current_speed_limit} km/h",
-                (10, 120),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 255, 0),
-                2
-            )
-        
-        # Add speed violation warning
-        if speed_violation:
-            cv2.putText(
-                annotated_frame,
-                speed_violation['message_vi'],
-                (10, frame.shape[0] - 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1.0,
-                (0, 0, 255),
-                3
-            )
-        
-        return {
-            "annotated_frame": annotated_frame,
-            "detections": detections,
-            "new_signs": new_signs,
-            "sign_count": len(detections),
-            "critical_signs": critical_signs,
-            "current_speed_limit": self.current_speed_limit,
-            "speed_violation": speed_violation
-        }
+        return np.array(frame_pil)
     
     def process_frame(self, frame: np.ndarray) -> Dict:
-        # Detect signs
-        detections = self.detect(frame)
+        """
+        Pipeline xử lý hoàn chỉnh.
         
-        # Identify critical signs
-        critical_types = ['STOP', 'YIELD', 'NO_ENTRY']
-        critical_signs = [
-            d for d in detections 
-            if d['sign_type'] in critical_types
-        ]
+        Returns:
+            Dictionary chứa:
+                - annotated_frame: Frame đã vẽ
+                - signs: Danh sách biển báo
+                - speed_limits: Danh sách giới hạn tốc độ
+        """
+        # Detect
+        signs = self.detect(frame)
         
-        # Draw detections
-        annotated_frame = self.draw_signs(frame, detections)
+        # Vẽ
+        annotated_frame = self.draw_signs(frame, signs)
         
-        # Add sign count overlay
-        if detections:
-            count_text = f"Traffic Signs: {len(detections)}"
-            cv2.putText(
-                annotated_frame,
-                count_text,
-                (10, 120),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 0),
-                2
-            )
+        # Trích xuất speed limits
+        speed_limits = []
+        for sign in signs:
+            limit = self.get_speed_limit(sign['sign_name'])
+            if limit:
+                speed_limits.append(limit)
         
         return {
-            "annotated_frame": annotated_frame,
-            "detections": detections,
-            "sign_count": len(detections),
-            "critical_signs": critical_signs
+            'annotated_frame': annotated_frame,
+            'signs': signs,
+            'speed_limits': speed_limits,
+            'total_signs': len(signs)
         }
 
 
 if __name__ == "__main__":
-    # Test module
     logging.basicConfig(level=logging.INFO)
     
     try:
-        detector = TrafficSignV11(device="cpu")
-        print("Traffic Sign Detector initialized successfully")
+        detector = TrafficSignV11(device="cuda")
+        print("✅ Traffic Sign Detector khởi tạo thành công")
     except Exception as e:
-        print(f"Failed to initialize: {e}")
+        print(f"❌ Lỗi khởi tạo: {e}")

@@ -1,3 +1,1 @@
-"""Perception modules for ADAS system - AI ONLY, NO FastAPI."""
-
-__all__ = []
+# Perception package

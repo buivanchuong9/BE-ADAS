@@ -1,653 +1,293 @@
 """
-LANE DETECTION MODULE - YOLOv11 Based with Temporal Smoothing
-==============================================================
-PRODUCTION-GRADE lane detection for Vietnamese roads with:
-- Temporal smoothing using EMA (Exponential Moving Average)
-- Persistent lane IDs across frames
-- Lane confidence scoring
-- Handles broken lines, faded paint, mixed lanes
-- NO frame-by-frame flickering
+PHÁT HIỆN LÀN ĐƯỜNG - YOLOv11x Segmentation (Tesla Style)
+==========================================================
+Segmentation vùng có thể lái xe (drivable area) với hiệu ứng Tesla.
+Tối ưu hóa GPU - Zero CPU bottleneck.
 
-Features:
-- Lane segmentation using edge detection with temporal filtering
-- Curved lane detection with 2nd order polynomial fitting
-- Lane departure warning based on vehicle offset
-- Confidence-weighted smoothing
-- Robust to Vietnamese road conditions
-
-Author: Senior ADAS Engineer  
-Date: 2025-12-26 (Enhanced for Production)
+Tác giả: Lead AI Architect
+Ngày: 2026-02-06
 """
 
 import cv2
 import numpy as np
-from typing import Optional, Tuple, List, Dict
-from collections import deque
-import logging
-import warnings
 import torch
-import torch.nn.functional as F
-
-from .kalman_filter import LaneKalmanFilter  # NEW: Kalman Filter for smoothing
-
-# Suppress polyfit warnings for better performance
-# NumPy 2.0+ removed RankWarning, so we need to handle both old and new versions
-try:
-    # NumPy < 2.0
-    warnings.filterwarnings('ignore', category=np.RankWarning)
-except AttributeError:
-    # NumPy >= 2.0 (RankWarning was removed)
-    pass
+from pathlib import Path
+from typing import Optional, Dict
+from PIL import Image, ImageDraw, ImageFont
+import logging
 
 logger = logging.getLogger(__name__)
 
 
-class TemporalLaneFilter:
-    """
-    Temporal filter for smooth lane tracking using EMA.
-    Prevents frame-by-frame flickering while maintaining responsiveness.
-    """
-    
-    def __init__(self, alpha: float = 0.10, buffer_size: int = 15):
-        """
-        Initialize temporal filter.
-        
-        Args:
-            alpha: EMA smoothing factor (0 = smooth, 1 = responsive)
-            buffer_size: Number of frames to keep for confidence estimation
-        """
-        self.alpha = alpha
-        self.buffer_size = buffer_size
-        self.left_history = deque(maxlen=buffer_size)
-        self.right_history = deque(maxlen=buffer_size)
-        self.ema_left = None
-        self.ema_right = None
-        # Lane persistence - keep last good detection
-        self.last_good_left = None
-        self.last_good_right = None
-        self.frames_since_left = 0
-        self.frames_since_right = 0
-        self.max_missing_frames = 15  # Keep lane for 15 frames (~0.5s at 30fps)
-    
-    def update(
-        self, 
-        left_fit: Optional[np.ndarray], 
-        right_fit: Optional[np.ndarray],
-        left_confidence: float = 1.0,
-        right_confidence: float = 1.0
-    ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        Update filter with new detections and return smoothed result.
-        
-        Args:
-            left_fit: New left lane coefficients
-            right_fit: New right lane coefficients  
-            left_confidence: Detection confidence [0-1]
-            right_confidence: Detection confidence [0-1]
-            
-        Returns:
-            Tuple of smoothed (left_fit, right_fit)
-        """
-        # Update left lane with confidence weighting
-        if left_fit is not None and left_confidence > 0.15:  # Lowered from 0.2
-            self.left_history.append((left_fit, left_confidence))
-            self.last_good_left = left_fit.copy()
-            self.frames_since_left = 0
-            
-            if self.ema_left is None:
-                self.ema_left = left_fit
-            else:
-                # EMA with confidence weighting - more smoothing
-                alpha_weighted = self.alpha * left_confidence
-                self.ema_left = alpha_weighted * left_fit + (1 - alpha_weighted) * self.ema_left
-        else:
-            # No detection - use lane persistence
-            self.frames_since_left += 1
-            if self.frames_since_left < self.max_missing_frames and self.last_good_left is not None:
-                # Keep using last good detection with fading
-                fade_factor = 1.0 - (self.frames_since_left / self.max_missing_frames)
-                if self.ema_left is None:
-                    self.ema_left = self.last_good_left
-        
-        # Update right lane with confidence weighting  
-        if right_fit is not None and right_confidence > 0.15:  # Lowered from 0.2
-            self.right_history.append((right_fit, right_confidence))
-            self.last_good_right = right_fit.copy()
-            self.frames_since_right = 0
-            
-            if self.ema_right is None:
-                self.ema_right = right_fit
-            else:
-                alpha_weighted = self.alpha * right_confidence
-                self.ema_right = alpha_weighted * right_fit + (1 - alpha_weighted) * self.ema_right
-        else:
-            # No detection - use lane persistence
-            self.frames_since_right += 1
-            if self.frames_since_right < self.max_missing_frames and self.last_good_right is not None:
-                fade_factor = 1.0 - (self.frames_since_right / self.max_missing_frames)
-                if self.ema_right is None:
-                    self.ema_right = self.last_good_right
-        
-        return self.ema_left, self.ema_right
-    
-    def get_confidence(self) -> Tuple[float, float]:
-        """
-        Calculate lane detection confidence based on temporal consistency.
-        
-        Returns:
-            Tuple of (left_confidence, right_confidence) in [0-1]
-        """
-        left_conf = 0.0
-        right_conf = 0.0
-        
-        if len(self.left_history) > 0:
-            # Average confidence from recent detections
-            left_conf = np.mean([conf for _, conf in self.left_history])
-        
-        if len(self.right_history) > 0:
-            right_conf = np.mean([conf for _, conf in self.right_history])
-        
-        return left_conf, right_conf
-    
-    def reset(self):
-        """Reset filter state."""
-        self.left_history.clear()
-        self.right_history.clear()
-        self.ema_left = None
-        self.ema_right = None
-
-
 class LaneDetectorV11:
     """
-    Production-grade curved lane detector with Kalman Filter smoothing.
-    Designed for Vietnamese road conditions.
+    Bộ phát hiện làn đường Tesla-style sử dụng Segmentation.
     
-    PRODUCTION ENHANCEMENT:
-    - Replaced EMA with Kalman Filter for better temporal smoothing
-    - Reduced flickering and improved stability
+    Tính năng:
+    - Segmentation mask trên GPU
+    - Overlay màu Neon mượt mà
+    - Không dùng CV cổ điển (Canny/Hough)
+    - Hiển thị tiếng Việt
     """
     
-    def __init__(self, device: str = "cpu"):
+    # Màu sắc Tesla-style (BGR)
+    DRIVABLE_COLOR = (255, 255, 0)  # Cyan Neon
+    ALTERNATIVE_COLOR = (0, 255, 100)  # Green Neon
+    
+    def __init__(
+        self,
+        model_path: str = "backend/models/yolo11x-seg.pt",
+        device: str = "cuda",
+        conf_threshold: float = 0.4,
+        use_cyan: bool = True
+    ):
         """
-        Initialize lane detector.
+        Khởi tạo Lane Detector.
         
         Args:
-            device: "cuda" or "cpu" for inference
+            model_path: Đường dẫn tới yolo11x-seg.pt
+            device: "cuda" hoặc "cpu"
+            conf_threshold: Ngưỡng confidence
+            use_cyan: True = Cyan, False = Green
         """
         self.device = device
-        self.lane_width_pixels = None  # Learned from detection
+        self.conf_threshold = conf_threshold
+        self.overlay_color = self.DRIVABLE_COLOR if use_cyan else self.ALTERNATIVE_COLOR
+        self.alpha = 0.4  # Độ trong suốt
         
-        # PRODUCTION: Kalman Filter for smooth tracking (replaces EMA)
-        self.kalman_left = LaneKalmanFilter(process_variance=0.005, measurement_variance=0.05)
-        self.kalman_right = LaneKalmanFilter(process_variance=0.005, measurement_variance=0.05)
+        # Kiểm tra CUDA
+        if device == "cuda" and not torch.cuda.is_available():
+            logger.warning("⚠️ CUDA không khả dụng, chuyển sang CPU")
+            self.device = "cpu"
         
-        # Temporal filter for confidence tracking (keep this for backward compatibility)
-        self.temporal_filter = TemporalLaneFilter(alpha=0.3, buffer_size=5)
+        # Tối ưu GPU
+        if self.device == "cuda":
+            torch.set_float32_matmul_precision('high')
+            torch.backends.cudnn.benchmark = True
+            logger.info("🚀 GPU Optimization: Enabled")
         
-        # Lane confidence tracking
-        self.left_confidence = 0.0
-        self.right_confidence = 0.0
+        # Kiểm tra model
+        model_file = Path(model_path)
+        if not model_file.exists():
+            raise FileNotFoundError(
+                f"❌ Model không tồn tại: {model_path}\n"
+                f"Vui lòng tải từ: https://github.com/ultralytics/assets/releases/download/v8.3.0/yolo11x-seg.pt"
+            )
         
-        # Persistent lane IDs (simple implementation)
-        self.left_lane_id = "LEFT_LANE_001"
-        self.right_lane_id = "RIGHT_LANE_001"
-        
-        # Thresholds
-        self.departure_threshold = 0.3  # 30% offset from center
-        self.min_confidence = 0.3  # Minimum confidence to use detection
-        
-        # ========== GPU OPTIMIZATION: Pre-compute kernels ==========
-        # RGB to Grayscale weights (cached on GPU)
-        self.rgb_to_gray_weights = torch.tensor(
-            [0.299, 0.587, 0.114], device=self.device
-        ).view(1, 3, 1, 1)
-        
-        # Gaussian blur kernel (5x5, sigma=1.0) - cached on GPU
-        kernel_size = 5
-        sigma = 1.0
-        kernel_1d = torch.arange(kernel_size, device=self.device, dtype=torch.float32)
-        kernel_1d = kernel_1d - (kernel_size - 1) / 2
-        kernel_1d = torch.exp(-0.5 * (kernel_1d / sigma) ** 2)
-        kernel_1d = kernel_1d / kernel_1d.sum()
-        kernel_2d = kernel_1d.unsqueeze(0) * kernel_1d.unsqueeze(1)
-        self.gaussian_kernel = kernel_2d.view(1, 1, kernel_size, kernel_size)
-        self.gaussian_padding = kernel_size // 2
-        
-        # Sobel kernels for edge detection - cached on GPU
-        self.sobel_x = torch.tensor(
-            [[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]], 
-            device=self.device, dtype=torch.float32
-        ).view(1, 1, 3, 3)
-        
-        self.sobel_y = torch.tensor(
-            [[-1, -2, -1], [0, 0, 0], [1, 2, 1]], 
-            device=self.device, dtype=torch.float32
-        ).view(1, 1, 3, 3)
-        
-        # Canny thresholds (normalized to [0, 1])
-        self.canny_low_threshold = 30.0 / 255.0
-        self.canny_high_threshold = 90.0 / 255.0
-        
-        # ROI mask cache (key: (height, width), value: GPU tensor)
-        self.roi_mask_cache = {}
-        
-        logger.info(f"LaneDetectorV11 initialized on {device} with Kalman Filter smoothing + GPU preprocessing")
-    
-    def preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Preprocess frame for lane detection - GPU ACCELERATED VERSION.
-        
-        PERFORMANCE CRITICAL: All operations run on GPU to prevent CPU bottleneck.
-        Logic: Read image → Push to GPU → GPU processing → Return to CPU only for final result
-        
-        Args:
-            frame: RGB frame from video (NumPy array on CPU)
-            
-        Returns:
-            Binary edge map (NumPy array on CPU, ready for Hough transform)
-        """
-        height, width = frame.shape[:2]
-        
-        # STEP 1: Push raw frame to GPU immediately (NO CPU resize!)
-        # Convert NumPy (H, W, C) to PyTorch (1, C, H, W) and move to GPU
-        frame_tensor = torch.from_numpy(frame).to(self.device).float()
-        frame_tensor = frame_tensor.permute(2, 0, 1).unsqueeze(0)  # (H,W,C) -> (1,C,H,W)
-        
-        # STEP 2: GPU Normalize (divide by 255)
-        frame_tensor = frame_tensor / 255.0
-        
-        # STEP 3: GPU RGB to Grayscale conversion (using cached weights)
-        gray_tensor = (frame_tensor * self.rgb_to_gray_weights).sum(dim=1, keepdim=True)
-        
-        # STEP 4: GPU Gaussian Blur (using cached kernel)
-        blurred_tensor = F.conv2d(gray_tensor, self.gaussian_kernel, padding=self.gaussian_padding)
-        
-        # STEP 5: GPU Canny Edge Detection (using cached Sobel kernels)
-        # Compute gradients
-        grad_x = F.conv2d(blurred_tensor, self.sobel_x, padding=1)
-        grad_y = F.conv2d(blurred_tensor, self.sobel_y, padding=1)
-        
-        # Gradient magnitude
-        grad_magnitude = torch.sqrt(grad_x ** 2 + grad_y ** 2)
-        
-        # Thresholding (using cached thresholds)
-        strong_edges = (grad_magnitude > self.canny_high_threshold).float()
-        weak_edges = ((grad_magnitude >= self.canny_low_threshold) & 
-                      (grad_magnitude <= self.canny_high_threshold)).float()
-        
-        # Combine edges (simplified Canny)
-        edges_tensor = strong_edges + 0.5 * weak_edges
-        edges_tensor = (edges_tensor > 0.5).float()  # Binary
-        
-        # STEP 6: GPU ROI Masking (Region of Interest) - CACHED
-        # Check if we have a cached mask for this frame size
-        cache_key = (height, width)
-        if cache_key not in self.roi_mask_cache:
-            # Create ROI mask (one-time operation per resolution)
-            roi_vertices = [
-                (int(width * 0.1), height),
-                (int(width * 0.45), int(height * 0.6)),
-                (int(width * 0.55), int(height * 0.6)),
-                (int(width * 0.9), height)
-            ]
-            
-            # Create mask on CPU
-            mask_np = np.zeros((height, width), dtype=np.uint8)
-            roi_vertices_np = np.array([roi_vertices], dtype=np.int32)
-            cv2.fillPoly(mask_np, roi_vertices_np, 255)
-            
-            # Move to GPU and cache
-            mask_tensor = torch.from_numpy(mask_np).to(self.device).float().unsqueeze(0).unsqueeze(0) / 255.0
-            self.roi_mask_cache[cache_key] = mask_tensor
-        else:
-            # Reuse cached mask (FAST!)
-            mask_tensor = self.roi_mask_cache[cache_key]
-        
-        # Apply ROI mask
-        masked_edges_tensor = edges_tensor * mask_tensor
-        
-        # STEP 7: Return to CPU only at the very end
-        # Convert back to NumPy for Hough transform (cv2.HoughLinesP requires NumPy)
-        masked_edges_np = (masked_edges_tensor.squeeze().cpu().numpy() * 255).astype(np.uint8)
-        
-        return masked_edges_np
-    
-    def detect_lane_lines(self, edges: np.ndarray) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
-        """
-        Detect left and right lane lines using Hough transform.
-        
-        Args:
-            edges: Binary edge map
-            
-        Returns:
-            Tuple of (left_points, right_points) or (None, None)
-        """
-        # Hough line detection - optimized for faded Vietnamese road markings
-        lines = cv2.HoughLinesP(
-            edges, 
-            rho=1, 
-            theta=np.pi/180, 
-            threshold=30,      # Lower threshold for faded lanes (was 50)
-            minLineLength=60,  # Shorter segments for broken lines (was 100)
-            maxLineGap=80      # Larger gap tolerance (was 50)
-        )
-        
-        if lines is None:
-            return None, None
-        
-        # Separate left and right lanes
-        left_lines = []
-        right_lines = []
-        
-        height, width = edges.shape
-        mid_x = width // 2
-        
-        for line in lines:
-            x1, y1, x2, y2 = line[0]
-            
-            # Calculate slope
-            if x2 - x1 == 0:
-                continue
-            slope = (y2 - y1) / (x2 - x1)
-            
-            # Filter by slope and position - relaxed for curves
-            if slope < -0.2 and x1 < mid_x * 1.3:  # More tolerant for left lane
-                # Left lane (negative slope)
-                left_lines.append([(x1, y1), (x2, y2)])
-            elif slope > 0.2 and x1 > mid_x * 0.7:  # More tolerant for right lane
-                # Right lane (positive slope)
-                right_lines.append([(x1, y1), (x2, y2)])
-        
-        # Extract points from lines
-        left_points = np.array([[p[0], p[1]] for line in left_lines for p in line]) if left_lines else None
-        right_points = np.array([[p[0], p[1]] for line in right_lines for p in line]) if right_lines else None
-        
-        return left_points, right_points
-    
-    def fit_polynomial(self, points: np.ndarray, degree: int = 2) -> Tuple[Optional[np.ndarray], float]:
-        """
-        Fit polynomial curve to lane points with confidence estimation.
-        
-        Args:
-            points: Array of (x, y) points
-            degree: Polynomial degree (2 for curved lanes)
-            
-        Returns:
-            Tuple of (coefficients, confidence)
-            coefficients: Polynomial coefficients [a, b, c] for y = ax^2 + bx + c
-            confidence: Detection confidence [0-1] based on fit quality
-        """
-        if points is None or len(points) < 3:
-            return None, 0.0
-        
+        # Load model
         try:
-            # Fit polynomial: x = f(y) for better vertical lane representation
-            y = points[:, 1]
-            x = points[:, 0]
+            from ultralytics import YOLO
+            self.model = YOLO(str(model_file))
             
-            # ROBUST POLYNOMIAL FITTING with weighted least squares
-            # Add small regularization to prevent poorly conditioned matrix
-            weights = np.ones_like(y)
+            # Optimization flags
+            self.model.overrides['conf'] = conf_threshold
+            self.model.overrides['iou'] = 0.45
+            self.model.overrides['verbose'] = False
             
-            # Use polyfit with rcond parameter to handle poorly conditioned matrix
-            with warnings.catch_warnings():
-                # Suppress all warnings during polyfit (compatible with NumPy 2.0+)
-                warnings.simplefilter('ignore')
-                try:
-                    coeffs = np.polyfit(y, x, degree, rcond=1e-10, w=weights)
-                except np.linalg.LinAlgError:
-                    # Fallback to simple linear fit if polynomial fails
-                    logger.debug("Polynomial fit failed, using linear fallback")
-                    try:
-                        coeffs = np.polyfit(y, x, min(degree, 1), rcond=None)
-                    except Exception as fallback_error:
-                        logger.warning(f"Linear fallback also failed: {fallback_error}, using horizontal line")
-                        # Last resort: horizontal line at mean x
-                        return np.array([0, 0, np.mean(x)] if degree == 2 else [0, np.mean(x)]), 0.1
+            logger.info(f"✅ YOLOv11x-Seg đã load trên {self.device.upper()}")
             
-            # Validate coefficients - check for extreme values
-            if np.any(np.abs(coeffs) > 1e6):
-                logger.debug("Extreme coefficients detected, rejecting fit")
-                return None, 0.0
+        except ImportError:
+            raise ImportError("❌ Chưa cài ultralytics. Chạy: pip install ultralytics")
+        
+        # Load font tiếng Việt
+        try:
+            font_path = "backend/assets/fonts/Roboto-Bold.ttf"
+            self.font = ImageFont.truetype(font_path, 24)
+            logger.info(f"✅ Font tiếng Việt: {font_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Không load được font: {e}")
+            self.font = None
+    
+    @torch.no_grad()
+    def detect_drivable_area(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Phát hiện vùng có thể lái (drivable area).
+        
+        WHY: Sử dụng segmentation mask thay vì Hough Lines vì:
+        - Chính xác hơn trên đường cong
+        - Không cần tune parameters thủ công
+        - GPU-accelerated (fast)
+        
+        Args:
+            frame: Frame RGB (H x W x 3)
             
-            # Calculate confidence based on:
-            # 1. Number of points (more points = higher confidence)
-            # 2. Residual error (lower error = higher confidence)
-            # 3. Point distribution (well-distributed = higher confidence)
-            num_points = len(points)
-            points_confidence = min(num_points / 80.0, 1.0)  # Saturate at 80 points
+        Returns:
+            Binary mask (H x W) - numpy array hoặc None
+        """
+        try:
+            # Inference
+            results = self.model(
+                frame,
+                conf=self.conf_threshold,
+                device=self.device,
+                verbose=False
+            )
             
-            # Calculate residual error
-            x_pred = np.polyval(coeffs, y)
-            residuals = np.abs(x - x_pred)
-            mean_residual = np.mean(residuals)
+            for result in results:
+                # Kiểm tra có masks không
+                if result.masks is None:
+                    logger.debug("Không phát hiện mask")
+                    return None
+                
+                # Lấy masks data (GPU Tensor)
+                masks_data = result.masks.data  # Shape: [N, H, W]
+                
+                if masks_data.shape[0] == 0:
+                    return None
+                
+                # Merge tất cả masks thành 1 (vùng drivable tổng hợp)
+                # WHY: Vì road có thể gồm nhiều segment
+                merged_mask = torch.any(masks_data > 0.5, dim=0)  # [H, W]
+                
+                # Convert về numpy (chỉ khi cần)
+                mask_np = merged_mask.cpu().numpy().astype(np.uint8) * 255
+                
+                return mask_np
             
-            # Convert residual to confidence (lower residual = higher confidence)
-            # Assume max acceptable residual is 40 pixels (more strict)
-            residual_confidence = max(0.0, 1.0 - (mean_residual / 40.0))
-            
-            # Check point distribution (vertical spread)
-            y_range = np.max(y) - np.min(y)
-            distribution_confidence = min(y_range / 300.0, 1.0)  # Good if spread over 300px
-            
-            # Combined confidence (weighted average)
-            confidence = 0.4 * points_confidence + 0.4 * residual_confidence + 0.2 * distribution_confidence
-            confidence = max(0.0, min(1.0, confidence))  # Clamp to [0,1]
-            
-            return coeffs, confidence
+            return None
             
         except Exception as e:
-            logger.debug(f"Polynomial fitting failed: {e}")
-            return None, 0.0
+            logger.error(f"❌ Lỗi detect drivable area: {e}")
+            return None
     
-    def draw_lane(
-        self, 
-        frame: np.ndarray, 
-        left_fit: Optional[np.ndarray], 
-        right_fit: Optional[np.ndarray]
+    def create_overlay(
+        self,
+        frame: np.ndarray,
+        mask: Optional[np.ndarray]
     ) -> np.ndarray:
         """
-        Draw curved lane overlay on frame.
+        Tạo overlay Tesla-style trên frame.
+        
+        WHY: Sử dụng cv2.addWeighted thay vì vòng lặp pixel vì:
+        - Vectorized operation (nhanh gấp 100x)
+        - Sử dụng SIMD instructions
+        - Smooth blending
         
         Args:
-            frame: RGB frame
-            left_fit: Left lane polynomial coefficients
-            right_fit: Right lane polynomial coefficients
+            frame: Frame gốc RGB
+            mask: Binary mask (255 = drivable, 0 = không)
             
         Returns:
-            Frame with lane overlay
+            Frame với overlay màu
         """
-        overlay = frame.copy()
-        height, width = frame.shape[:2]
+        if mask is None:
+            return frame
         
-        # Generate y coordinates
-        y_coords = np.linspace(int(height * 0.6), height, num=100)
-        
-        left_points = []
-        right_points = []
-        
-        # Generate left lane points
-        if left_fit is not None:
-            x_coords = np.polyval(left_fit, y_coords)
-            left_points = np.column_stack((x_coords, y_coords)).astype(np.int32)
+        try:
+            # Tạo colored mask
+            h, w = mask.shape
+            colored_mask = np.zeros((h, w, 3), dtype=np.uint8)
             
-            # Draw left lane line (green)
-            for i in range(len(left_points) - 1):
-                cv2.line(overlay, tuple(left_points[i]), tuple(left_points[i+1]), (0, 255, 0), 8)
-        
-        # Generate right lane points
-        if right_fit is not None:
-            x_coords = np.polyval(right_fit, y_coords)
-            right_points = np.column_stack((x_coords, y_coords)).astype(np.int32)
+            # Áp dụng màu cho vùng drivable
+            colored_mask[mask > 0] = self.overlay_color
             
-            # Draw right lane line (green)
-            for i in range(len(right_points) - 1):
-                cv2.line(overlay, tuple(right_points[i]), tuple(right_points[i+1]), (0, 255, 0), 8)
-        
-        # Fill lane area (semi-transparent green)
-        if len(left_points) > 0 and len(right_points) > 0:
-            # Create polygon for lane area
-            lane_polygon = np.concatenate([left_points, right_points[::-1]])
+            # Blend với frame gốc (alpha blending)
+            # WHY: cv2.addWeighted dùng hardware acceleration
+            overlay = cv2.addWeighted(
+                frame,
+                1.0,
+                colored_mask,
+                self.alpha,
+                0
+            )
             
-            # Create mask
-            mask = np.zeros_like(frame)
-            cv2.fillPoly(mask, [lane_polygon], (0, 255, 0))
+            return overlay
             
-            # Blend with original frame
-            overlay = cv2.addWeighted(frame, 0.7, mask, 0.3, 0)
-        
-        return overlay
+        except Exception as e:
+            logger.error(f"❌ Lỗi tạo overlay: {e}")
+            return frame
     
-    def compute_lane_offset(
-        self, 
-        left_fit: Optional[np.ndarray], 
-        right_fit: Optional[np.ndarray],
-        frame_width: int,
-        frame_height: int
-    ) -> Tuple[float, str]:
+    def draw_info(
+        self,
+        frame: np.ndarray,
+        has_lane: bool
+    ) -> np.ndarray:
         """
-        Compute vehicle offset from lane center.
+        Vẽ thông tin trạng thái lên frame (Tiếng Việt).
         
         Args:
-            left_fit: Left lane polynomial
-            right_fit: Right lane polynomial
-            frame_width: Frame width
-            frame_height: Frame height
+            frame: Frame đã overlay
+            has_lane: True nếu phát hiện được lane
             
         Returns:
-            Tuple of (offset_ratio, direction)
-            offset_ratio: -1.0 to 1.0 (negative = left, positive = right)
-            direction: "LEFT", "RIGHT", or "CENTER"
+            Frame với info text
         """
-        if left_fit is None or right_fit is None:
-            return 0.0, "UNKNOWN"
+        # Convert sang PIL
+        frame_pil = Image.fromarray(frame)
+        draw = ImageDraw.Draw(frame_pil)
         
-        # Calculate lane center at bottom of frame
-        y_eval = frame_height - 1
-        
-        left_x = np.polyval(left_fit, y_eval)
-        right_x = np.polyval(right_fit, y_eval)
-        
-        # Lane center
-        lane_center = (left_x + right_x) / 2
-        
-        # Vehicle center (assume camera is centered)
-        vehicle_center = frame_width / 2
-        
-        # Offset ratio
-        lane_width = right_x - left_x
-        if lane_width > 0:
-            offset = vehicle_center - lane_center
-            offset_ratio = offset / lane_width
+        # Text status
+        if has_lane:
+            status = "✓ PHÁT HIỆN LÀN ĐƯỜNG"
+            color = (0, 255, 0)  # Xanh lá
         else:
-            offset_ratio = 0.0
+            status = "✗ KHÔNG PHÁT HIỆN LÀN ĐƯỜNG"
+            color = (255, 0, 0)  # Đỏ
         
-        # Determine direction
-        if abs(offset_ratio) < self.departure_threshold:
-            direction = "CENTER"
-        elif offset_ratio < 0:
-            direction = "LEFT"
+        # Vẽ text
+        if self.font:
+            # Vẽ background
+            bbox = draw.textbbox((20, 20), status, font=self.font)
+            draw.rectangle(
+                [(bbox[0] - 10, bbox[1] - 5), (bbox[2] + 10, bbox[3] + 5)],
+                fill=(0, 0, 0, 180)
+            )
+            draw.text((20, 20), status, fill=color, font=self.font)
         else:
-            direction = "RIGHT"
+            # Fallback
+            frame_cv = np.array(frame_pil)
+            cv2.putText(
+                frame_cv,
+                status,
+                (20, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1.0,
+                color,
+                2
+            )
+            return frame_cv
         
-        return offset_ratio, direction
+        return np.array(frame_pil)
     
     def process_frame(self, frame: np.ndarray) -> Dict:
         """
-        Process single frame for lane detection with Kalman Filter smoothing.
-        PRODUCTION-GRADE: No flickering, confident detections only.
+        Pipeline xử lý hoàn chỉnh.
         
         Args:
-            frame: RGB frame from video
+            frame: Frame RGB
             
         Returns:
-            Dict containing lane detection results with smoothed coefficients
+            Dictionary chứa:
+                - annotated_frame: Frame với overlay Tesla-style
+                - mask: Binary mask của vùng drivable
+                - has_lane: True nếu phát hiện được
         """
-        height, width = frame.shape[:2]
+        # Detect drivable area
+        mask = self.detect_drivable_area(frame)
         
-        # Preprocess
-        edges = self.preprocess_frame(frame)
-        
-        # Detect lane lines
-        left_points, right_points = self.detect_lane_lines(edges)
-        
-        # Fit polynomials with confidence
-        left_fit_raw, left_conf = self.fit_polynomial(left_points)
-        right_fit_raw, right_conf = self.fit_polynomial(right_points)
-        
-        # PRODUCTION: Apply Kalman Filter smoothing instead of EMA
-        left_fit = self.kalman_left.update(left_fit_raw, left_conf)
-        right_fit = self.kalman_right.update(right_fit_raw, right_conf)
-        
-        # Update temporal filter for confidence tracking (backward compatibility)
-        self.temporal_filter.update(left_fit_raw, right_fit_raw, left_conf, right_conf)
-        self.left_confidence, self.right_confidence = self.temporal_filter.get_confidence()
-        
-        # Draw lanes only if confidence is sufficient
-        if self.left_confidence >= self.min_confidence or self.right_confidence >= self.min_confidence:
-            annotated_frame = self.draw_lane(frame, left_fit, right_fit)
+        # Tạo overlay
+        if mask is not None:
+            overlay_frame = self.create_overlay(frame, mask)
+            has_lane = True
         else:
-            annotated_frame = frame.copy()
+            overlay_frame = frame.copy()
+            has_lane = False
         
-        # Compute offset
-        offset, direction = self.compute_lane_offset(left_fit, right_fit, width, height)
+        # Vẽ thông tin
+        annotated_frame = self.draw_info(overlay_frame, has_lane)
         
-        # Lane departure warning (only trigger if confidence is high)
-        lane_departure = (
-            abs(offset) > self.departure_threshold and 
-            min(self.left_confidence, self.right_confidence) >= 0.6  # Tăng lên 0.6 để giảm false positives
-        )
-        
-        # Add warning text - ENGLISH
-        if lane_departure:
-            # English warning message
-            if "LEFT" in direction.upper():
-                warning_text = "⚠️ LANE DEPARTURE: LEFT"
-                warning_color = (0, 100, 255)  # Orange
-            else:
-                warning_text = "⚠️ LANE DEPARTURE: RIGHT"
-                warning_color = (0, 100, 255)  # Orange
-            
-            # Draw warning background for better visibility
-            text_size = cv2.getTextSize(warning_text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)[0]
-            cv2.rectangle(
-                annotated_frame,
-                (40, 50),
-                (60 + text_size[0], 90),
-                (0, 0, 0),
-                -1
-            )
-            
-            # Draw warning text
-            cv2.putText(
-                annotated_frame, 
-                warning_text, 
-                (50, 80), 
-                cv2.FONT_HERSHEY_SIMPLEX, 
-                1.0, 
-                warning_color, 
-                2,
-                cv2.LINE_AA
-            )
-        
-        # Add confidence and ID info to output
         return {
-            "annotated_frame": annotated_frame,
-            "left_fit": left_fit,
-            "right_fit": right_fit,
-            "left_confidence": float(self.left_confidence),
-            "right_confidence": float(self.right_confidence),
-            "left_lane_id": self.left_lane_id,
-            "right_lane_id": self.right_lane_id,
-            "offset": float(offset),
-            "direction": direction,
-            "lane_departure": lane_departure,
-            "is_departed": lane_departure  # Alias for backward compatibility
+            'annotated_frame': annotated_frame,
+            'mask': mask,
+            'has_lane': has_lane
         }
 
 
 if __name__ == "__main__":
-    # Test module
     logging.basicConfig(level=logging.INFO)
-    detector = LaneDetectorV11(device="cpu")
-    print("Lane Detector initialized successfully")
+    
+    try:
+        detector = LaneDetectorV11(device="cuda")
+        print("✅ Lane Detector khởi tạo thành công")
+    except Exception as e:
+        print(f"❌ Lỗi khởi tạo: {e}")
