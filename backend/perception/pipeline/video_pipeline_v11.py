@@ -454,6 +454,53 @@ class ADASPipeline:
         logger.info("=" * 60)
 
 
+def process_video(
+    video_path: str,
+    output_path: str = "output_processed.mp4",
+    device: str = "cuda",
+    enable_display: bool = False
+) -> Dict:
+    """
+    Wrapper function for backward compatibility.
+    Process video with ADAS pipeline (old API).
+    
+    Args:
+        video_path: Đường dẫn video input
+        output_path: Đường dẫn video output
+        device: "cuda" hoặc "cpu"
+        enable_display: Hiển thị video (default False cho worker)
+        
+    Returns:
+        Dictionary chứa thông tin kết quả
+    """
+    try:
+        # Khởi tạo pipeline
+        pipeline = ADASPipeline(
+            device=device,
+            input_resolution=(1280, 720),
+            enable_display=enable_display,
+            save_output=True,
+            output_path=output_path
+        )
+        
+        # Chạy pipeline
+        pipeline.start(video_path)
+        
+        return {
+            'status': 'success',
+            'output_path': output_path,
+            'fps': pipeline.fps,
+            'frames_processed': pipeline.frame_count
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Lỗi process_video: {e}")
+        return {
+            'status': 'error',
+            'error': str(e)
+        }
+
+
 def main():
     """Demo pipeline."""
     import sys
