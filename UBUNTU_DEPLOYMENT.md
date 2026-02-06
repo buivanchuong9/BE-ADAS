@@ -182,6 +182,9 @@ nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/bea
 tail -f backend.log
 
 tail -f logs/worker.log
+
+# soi GPU chạy
+watch -n 1 nvidia-smi
 ```
 
 **Giải thích từng lệnh:**

@@ -6,12 +6,6 @@ Pipeline xử lý video real-time với 4 AI models:
 - Lane Segmentation (Tesla-style)
 - Driver Monitoring (Cảnh báo nguy hiểm)
 - Traffic Sign Recognition (Biển báo)
-
-Architecture: Producer-Consumer với Threading
-Performance: Tối ưu cho NVIDIA A30 GPU
-
-Tác giả: Lead AI Architect
-Ngày: 2026-02-06
 """
 
 import cv2
@@ -62,7 +56,8 @@ class ADASPipeline:
         input_resolution: tuple = (1280, 720),
         enable_display: bool = True,
         save_output: bool = True,
-        output_path: str = "output_demo_tesla_style.mp4"
+        output_path: str = "output_demo_tesla_style.mp4",
+        realtime_mode: bool = False  # True: Master Clock Simulation
     ):
         """
         Khởi tạo ADAS Pipeline.
@@ -79,15 +74,19 @@ class ADASPipeline:
         self.enable_display = enable_display
         self.save_output = save_output
         self.output_path = output_path
+        self.realtime_mode = realtime_mode
         
         # Threading components
-        self.frame_queue = Queue(maxsize=30)  # Buffer 30 frames
-        self.result_queue = Queue(maxsize=30)
+        # Realtime=True -> Buffer nhỏ (2) để giảm latency. Fast=True -> Buffer to (30).
+        q_size = 2 if realtime_mode else 30
+        self.frame_queue = Queue(maxsize=q_size)
+        self.result_queue = Queue(maxsize=q_size)
         self.stop_event = Event()
         
         # FPS tracking
         self.fps = 0.0
         self.frame_count = 0
+        self.source_fps = 30.0  # FPS gốc của video nguồn
         self.start_time = None
         
         # Video writer
@@ -296,14 +295,28 @@ class ADASPipeline:
             self.stop_event.set()
             return
         
-        # Lấy thông tin video
-        fps = int(cap.get(cv2.CAP_PROP_FPS))
+        # Lấy thông tin video (Float FPS để tính clock chuẩn)
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        self.source_fps = fps  # Lưu FPS gốc để Writer dùng
+        frame_interval = 1.0 / fps
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        logger.info(f"   Video: {fps} FPS, {total_frames} frames")
+        
+        mode_str = "REALTIME SIMULATION" if self.realtime_mode else "MAX SPEED"
+        logger.info(f"   Video: {fps:.2f} FPS | Mode: {mode_str}")
         
         frame_idx = 0
+        next_frame_time = time.time()
         
         while not self.stop_event.is_set():
+            # 1. Master Clock Pacing (Chỉ chạy khi Realtime Mode)
+            if self.realtime_mode:
+                now = time.time()
+                delay = next_frame_time - now
+                if delay > 0:
+                    time.sleep(delay)
+                next_frame_time = time.time() + frame_interval
+
+            # 2. Read Frame
             ret, frame = cap.read()
             
             if not ret:
@@ -313,12 +326,9 @@ class ADASPipeline:
             # Convert BGR → RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Đẩy vào queue (blocking nếu full)
-            try:
-                self.frame_queue.put(frame_rgb, timeout=1.0)
-                frame_idx += 1
-            except Full:
-                logger.warning("⚠️ Frame queue đầy, bỏ qua frame")
+            # Đẩy vào queue (BLOCKING MODE)
+            self.frame_queue.put(frame_rgb, block=True)
+            frame_idx += 1
         
         cap.release()
         logger.info("✅ Reader Thread: Hoàn thành")
@@ -383,7 +393,7 @@ class ADASPipeline:
                         self.video_writer = cv2.VideoWriter(
                             self.output_path,
                             fourcc,
-                            30.0,
+                            self.source_fps,  # Sử dụng FPS gốc của video
                             (w, h)
                         )
                         logger.info(f"📹 Đang ghi video: {self.output_path}")
