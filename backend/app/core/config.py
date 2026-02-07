@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     
     # Application
     APP_NAME: str = "ADAS Backend API"
-    APP_VERSION: str = "3.0.1"
+    APP_VERSION: str = "3.0.2"
     DEBUG: bool = False
     ENVIRONMENT: str = "development"  # development or production
     
@@ -160,6 +160,7 @@ class Settings(BaseSettings):
         "http://adas.aiotlab.edu.vn,"  # Fix: Add HTTP origin for Safari/Cloudflare edge cases
         "https://adas-api.aiotlab.edu.vn,"
         "https://adas-api.aiotlab.edu.vn:52000,"
+        "https://adas-api.aiotlab.edu.vn/docs,"
         "http://adas-api.aiotlab.edu.vn,"
         "http://adas-api.aiotlab.edu.vn:52000,"
         "http://localhost:52000,"
