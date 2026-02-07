@@ -99,43 +99,32 @@ class JobService:
         output_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"  ✅ Output directory ready: {output_dir}")
         
-        repo = JobQueueRepository(session)
-        
-        # Update status to PROCESSING
+        # =========================================================================
+        # CELERY TASK SUBMISSION (Fix for "Not pushing task")
+        # =========================================================================
         try:
-            await repo.update_status(job_id, JobStatus.PROCESSING)
-            await session.commit()
-            logger.info(f"  ✅ Job status updated to PROCESSING")
-        except Exception as e:
-            logger.error(f"  ❌ Failed to update job status: {e}")
-        
-        logger.info(f"🎯 [Job {job_id}] Submitting to ThreadPoolExecutor...")
-        
-        # Create async task
-        try:
-            loop = asyncio.get_event_loop()
-            future = loop.run_in_executor(
-                self.executor,
-                self._process_video_sync,
-                job_id,
-                input_path,
-                output_path,
-                video_type,
-                device
-            )
+            # Import here to avoid circular dependency
+            from app.tasks import process_video_task
             
-            # Store future
-            self.active_jobs[job_id] = future
+            # NOTE: We do NOT set status to PROCESSING here. 
+            # We let the Celery task do that when it actually starts.
+            # This prevents the task from thinking it's "already processing".
             
-            # Add callback to clean up when done
-            future.add_done_callback(lambda f: self._on_job_complete(job_id, f))
+            logger.info(f"🎯 [Job {job_id}] Push to Celery Queue...")
             
-            logger.info(f"✅ [Job {job_id}] SUBMITTED TO EXECUTOR SUCCESSFULLY")
-            logger.info(f"   Active jobs: {list(self.active_jobs.keys())}")
+            # Send task to Celery
+            task = process_video_task.delay(job_id)
+            
+            logger.info(f"✅ [Job {job_id}] SUBMITTED TO CELERY SUCCESSFULLY")
+            logger.info(f"   Task ID: {task.id}")
             logger.info(f"=" * 60)
             
         except Exception as e:
-            logger.error(f"❌ [Job {job_id}] FAILED TO SUBMIT TO EXECUTOR: {e}", exc_info=True)
+            logger.error(f"❌ [Job {job_id}] FAILED TO SUBMIT TO CELERY: {e}", exc_info=True)
+            # Fallback or update status to FAILED
+            repo = JobQueueRepository(session)
+            await repo.update_status(job_id, JobStatus.FAILED, f"Queue submission failed: {str(e)}")
+            await session.commit()
     
     def _process_video_sync(
         self,
