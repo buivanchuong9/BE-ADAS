@@ -103,15 +103,25 @@ void HLSEncoder::init_encoder() {
     // Encoder-specific settings
     if (using_nvenc) {
         // NVENC GPU settings
-        // Use modern presets (p1-p7) as suggested by the error log
-        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);   // p1 = fastest (was llhp)
+        // Use modern presets (p1-p7)
+        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);   // p1 = fastest
         av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);     // Low latency
         av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);      // Constant bitrate
         av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
         
-        // IMPORTANT: For NVENC, input format is usually yuv420p (it handles upload)
-        // or nv12. We stick to yuv420p as it's safe.
-        codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+        // Auto-detect supported pixel format (prefer yuv420p for software input)
+        if (codec->pix_fmts) {
+            codec_ctx_->pix_fmt = codec->pix_fmts[0]; // Use first supported format (usually yuv420p or nv12)
+            for (const AVPixelFormat* p = codec->pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+                if (*p == AV_PIX_FMT_YUV420P) {
+                    codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+                    break;
+                }
+            }
+        } else {
+            // Fallback default
+            codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+        }
         
         // Ensure no B-frames
         codec_ctx_->max_b_frames = 0;
