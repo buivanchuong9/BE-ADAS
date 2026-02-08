@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import init_db, close_db
-from app.services.job_service import get_job_service
+# V2: No job_service needed - GPU workers poll PostgreSQL directly
 
 # Import API routers (absolute import)
 from app.api.video import router as video_router
@@ -76,10 +76,8 @@ async def lifespan(app: FastAPI):
         logger.error("Please check database configuration and ensure PostgreSQL is running")
         raise
     
-    # Initialize job service
-    logger.info("Initializing job service...")
-    job_service = get_job_service()
-    logger.info(f"✓ Job service initialized with {settings.MAX_CONCURRENT_JOBS} workers")
+    # V2: No job service - GPU workers are separate processes
+    logger.info("✓ Backend initialized (GPU workers run separately)")
     
     logger.info("Perception modules ready")
     logger.info("Storage directories configured")
@@ -93,10 +91,8 @@ async def lifespan(app: FastAPI):
     logger.info(f"{settings.APP_NAME} Shutting Down...")
     logger.info("=" * 80)
     
-    # Shutdown job service
-    logger.info("Shutting down job service...")
-    job_service.shutdown()
-    logger.info("✓ Job service shutdown complete")
+    # V2: No job service shutdown needed (workers are independent processes)
+    logger.info("✓ Backend shutdown initiated")
     
     # Close database connections
     logger.info("Closing database connections...")
