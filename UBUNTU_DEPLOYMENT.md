@@ -150,50 +150,145 @@ cd ~/BE-ADAS/backend
 python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo
 ```
 
-### 6️⃣ Restart Server (Production Setup)
+### 6️⃣ Restart Server (V2.0 - NO Celery!)
 
-**Cách chạy thực tế trên server:**
+**⚠️ IMPORTANT: Architecture V2.0**
+- ❌ LOẠI BỎ: Celery, Redis, Celery Beat
+- ✅ THAY BẰNG: PostgreSQL Queue + GPU Workers (gpu_worker_v2.py)
+
+**Deployment Commands:**
 
 ```bash
-# 1. Kill hết
-pkill -9 -f "celery"
-pkill -u phonglv -9 uvicorn
+# ========================================
+# BƯỚC 1: KILL OLD PROCESSES
+# ========================================
+pkill -9 -f "celery"           # Kill Celery (cũ - không dùng nữa)
+pkill -9 -f "gpu_worker"       # Kill GPU workers (cũ)
+pkill -u phonglv -9 uvicorn    # Kill FastAPI
+sleep 2
 
-# 2. Vào thư mục GỐC
+# ========================================
+# BƯỚC 2: SETUP ENVIRONMENT
+# ========================================
 cd ~/BE-ADAS
 
-# 3. Env & Path
+# Load .env variables
+export $(grep -v '^#' .env | xargs)
+
+# Set Python path
+export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+
+# VERIFY PostgreSQL connection
+echo "DATABASE_URL: $DATABASE_URL"
+# Expected: postgresql://user:pass@localhost:5432/adas_production
+
+# ========================================
+# BƯỚC 3: START FASTAPI BACKEND
+# ========================================
+mkdir -p logs
+
+nohup uvicorn backend.app.main:app \
+  --host 0.0.0.0 \
+  --port 52000 \
+  --proxy-headers \
+  > logs/backend.log 2>&1 &
+
+echo "✅ FastAPI started (PID: $!)"
+sleep 3
+
+# Verify API started
+curl -s http://localhost:52000/health | head -5
+
+# ========================================
+# BƯỚC 4: START GPU WORKERS (V2)
+# ========================================
+# Số workers tùy theo VRAM:
+#   - 24GB GPU → 4 workers (6GB/worker)
+#   - 16GB GPU → 2-3 workers
+#   - 12GB GPU → 2 workers
+
+NUM_WORKERS=4
+
+for i in $(seq 0 $((NUM_WORKERS - 1))); do
+  nohup python workers/gpu_worker_v2.py \
+    --worker-id worker_$i \
+    --device cuda \
+    > logs/worker_${i}.log 2>&1 &
+  
+  echo "✅ Worker $i started (PID: $!)"
+  sleep 1
+done
+
+# ========================================
+# BƯỚC 5: VERIFY SERVICES
+# ========================================
+sleep 2
+echo ""
+echo "=== RUNNING SERVICES ==="
+ps aux | grep -E "uvicorn|gpu_worker_v2" | grep -v grep
+echo ""
+
+# Test API
+echo "Testing API..."
+curl -s http://localhost:52000/health
+
+echo ""
+echo "=== LOGS ==="
+echo "Backend: tail -f logs/backend.log"
+echo "Worker 0: tail -f logs/worker_0.log"
+echo "Worker 1: tail -f logs/worker_1.log"
+echo "Worker 2: tail -f logs/worker_2.log"
+echo "Worker 3: tail -f logs/worker_3.log"
+echo ""
+echo "GPU Monitor: watch -n 1 nvidia-smi"
+```
+
+**Giải thích V2 Architecture:**
+- ❌ **LOẠI BỎ:** `celery worker`, `celery beat`, Redis  
+- ✅ **THAY BẰNG:** `gpu_worker_v2.py` (multi-process, tự động claim jobs)  
+- ✅ **JOB QUEUE:** PostgreSQL với atomic locking (`SELECT FOR UPDATE SKIP LOCKED`)  
+- ✅ **NEW FEATURES:** HLS progressive streaming + Optical Flow lane optimization (80% faster)
+
+---
+
+### 6.5️⃣ **OPTION B: Dùng Screen (Recommended - Tắt Terminal Được)**
+
+**Ưu điểm:** Detach/reattach session, tắt SSH terminal không mất process
+
+```bash
+# Install screen (nếu chưa có)
+sudo apt-get install screen -y
+
+cd ~/BE-ADAS
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
 
-# 4. START API (Giữ nguyên)
-nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
+# Tạo screen cho API
+screen -dmS adas-api bash -c "
+  uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers
+"
 
-# 5. START CELERY (SỬA LẠI: Dùng pool=solo để an toàn cho GPU)
-# Lưu ý: Vì PYTHONPATH đã trỏ vào backend rồi, nên start từ "app" là đủ.
-cd ~/BE-ADAS
-nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
+# Tạo screen cho workers (loop 0-3)
+for i in {0..3}; do
+  screen -dmS adas-worker-$i bash -c "
+    export DATABASE_URL='$DATABASE_URL'
+    export PYTHONPATH='$PYTHONPATH'
+    cd ~/BE-ADAS
+    python workers/gpu_worker_v2.py --worker-id worker_$i --device cuda
+  "
+done
 
-# 6. Start Beat (SỬA LẠI tương tự)
-cd ~/BE-ADAS
-nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+# Verify screens
+screen -ls
 
-# 7. Xem log real-time
-tail -f backend.log
+# Xem log worker 0 (real-time)
+screen -r adas-worker-0
+# Press Ctrl+A, D để thoát (vẫn chạy background)
 
-tail -f logs/worker.log
-
-# soi GPU chạy
-watch -n 1 nvidia-smi
+# Kill tất cả khi cần restart
+screen -X -S adas-api quit
+for i in {0..3}; do screen -X -S adas-worker-$i quit; done
 ```
-
-**Giải thích từng lệnh:**
-- `pkill -u phonglv -9 uvicorn` → Force kill tất cả process uvicorn của user phonglv
-- `export $(grep -v '^#' .env | xargs)` → Load tất cả biến trong file .env
-- `export PYTHONPATH=...` → Thêm backend vào Python path
-- `nohup ... &` → Chạy server background, không bị kill khi đóng SSH
-- `> backend.log 2>&1` → Redirect stdout và stderr vào file log
-- `tail -f backend.log` → Xem log real-time
 
 **Lưu ý:** Port là **52000** (không phải 8000)
 
