@@ -1,19 +1,3 @@
-#!/usr/bin/env python3
-"""
-HLS Streaming Writer - Production Grade
-========================================
-Ghi video output dạng HLS segments để client có thể stream ngay trong khi processing.
-
-CRITICAL FEATURES:
-- Progressive segment generation (client xem được ngay khi segment đầu tiên sẵn sàng)
-- Atomic playlist updates (tránh race condition)
-- Thread-safe operations
-- Proper segment duration (2-4 seconds optimal cho latency vs overhead)
-
-Author: Principal AI Architect
-Date: 2026-02-08
-"""
-
 import os
 import logging
 import tempfile

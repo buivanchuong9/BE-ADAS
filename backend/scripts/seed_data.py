@@ -1,12 +1,3 @@
-"""
-Seed Data Script
-================
-Populates database with initial test data.
-
-Usage:
-    python backend/scripts/seed_data.py
-"""
-
 import asyncio
 import sys
 from pathlib import Path

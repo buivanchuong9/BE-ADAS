@@ -1,12 +1,3 @@
-"""
-Admin Dashboard API
-===================
-Handles administrative endpoints for dashboard overview and statistics.
-
-Endpoints:
-- GET /admin/overview: System overview stats
-- GET /admin/statistics: Detailed charts data
-"""
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func

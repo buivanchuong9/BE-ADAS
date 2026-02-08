@@ -1,27 +1,3 @@
-"""
-DEVICE DETECTION AND MANAGEMENT
-================================
-Phase 9: Automatic GPU/CPU device selection.
-
-PURPOSE:
-Automatically detect available hardware and select optimal device for inference.
-
-FEATURES:
-- CUDA GPU detection
-- DirectML detection (Windows AMD/Intel GPUs)
-- CPU fallback
-- Device info logging
-- Performance benchmarking
-
-PRIORITY:
-1. CUDA GPU (NVIDIA) - Best performance
-2. DirectML (Windows AMD/Intel) - Good performance on Windows
-3. CPU - Fallback option
-
-Author: Senior ADAS Engineer
-Date: 2025-12-26 (Phase 9)
-"""
-
 import logging
 import platform
 from typing import Dict, Any, Optional
