@@ -95,7 +95,7 @@ void HLSEncoder::init_encoder() {
     codec_ctx_->height = height_;
     codec_ctx_->time_base = AVRational{1, static_cast<int>(fps_)};
     codec_ctx_->framerate = AVRational{static_cast<int>(fps_), 1};
-    codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+    // codec_ctx_->pix_fmt will be set based on encoder selection
     codec_ctx_->gop_size = 30;  // Keyframe every 1 second
     codec_ctx_->max_b_frames = 0;  // Low latency
     codec_ctx_->bit_rate = width_ * height_ * 2;  // ~2 bits per pixel
@@ -103,13 +103,15 @@ void HLSEncoder::init_encoder() {
     // Encoder-specific settings
     if (using_nvenc) {
         // NVENC GPU settings
-        // Use legacy presets for compatibility with older FFmpeg versions (4.x)
-        // "llhp" = Low Latency High Performance (equivalent to "p1"/"p2" on newer drivers)
-        av_opt_set(codec_ctx_->priv_data, "preset", "llhp", 0); 
-        
-        av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);       // Constant bitrate
-        av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0); // Zero latency
+        // Use modern presets (p1-p7) as suggested by the error log
+        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);   // p1 = fastest (was llhp)
+        av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);     // Low latency
+        av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);      // Constant bitrate
         av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
+        
+        // IMPORTANT: For NVENC, input format is usually yuv420p (it handles upload)
+        // or nv12. We stick to yuv420p as it's safe.
+        codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
         
         // Ensure no B-frames
         codec_ctx_->max_b_frames = 0;
@@ -117,6 +119,7 @@ void HLSEncoder::init_encoder() {
         // CPU libx264 settings (For macOS dev only)
         av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
         av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
+        codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
     }
     
     // Open codec
