@@ -243,11 +243,11 @@ async def get_progress(
             raise HTTPException(status_code=404, detail="Job not found")
         
         # Build HLS playlist URL if ready
+        hls_ready = getattr(job, 'hls_ready', False)
+        hls_playlist_path = getattr(job, 'hls_playlist_path', None)
         hls_playlist_url = None
-        if job.hls_ready and job.hls_playlist_path:
-            # Extract relative path from full path
-            from pathlib import Path
-            playlist_path = Path(job.hls_playlist_path)
+        
+        if hls_ready and hls_playlist_path:
             # URL format: /api/hls/{job_id}/playlist.m3u8
             hls_playlist_url = f"{settings.API_BASE_URL}/api/hls/{job.job_id}/playlist.m3u8"
             
@@ -255,16 +255,16 @@ async def get_progress(
             "job_id": str(job.job_id),
             "status": job.status,
             "progress_percent": job.progress_percent,
-            "processing_time_seconds": job.processing_time_seconds,
+            "processing_time_seconds": getattr(job, 'processing_time_seconds', 0),
             
             # HLS streaming fields
-            "hls_ready": job.hls_ready or False,
+            "hls_ready": hls_ready,
             "hls_playlist_url": hls_playlist_url,
-            "segments_generated": job.segments_generated or 0,
-            "total_segments": job.total_segments or 0,
+            "segments_generated": getattr(job, 'segments_generated', 0),
+            "total_segments": getattr(job, 'total_segments', 0),
             
             # Legacy MP4 (fallback)
-            "result_path": job.result_path
+            "result_path": getattr(job, 'result_path', None)
         }
     except Exception as e:
          logger.error(f"Get progress failed: {e}")
