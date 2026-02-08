@@ -346,30 +346,30 @@ git pull origin main
 pip install -r requirements.txt
 
 # 5. Kill tất cả services cũ
+# 5. Kill tất cả services cũ
+pkill -9 -f "gpu_worker"
+pkill -9 -f "uvicorn" 
 pkill -9 -f "celery"
-pkill -u phonglv -9 uvicorn
-redis-cli FLUSHALL
 
 # 6. Export env và path
-cd ~/BE-ADAS
 export $(grep -v '^#' .env | xargs)
-export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+export PYTHONPATH=$PYTHONPATH:$(pwd)
 
-# 7. Start API
-nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
+# 7. Start API (Backend)
+echo "🚀 Starting API Server..."
+nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
 
-# 8. Start Celery Worker
-cd ~/BE-ADAS
-nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
+# 8. Start GPU Workers (Video Processing)
+# Launch 4 workers for optimal A30 utilization
+echo "🚀 Starting 4 GPU Workers..."
+for i in {0..3}; do
+    nohup python3 workers/gpu_worker_v3_hybrid.py --worker-id worker_$i > worker_$i.log 2>&1 &
+done
 
-# 9. Start Celery Beat
-cd ~/BE-ADAS
-nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+# 9. Xem log (API)
+tail -f api.log
 
-# 10. Xem log
-tail -f backend.log
-
-# 11. Test (Ctrl+C để thoát tail, rồi test)
+# 10. Test (Ctrl+C để thoát tail, rồi test)
 curl http://localhost:52000/health
 curl http://localhost:52000/api/auth/status
 ```
