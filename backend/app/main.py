@@ -44,6 +44,10 @@ from app.api.upload_storage import router as upload_storage_router
 from app.api.auth import router as auth_router
 from app.api.websocket_alerts import router as websocket_alerts_router  # Phase 6: WebSocket streaming
 from app.api.video_progress_ws import router as video_progress_ws_router  # WebSocket video progress
+
+# HLS Streaming API (v2 - NO Celery)
+from app.api.hls import router as hls_router
+
 from app.api.logs_stream import router as logs_stream_router  # Live log streaming for mobile app
 from app.api.mobile import router as mobile_router  # Mobile-specific API endpoints
 from app.api.admin import router as admin_router  # Admin Dashboard API
@@ -294,6 +298,7 @@ app.include_router(upload_storage_router)
 app.include_router(auth_router)
 app.include_router(websocket_alerts_router)  # Phase 6: WebSocket alert streaming
 app.include_router(video_progress_ws_router)  # WebSocket video progress streaming
+app.include_router(hls_router)  # HLS Streaming (v2 - NO Celery)
 
 app.include_router(logs_stream_router)  # Live log streaming for mobile app
 app.include_router(mobile_router)  # Mobile-specific API endpoints

@@ -135,27 +135,14 @@ async def upload_video(
             "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None
         }
         
-        # Now submit to background processing (after extracting all data)
-        logger.info(f"[Upload] Submitting job {job.job_id} to Celery queue...")
-        
-        # Submit to Celery task queue (non-blocking)
-        from app.tasks import process_video_task
-        
-        try:
-            task = process_video_task.delay(str(job.job_id))
-            logger.info(f"   ✅ Celery task submitted")
-            logger.info(f"   Task ID: {task.id}")
-            logger.info(f"   Job ID: {job.job_id}")
-        except Exception as e:
-            logger.error(f"   ❌ Failed to submit Celery task: {e}")
-            # Even if Celery fails, the job is in database for retry
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to queue video processing: {str(e)}"
-            )
+        # Job is now in database with status='pending'
+        # GPU workers will automatically claim it using SELECT FOR UPDATE SKIP LOCKED
+        # NO Celery needed - workers poll the PostgreSQL queue directly
         
         total_time = time.time() - start_time
-        logger.info(f"✅ Upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")
+        logger.info(f"✅ Upload complete - Job {job.job_id} queued for processing (total: {total_time:.1f}s)")
+        logger.info(f"   Status: {job.status}")
+        logger.info(f"   GPU workers will claim this job automatically")
         
         return response_data
     
@@ -184,17 +171,19 @@ async def analyze_video(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Trigger analysis for an uploaded video.
+    Re-queue a failed job for analysis.
+    
+    NOTE: For new uploads, this is NOT needed - workers auto-claim pending jobs.
+    This endpoint is only for RETRYING failed jobs.
     
     Args:
-        job_id: The ID of the job to analyze
+        job_id: The ID of the job to retry
         
     Returns:
         Job status
     """
     try:
         from app.db.repositories.job_queue_repo import JobQueueRepository
-        from app.tasks import process_video_task
         
         repo = JobQueueRepository(db)
         job = await repo.get_by_job_id(job_id)
@@ -203,18 +192,25 @@ async def analyze_video(
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
             
         if job.status not in ['pending', 'failed']:
-             return {"message": f"Job is already {job.status}", "job_id": job_id, "status": job.status}
+             return {
+                 "message": f"Job is already {job.status}",
+                 "job_id": job_id,
+                 "status": job.status
+             }
 
-        # Submit to Celery
-        task = process_video_task.delay(str(job.job_id))
-        logger.info(f"Analysis triggered for {job.job_id}, Task ID: {task.id}")
+        # Reset to pending for workers to pick up
+        from app.db.models.job_queue import JobStatus
+        await repo.update_status(job_id, JobStatus.PENDING)
+        await repo.update(job.id, attempts=0, error_message=None)
+        await db.commit()
         
-        # Update status to pending if it was failed
-        if job.status == 'failed':
-             # We might need to update DB status here, but the task will do it.
-             pass
+        logger.info(f"Job {job_id} reset to pending for retry")
              
-        return {"message": "Analysis started", "job_id": job_id, "task_id": task.id, "status": "pending"}
+        return {
+            "message": "Job reset to pending - workers will claim it automatically",
+            "job_id": job_id,
+            "status": "pending"
+        }
         
     except HTTPException:
         raise
@@ -229,7 +225,14 @@ async def get_progress(
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Get progress of a video analysis job.
+    Get progress of a video analysis job (with HLS streaming support).
+    
+    Returns:
+        - status: pending | processing | completed | failed
+        - progress_percent: 0-100
+        - hls_ready: True if HLS stream is available for playback
+        - hls_playlist_url: URL to HLS playlist (if available)
+        - segments_generated: Number of segments generated so far
     """
     try:
         from app.db.repositories.job_queue_repo import JobQueueRepository
@@ -238,12 +241,30 @@ async def get_progress(
         
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
+        
+        # Build HLS playlist URL if ready
+        hls_playlist_url = None
+        if job.hls_ready and job.hls_playlist_path:
+            # Extract relative path from full path
+            from pathlib import Path
+            playlist_path = Path(job.hls_playlist_path)
+            # URL format: /api/hls/{job_id}/playlist.m3u8
+            hls_playlist_url = f"{settings.API_BASE_URL}/api/hls/{job.job_id}/playlist.m3u8"
             
         return {
             "job_id": str(job.job_id),
             "status": job.status,
             "progress_percent": job.progress_percent,
-            "processing_time_seconds": job.processing_time_seconds
+            "processing_time_seconds": job.processing_time_seconds,
+            
+            # HLS streaming fields
+            "hls_ready": job.hls_ready or False,
+            "hls_playlist_url": hls_playlist_url,
+            "segments_generated": job.segments_generated or 0,
+            "total_segments": job.total_segments or 0,
+            
+            # Legacy MP4 (fallback)
+            "result_path": job.result_path
         }
     except Exception as e:
          logger.error(f"Get progress failed: {e}")
