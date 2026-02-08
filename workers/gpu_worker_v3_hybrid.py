@@ -516,17 +516,35 @@ class HybridGPUWorker:
 
 
 def main():
+    # Debug .env loading
+    env_path = PROJECT_ROOT / ".env"
+    print(f"🔍 Checking .env at: {env_path}")
+    if env_path.exists():
+        print("   ✅ .env file exists")
+        from dotenv import load_dotenv
+        load_dotenv(env_path, override=True) # Force reload
+    else:
+        print("   ❌ .env file NOT found!")
+
+    db_url_env = os.getenv('DATABASE_URL')
+    print(f"   🔍 DATABASE_URL in env: {'FOUND' if db_url_env else 'MISSING'}")
+
     parser = argparse.ArgumentParser(description='ADAS GPU Worker V3 (Hybrid)')
     parser.add_argument('--worker-id', default=f"worker_{os.getpid()}")
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--vram-limit', type=float, default=6.0)
-    parser.add_argument('--database-url', default=os.getenv('DATABASE_URL'))
+    parser.add_argument('--database-url', default=db_url_env) # Use freshly loaded env var
     parser.add_argument('--no-amp', action='store_true', help='Disable PyTorch AMP')
     
     args = parser.parse_args()
     
+    # Fallback: Check args.database_url
     if not args.database_url:
-        print("❌ ERROR: DATABASE_URL required")
+        # Try one last fetch
+        args.database_url = os.getenv('DATABASE_URL')
+    
+    if not args.database_url:
+        print("❌ ERROR: DATABASE_URL required. Check your .env file or pass --database-url argument.")
         sys.exit(1)
     
     worker = HybridGPUWorker(
