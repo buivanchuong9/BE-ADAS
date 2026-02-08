@@ -37,6 +37,18 @@ def test_encoder_init():
             fps=30.0,
             segment_duration=2.0
         )
+        
+        # CRITICAL: Print which encoder is being used
+        encoder_name = encoder.encoder_name
+        print(f"🎯 ENCODER SELECTED: {encoder_name}")
+        
+        if encoder_name == "h264_nvenc":
+            print("   ✅ Using GPU NVENC encoder (EXPECTED on server with GPU)")
+        elif encoder_name == "libx264":
+            print("   ⚠️  Using CPU encoder (GPU not available or NVENC failed)")
+        else:
+            print(f"   ❓ Unknown encoder: {encoder_name}")
+        
         print("✅ Encoder initialized")
         encoder.finalize()
         return True
@@ -57,6 +69,9 @@ def test_encode_frames():
     fps = 30.0
     
     encoder = hlsenc.HLSEncoder(output_dir, width, height, fps, segment_duration=2.0)
+    
+    # Print encoder info
+    print(f"  Encoder: {encoder.encoder_name}")
     
     # Encode 90 frames (3 segments @ 30fps with 2s segments)
     num_frames = 90
@@ -124,8 +139,19 @@ def test_performance():
     
     encoder = hlsenc.HLSEncoder(output_dir, width, height, fps, segment_duration=2.0)
     
+    encoder_name = encoder.encoder_name
+    print(f"  Encoder: {encoder_name}")
     print(f"  Resolution: {width}x{height}")
     print(f"  Frames: {num_frames}")
+    
+    # Set expected performance based on encoder
+    if encoder_name == "h264_nvenc":
+        expected_fps = 300  # GPU target
+        print(f"  Expected: >{expected_fps} FPS (GPU NVENC)")
+    else:
+        expected_fps = 80   # CPU target
+        print(f"  Expected: >{expected_fps} FPS (CPU libx264)")
+
     
     # Warmup
     frame = np.random.randint(0, 256, (height, width, 3), dtype=np.uint8)

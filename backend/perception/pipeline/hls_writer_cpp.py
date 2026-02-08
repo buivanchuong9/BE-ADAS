@@ -66,7 +66,14 @@ class HLSWriter:
                     segment_duration
                 )
                 self.backend = "cpp"
-                logger.info(f"Using C++ HLS encoder (hlsenc.so)")
+                
+                # Report which encoder is active (NVENC vs CPU)
+                enc_name = self.encoder.encoder_name
+                if enc_name == "h264_nvenc":
+                    logger.info(f"✅ Using GPU HLS encoder: {enc_name} (Fast)")
+                else:
+                    logger.warning(f"⚠️  Using CPU HLS encoder: {enc_name} (Slow - check GPU)")
+                    
             except Exception as e:
                 logger.warning(f"C++ encoder init failed: {e}, falling back to Python")
                 self.encoder = None

@@ -102,16 +102,19 @@ void HLSEncoder::init_encoder() {
     
     // Encoder-specific settings
     if (using_nvenc) {
-        // NVENC GPU settings (CRITICAL for performance)
-        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);  // p1 = fastest, p7 = best quality
-        av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);    // ll = low latency
-        av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);     // cbr = constant bitrate
-        av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);    // Zero delay
-        av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0);
-        // Disable B-frames for minimum latency
+        // NVENC GPU settings
+        // Use legacy presets for compatibility with older FFmpeg versions (4.x)
+        // "llhp" = Low Latency High Performance (equivalent to "p1"/"p2" on newer drivers)
+        av_opt_set(codec_ctx_->priv_data, "preset", "llhp", 0); 
+        
+        av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);       // Constant bitrate
+        av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0); // Zero latency
+        av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
+        
+        // Ensure no B-frames
         codec_ctx_->max_b_frames = 0;
     } else {
-        // CPU libx264 settings
+        // CPU libx264 settings (For macOS dev only)
         av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
         av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
     }
@@ -122,41 +125,16 @@ void HLSEncoder::init_encoder() {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
         
-        // If NVENC failed, try CPU fallback
+        std::cerr << "❌ FAILED TO OPEN ENCODER: " << (using_nvenc ? "NVENC" : "CPU") << "\n";
+        std::cerr << "   Error code: " << ret << "\n";
+        std::cerr << "   Error msg:  " << errbuf << "\n";
+        
         if (using_nvenc) {
-            std::cerr << "⚠️  NVENC init failed: " << errbuf << "\n";
-            std::cerr << "   Retrying with CPU encoder...\n";
-            
-            avcodec_free_context(&codec_ctx_);
-            
-            // Retry with CPU
-            codec = avcodec_find_encoder(AV_CODEC_ID_H264);
-            if (!codec) {
-                throw std::runtime_error("CPU encoder also not found");
-            }
-            
-            codec_ctx_ = avcodec_alloc_context3(codec);
-            codec_ctx_->width = width_;
-            codec_ctx_->height = height_;
-            codec_ctx_->time_base = AVRational{1, static_cast<int>(fps_)};
-            codec_ctx_->framerate = AVRational{static_cast<int>(fps_), 1};
-            codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
-            codec_ctx_->gop_size = 30;
-            codec_ctx_->max_b_frames = 0;
-            codec_ctx_->bit_rate = width_ * height_ * 2;
-            
-            av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
-            av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
-            
-            ret = avcodec_open2(codec_ctx_, codec, nullptr);
-            if (ret < 0) {
-                av_strerror(ret, errbuf, sizeof(errbuf));
-                throw std::runtime_error(std::string("Failed to open CPU encoder: ") + errbuf);
-            }
-            
-            std::cout << "✅ Fallback to CPU encoder successful\n";
+             // STRICT MODE: If we found NVENC but failed to open it -> THROW ERROR.
+             // Do NOT fallback to CPU. Force user to fix NVENC config.
+             throw std::runtime_error(std::string("CRITICAL: Found NVENC hardware but failed to open it! Error: ") + errbuf);
         } else {
-            throw std::runtime_error(std::string("Failed to open codec: ") + errbuf);
+             throw std::runtime_error(std::string("Failed to open codec: ") + errbuf);
         }
     }
     
