@@ -34,6 +34,7 @@ HLSEncoder::HLSEncoder(
     , frames_in_current_segment_(0)
     , total_frames_encoded_(0)
     , total_segments_written_(0)
+    , encoder_name_("unknown")
 {
     frames_per_segment_ = static_cast<int>(std::round(fps * segment_duration));
     playlist_path_ = output_dir + "/playlist.m3u8";
@@ -63,10 +64,24 @@ HLSEncoder::~HLSEncoder() {
 }
 
 void HLSEncoder::init_encoder() {
-    // Find H.264 encoder
-    const AVCodec* codec = avcodec_find_encoder(AV_CODEC_ID_H264);
-    if (!codec) {
-        throw std::runtime_error("H.264 encoder not found");
+    // Try GPU encoder first (NVENC), fallback to CPU if unavailable
+    const AVCodec* codec = nullptr;
+    bool using_nvenc = false;
+    
+    // 1. Try NVENC (GPU hardware encoder)
+    codec = avcodec_find_encoder_by_name("h264_nvenc");
+    if (codec) {
+        std::cout << "✅ Using NVIDIA NVENC GPU encoder (h264_nvenc)\n";
+        using_nvenc = true;
+        encoder_name_ = "h264_nvenc";
+    } else {
+        // 2. Fallback to CPU encoder
+        std::cout << "⚠️  NVENC not available, using CPU encoder (libx264)\n";
+        codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+        if (!codec) {
+            throw std::runtime_error("No H.264 encoder found (neither NVENC nor libx264)");
+        }
+        encoder_name_ = "libx264";
     }
     
     // Allocate codec context
@@ -75,7 +90,7 @@ void HLSEncoder::init_encoder() {
         throw std::runtime_error("Failed to allocate codec context");
     }
     
-    // Configure encoder
+    // Configure encoder (common settings)
     codec_ctx_->width = width_;
     codec_ctx_->height = height_;
     codec_ctx_->time_base = AVRational{1, static_cast<int>(fps_)};
@@ -83,18 +98,66 @@ void HLSEncoder::init_encoder() {
     codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
     codec_ctx_->gop_size = 30;  // Keyframe every 1 second
     codec_ctx_->max_b_frames = 0;  // Low latency
-    
-    // Quality settings
-    av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
-    av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
     codec_ctx_->bit_rate = width_ * height_ * 2;  // ~2 bits per pixel
+    
+    // Encoder-specific settings
+    if (using_nvenc) {
+        // NVENC GPU settings (CRITICAL for performance)
+        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);  // p1 = fastest, p7 = best quality
+        av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);    // ll = low latency
+        av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);     // cbr = constant bitrate
+        av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);    // Zero delay
+        av_opt_set(codec_ctx_->priv_data, "zerolatency", "1", 0);
+        // Disable B-frames for minimum latency
+        codec_ctx_->max_b_frames = 0;
+    } else {
+        // CPU libx264 settings
+        av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
+        av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
+    }
     
     // Open codec
     int ret = avcodec_open2(codec_ctx_, codec, nullptr);
     if (ret < 0) {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
-        throw std::runtime_error(std::string("Failed to open codec: ") + errbuf);
+        
+        // If NVENC failed, try CPU fallback
+        if (using_nvenc) {
+            std::cerr << "⚠️  NVENC init failed: " << errbuf << "\n";
+            std::cerr << "   Retrying with CPU encoder...\n";
+            
+            avcodec_free_context(&codec_ctx_);
+            
+            // Retry with CPU
+            codec = avcodec_find_encoder(AV_CODEC_ID_H264);
+            if (!codec) {
+                throw std::runtime_error("CPU encoder also not found");
+            }
+            
+            codec_ctx_ = avcodec_alloc_context3(codec);
+            codec_ctx_->width = width_;
+            codec_ctx_->height = height_;
+            codec_ctx_->time_base = AVRational{1, static_cast<int>(fps_)};
+            codec_ctx_->framerate = AVRational{static_cast<int>(fps_), 1};
+            codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+            codec_ctx_->gop_size = 30;
+            codec_ctx_->max_b_frames = 0;
+            codec_ctx_->bit_rate = width_ * height_ * 2;
+            
+            av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
+            av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
+            
+            ret = avcodec_open2(codec_ctx_, codec, nullptr);
+            if (ret < 0) {
+                av_strerror(ret, errbuf, sizeof(errbuf));
+                throw std::runtime_error(std::string("Failed to open CPU encoder: ") + errbuf);
+            }
+            
+            std::cout << "✅ Fallback to CPU encoder successful\n";
+        } else {
+            throw std::runtime_error(std::string("Failed to open codec: ") + errbuf);
+        }
     }
     
     // Allocate YUV frame

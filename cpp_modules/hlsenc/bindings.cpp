@@ -96,5 +96,13 @@ PYBIND11_MODULE(hlsenc, m) {
                 
                 Returns:
                     Stats object
+             )pbdoc")
+        
+        .def_property_readonly("encoder_name", &HLSEncoder::get_encoder_name,
+             R"pbdoc(
+                Get encoder name (e.g., 'h264_nvenc' or 'libx264').
+                
+                Returns:
+                    str: Encoder name
              )pbdoc");
 }

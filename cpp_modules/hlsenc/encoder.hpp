@@ -95,6 +95,11 @@ public:
     
     Stats get_stats() const;
     
+    /**
+     * Get encoder name (e.g., "h264_nvenc" or "libx264").
+     */
+    std::string get_encoder_name() const { return encoder_name_; }
+    
 private:
     // FFmpeg contexts
     AVFormatContext* fmt_ctx_;
@@ -123,6 +128,7 @@ private:
     // Segment tracking
     std::vector<std::string> segment_filenames_;
     std::string playlist_path_;
+    std::string encoder_name_;  // "h264_nvenc" or "libx264"
     
     // Helper functions
     void init_encoder();
