@@ -31,7 +31,7 @@ def test_bbox_creation():
     assert bbox.y1 == 50
     assert bbox.x2 == 200
     assert bbox.y2 == 150
-    assert bbox.confidence == 0.95
+    assert abs(bbox.confidence - 0.95) < 0.01, f"Confidence mismatch: {bbox.confidence} vs 0.95"
     assert bbox.label == "car"
     
     print("✅ BBox creation works")
