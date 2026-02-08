@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import storage, DriverStatus, DriverStatusRequest
 from app.db.session import get_db
 from app.services.video_service import VideoService
-from app.services.job_service import get_job_service
+# V2: No job_service - GPU workers poll PostgreSQL directly
 from app.schemas.video import VideoJobResponse
 
 logger = logging.getLogger(__name__)
@@ -149,21 +149,10 @@ async def analyze_driver_video(
             "result_url": f"/api/video/result/{job.job_id}",
         }
         
-        # Submit to background processing for DRIVER MONITORING
-        logger.info(f"[Driver Monitor] Submitting job {job.job_id} for driver monitoring AI processing...")
         
-        # Generate output path
-        output_path = video_service.get_output_path(job.job_id)
-        
-        job_service = get_job_service()
-        await job_service.submit_job(
-            session=db,
-            job_id=job.job_id,
-            input_path=job.video_path,
-            output_path=output_path,
-            video_type="in_cabin",  # This triggers driver monitoring processing
-            device=device
-        )
+        # V2: Job automatically claimed by GPU workers - No manual submission needed
+        # Workers poll PostgreSQL queue directly
+        logger.info(f"✅ Job {job.job_id} queued in PostgreSQL - workers will claim automatically")
         
         total_time = time.time() - start_time
         logger.info(f"✅ Driver monitoring upload complete - Job {job.job_id} submitted (total: {total_time:.1f}s)")

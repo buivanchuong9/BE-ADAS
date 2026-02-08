@@ -34,7 +34,7 @@ import uuid
 
 from app.db.session import get_db
 from app.services.video_service import VideoService
-from app.services.job_service import get_job_service
+# V2: No job_service - GPU workers poll PostgreSQL directly
 from app.db.repositories.job_queue_repo import JobQueueRepository
 from app.db.models.job_queue import JobQueue, JobStatus
 from app.core.config import settings
@@ -319,20 +319,10 @@ async def mobile_upload_video(
             logger.error(f"Failed to save MobileVideo record: {e}")
             # Continue normally
         
-        # === CRITICAL: Submit job for background AI processing ===
-        logger.info(f"📱 [Mobile Upload] Step 4: Submitting to AI queue...")
         
-        output_path = video_service.get_output_path(job_id)
-        
-        job_service = get_job_service()
-        await job_service.submit_job(
-            session=db,
-            job_id=job_id,
-            input_path=job.video_path,
-            output_path=output_path,
-            video_type=video_type,
-            device=device
-        )
+        # V2: Job automatically claimed by GPU workers - No manual submission needed
+        # Workers poll PostgreSQL queue directly
+        logger.info(f"✅ Job {job_id} queued in PostgreSQL - workers will claim automatically")
         
         total_time = time.time() - start_time
         logger.info(f"✅ [Mobile Upload] Complete! Job {job_id} queued (total: {total_time:.1f}s)")

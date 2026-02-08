@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
 from app.services.video_service import VideoService
-from app.services.job_service import get_job_service
+# V2: No job_service - GPU workers poll PostgreSQL directly
 from app.schemas.video import VideoJobResponse, VideoJobCreate
 from app.schemas.event import SafetyEventResponse
 from app.core.exceptions import ValidationError
