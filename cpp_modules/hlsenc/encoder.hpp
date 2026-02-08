@@ -19,6 +19,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/hwcontext.h>
 }
 
 #include <string>
@@ -106,6 +107,7 @@ private:
     AVCodecContext* codec_ctx_;
     AVStream* stream_;
     SwsContext* sws_ctx_;
+    AVBufferRef* hw_device_ctx_; // CUDA Hardware Device Context
     
     // Frame buffers
     AVFrame* yuv_frame_;

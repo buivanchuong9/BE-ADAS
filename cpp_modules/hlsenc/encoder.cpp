@@ -35,6 +35,7 @@ HLSEncoder::HLSEncoder(
     , total_frames_encoded_(0)
     , total_segments_written_(0)
     , encoder_name_("unknown")
+    , hw_device_ctx_(nullptr)
 {
     frames_per_segment_ = static_cast<int>(std::round(fps * segment_duration));
     playlist_path_ = output_dir + "/playlist.m3u8";
@@ -43,6 +44,9 @@ HLSEncoder::HLSEncoder(
 }
 
 HLSEncoder::~HLSEncoder() {
+    if (hw_device_ctx_) {
+        av_buffer_unref(&hw_device_ctx_);
+    }
     if (yuv_frame_) {
         av_frame_free(&yuv_frame_);
     }
@@ -56,6 +60,7 @@ HLSEncoder::~HLSEncoder() {
         avcodec_free_context(&codec_ctx_);
     }
     if (fmt_ctx_) {
+        // Only close if we wrote something or it's open
         if (fmt_ctx_->pb) {
             avio_closep(&fmt_ctx_->pb);
         }
@@ -69,13 +74,13 @@ void HLSEncoder::init_encoder() {
     bool using_nvenc = false;
     
     // 1. Try NVENC (GPU hardware encoder)
+    // "h264_nvenc" is the standard name
     codec = avcodec_find_encoder_by_name("h264_nvenc");
     if (codec) {
-        std::cout << "✅ Using NVIDIA NVENC GPU encoder (h264_nvenc)\n";
+        std::cout << "✅ Found NVIDIA NVENC GPU encoder (h264_nvenc)\n";
         using_nvenc = true;
         encoder_name_ = "h264_nvenc";
     } else {
-        // 2. Fallback to CPU encoder
         std::cout << "⚠️  NVENC not available, using CPU encoder (libx264)\n";
         codec = avcodec_find_encoder(AV_CODEC_ID_H264);
         if (!codec) {
@@ -95,38 +100,43 @@ void HLSEncoder::init_encoder() {
     codec_ctx_->height = height_;
     codec_ctx_->time_base = AVRational{1, static_cast<int>(fps_)};
     codec_ctx_->framerate = AVRational{static_cast<int>(fps_), 1};
-    // codec_ctx_->pix_fmt will be set based on encoder selection
     codec_ctx_->gop_size = 30;  // Keyframe every 1 second
     codec_ctx_->max_b_frames = 0;  // Low latency
     codec_ctx_->bit_rate = width_ * height_ * 2;  // ~2 bits per pixel
     
     // Encoder-specific settings
     if (using_nvenc) {
-        // NVENC GPU settings
-        // Use modern presets (p1-p7)
-        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);   // p1 = fastest
+        // Create Hardware Device Context for CUDA (Critical for A30/Data Center GPUs)
+        int err = av_hwdevice_ctx_create(&hw_device_ctx_, AV_HWDEVICE_TYPE_CUDA, nullptr, nullptr, 0);
+        if (err < 0) {
+            char errbuf[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(err, errbuf, sizeof(errbuf));
+            std::cerr << "⚠️ Failed to create CUDA HW context: " << errbuf << "\n";
+            std::cerr << "   Will attempt to init NVENC without explicit HW context...\n";
+        } else {
+            std::cout << "✅ Created CUDA HW device context\n";
+            codec_ctx_->hw_device_ctx = av_buffer_ref(hw_device_ctx_);
+        }
+
+        // NVENC Settings (Compatible with A30 & FFmpeg 4.x/5.x)
+        av_opt_set(codec_ctx_->priv_data, "preset", "p1", 0);   // p1 = fastest (was llhp)
         av_opt_set(codec_ctx_->priv_data, "tune", "ll", 0);     // Low latency
         av_opt_set(codec_ctx_->priv_data, "rc", "cbr", 0);      // Constant bitrate
         av_opt_set(codec_ctx_->priv_data, "delay", "0", 0);
         
-        // Auto-detect supported pixel format (prefer yuv420p for software input)
+        // Auto-detect pixel format: prefer yuv420p (sw) or nv12 (sw/hw)
+        // This allows FFmpeg/NVENC to handle memory copy internally
+        codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
         if (codec->pix_fmts) {
-            codec_ctx_->pix_fmt = codec->pix_fmts[0]; // Use first supported format (usually yuv420p or nv12)
             for (const AVPixelFormat* p = codec->pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
                 if (*p == AV_PIX_FMT_YUV420P) {
                     codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
                     break;
                 }
             }
-        } else {
-            // Fallback default
-            codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
         }
-        
-        // Ensure no B-frames
-        codec_ctx_->max_b_frames = 0;
     } else {
-        // CPU libx264 settings (For macOS dev only)
+        // CPU libx264 settings (High Perf)
         av_opt_set(codec_ctx_->priv_data, "preset", "veryfast", 0);
         av_opt_set(codec_ctx_->priv_data, "tune", "zerolatency", 0);
         codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
@@ -138,16 +148,11 @@ void HLSEncoder::init_encoder() {
         char errbuf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, errbuf, sizeof(errbuf));
         
-        std::cerr << "❌ FAILED TO OPEN ENCODER: " << (using_nvenc ? "NVENC" : "CPU") << "\n";
-        std::cerr << "   Error code: " << ret << "\n";
-        std::cerr << "   Error msg:  " << errbuf << "\n";
-        
         if (using_nvenc) {
-             // STRICT MODE: If we found NVENC but failed to open it -> THROW ERROR.
-             // Do NOT fallback to CPU. Force user to fix NVENC config.
-             throw std::runtime_error(std::string("CRITICAL: Found NVENC hardware but failed to open it! Error: ") + errbuf);
+            // STRICT FAIL: Do not fallback if NVENC fails
+            throw std::runtime_error(std::string("CRITICAL: NVENC found but failed to open! Error: ") + errbuf);
         } else {
-             throw std::runtime_error(std::string("Failed to open codec: ") + errbuf);
+            throw std::runtime_error(std::string("Failed to open CPU codec: ") + errbuf);
         }
     }
     
@@ -157,7 +162,10 @@ void HLSEncoder::init_encoder() {
         throw std::runtime_error("Failed to allocate YUV frame");
     }
     
-    yuv_frame_->format = codec_ctx_->pix_fmt;
+    // Use yuv420p for the intermediate frame (sws_scale output)
+    // If the encoder requires CUDA frames, we rely on automatic upload or explicit mapping
+    // But for simplicity with sws_scale, we use YUV420P buffers
+    yuv_frame_->format = AV_PIX_FMT_YUV420P;
     yuv_frame_->width = width_;
     yuv_frame_->height = height_;
     
