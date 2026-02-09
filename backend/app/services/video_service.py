@@ -172,6 +172,8 @@ class VideoService:
         job_data = {
             "job_id": job_id_uuid,
             "video_id": video.id,  # Required foreign key
+            "video_path": input_path,  # CRITICAL: Worker needs this!
+            "video_filename": filename,
             "trip_id": trip_id,
             "video_type": video_type,
             "device": device,
