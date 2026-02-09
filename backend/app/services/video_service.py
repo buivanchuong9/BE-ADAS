@@ -171,9 +171,7 @@ class VideoService:
         repo = JobQueueRepository(self.session)
         job_data = {
             "job_id": job_id_uuid,
-            "video_id": video.id,  # Required foreign key
-            "video_path": input_path,  # CRITICAL: Worker needs this!
-            "video_filename": filename,
+            "video_id": video.id,  # Required foreign key (video_path will come from video.storage_path)
             "trip_id": trip_id,
             "video_type": video_type,
             "device": device,
