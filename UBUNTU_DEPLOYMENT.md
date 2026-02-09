@@ -21,11 +21,13 @@ pip install -r requirements.txt
 # 5. Kill tất cả services cũ
 pkill -u phonglv -f "gpu_worker"
 pkill -u phonglv -f "uvicorn backend.app.main"
-pkill -9 ffmpeg  # Kill zombie FFmpeg processes (CRITICAL!)
+pkill -9 ffmpeg  
 
 # 6. Export env và path
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=$PYTHONPATH:$(pwd)
+
+
 
 # 7. Start API (Backend)
 echo "🚀 Starting API Server..."
@@ -36,13 +38,19 @@ nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --work
 echo "🚀 Starting GPU Worker (Simple & Stable)..."
 nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" > worker_0.log 2>&1 &
 
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda > worker_0.log 2>&1 &
+
 # Nếu có nhiều GPU, chạy thêm worker:
 # CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda > worker_1.log 2>&1 &
 
 # 9. Xem log (API)
 tail -f api.log
 
-# 10. Xem worker đang chạy
+# 10. Verify latest code is pulled
+git log --oneline -1
+# Should show: "fix: remove video_path from job_data..."
+
+# 11. Xem worker đang chạy
 ps aux | grep gpu_worker_simple
 
 # 11. Kiểm tra không có zombie FFmpeg (QUAN TRỌNG!)
