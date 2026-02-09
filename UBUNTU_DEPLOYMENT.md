@@ -19,10 +19,9 @@ git pull origin main
 pip install -r requirements.txt
 
 # 5. Kill tất cả services cũ
-# 5. Kill tất cả services cũ
-pkill -u phonglv -f "gpu_worker.py"
+pkill -u phonglv -f "gpu_worker"
 pkill -u phonglv -f "uvicorn backend.app.main"
-pkill -u phonglv -f "celery -A"
+pkill -9 ffmpeg  # Kill zombie FFmpeg processes (CRITICAL!)
 
 # 6. Export env và path
 export $(grep -v '^#' .env | xargs)
@@ -32,17 +31,23 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)
 echo "🚀 Starting API Server..."
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
 
-# 8. Start GPU Workers (Video Processing)
-# Launch 4 workers for optimal A30 utilization
-echo "🚀 Starting 4 GPU Workers..."
-for i in {0..3}; do
-    nohup python3 workers/gpu_worker_v3_hybrid.py --worker-id worker_$i --database-url "$DATABASE_URL" > worker_$i.log 2>&1 &
-done
+# 8. Start GPU Workers (Python Only - STABLE)
+# Khuyến nghị: 1 worker cho mỗi GPU A30
+echo "🚀 Starting GPU Worker (Simple & Stable)..."
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" > worker_0.log 2>&1 &
+
+# Nếu có nhiều GPU, chạy thêm worker:
+# CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda > worker_1.log 2>&1 &
 
 # 9. Xem log (API)
 tail -f api.log
-#10. xem worker
-ps aux | grep gpu_worker_v3_hybrid
+
+# 10. Xem worker đang chạy
+ps aux | grep gpu_worker_simple
+
+# 11. Kiểm tra không có zombie FFmpeg (QUAN TRỌNG!)
+ps aux | grep ffmpeg
+# Nên RỖNG hoặc chỉ có process đang encode
 
 # 10. Test (Ctrl+C để thoát tail, rồi test)
 curl http://localhost:52000/health
@@ -176,9 +181,9 @@ git pull origin main
 pip install -r requirements.txt
 
 # Kill tất cả services cũ
-pkill -9 -f "celery"
+pkill -u phonglv -f "gpu_worker"
 pkill -u phonglv -9 uvicorn
-redis-cli FLUSHALL
+pkill -9 ffmpeg  # Kill zombie FFmpeg (CRITICAL!)
 
 # Export env và path
 export $(grep -v '^#' .env | xargs)
@@ -187,25 +192,87 @@ export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
 # Start API
 nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
 
-# Start Celery Worker
+# Start GPU Worker (Python Only - STABLE)
 cd ~/BE-ADAS
-nohup python -m celery -A app.core.celery_config worker --loglevel=info --pool=solo > logs/worker.log 2>&1 &
-
-# Start Celery Beat
-cd ~/BE-ADAS
-nohup python -m celery -A app.core.celery_config beat --loglevel=info > logs/beat.log 2>&1 &
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda > worker_0.log 2>&1 &
 
 # Xem log
 tail -f backend.log
+
+# Check worker running
+ps aux | grep gpu_worker_simple
+
+# Check no zombie FFmpeg (CRITICAL!)
+ps aux | grep ffmpeg
+# Should be EMPTY or only active encoding processes
 ```
 
 **Sau khi thấy log chạy OK, Ctrl+C rồi test:**
 ```bash
 curl http://localhost:52000/health
 curl https://adas-api.aiotlab.edu.vn/health
+
+# Monitor GPU utilization (should be >80% when processing)
+watch nvidia-smi
+
+# View worker logs
+tail -f worker_0.log
+
+# View API logs with job tracking
+tail -f api.log | grep -E "JOB|CLEANUP|GPU|DONE"
 ```
 
 **Thời gian:** 2-3 phút  
 **Khó:** ⭐ (Rất dễ)
+
+---
+
+## 📊 MONITORING & VERIFICATION
+
+### Check System Health
+```bash
+# 1. Check services running
+ps aux | grep -E "uvicorn|gpu_worker_simple"
+
+# 2. Check GPU utilization
+nvidia-smi
+
+# 3. Check NO zombie FFmpeg (CRITICAL!)
+ps aux | grep ffmpeg
+# Should be EMPTY when no job running
+
+# 4. Check worker logs for CLEANUP messages
+grep CLEANUP worker_0.log | tail -5
+# Should see: [CLEANUP] ✓ FFmpeg PID xxx cleaned up
+
+# 5. Test video upload
+curl -X POST http://localhost:52000/api/video/upload \
+  -F "file=@test_video.mp4" \
+  -F "video_type=dashcam" \
+  -F "device=cuda"
+```
+
+### Expected Performance (A30 GPU)
+- Processing speed: **40-60 FPS** (1.5-2x realtime)
+- VRAM usage: **4-5 GB** per worker
+- CPU usage: **< 50%** (overlay is CPU but lightweight)
+- Latency: **< 30s** for 60s video
+- Zombie processes: **ZERO** ✅
+
+### Troubleshooting
+```bash
+# If video doesn't play on Safari/Chrome:
+# Check pixel format (MUST be yuv420p)
+ffprobe -v error -select_streams v:0 \
+  -show_entries stream=pix_fmt \
+  -of default=noprint_wrappers=1:nokey=1 \
+  result.mp4
+# Expected: yuv420p
+
+# If VRAM leak detected:
+# Restart worker to clear
+pkill -f gpu_worker_simple
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda > worker_0.log 2>&1 &
+```
 
 ✅ **Sẵn sàng!**
