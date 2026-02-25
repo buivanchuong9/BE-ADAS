@@ -1,29 +1,3 @@
-"""
-LANE DETECTOR V4 — Bird's Eye View + Sliding Window + Polynomial Fit
-====================================================================
-Production-grade lane detection for ADAS V4.
-
-Pipeline:
-  1. Perspective Transform  → Bird's Eye View (BEV)
-  2. Color + Gradient Filter → Binary lane mask
-  3. Sliding Window Search   → Lane pixel clusters
-  4. 2nd-Order Polynomial Fit → y = a*x^2 + b*x + c (per lane)
-  5. Moving Average Smooth   → Prevent coefficient flickering
-  6. Driving Corridor Render → Semi-transparent green poly between lanes
-  7. Inverse Warp            → Back to original frame perspective
-  8. Lane Offset Computation → Vehicle center vs lane center (for LDW)
-
-Key guarantees:
-  - No Hough Transform used anywhere
-  - Curved lane support via polynomial (not straight-line approximation)
-  - Kalman-filtered coefficients for temporal smoothness
-  - Lane offset returned for RiskEngineV4 LDW assessment
-
-Author  : Senior ADAS Engineer — V4 Architecture
-Version : 4.0.0
-Date    : 2026-02-25
-"""
-
 import cv2
 import numpy as np
 import logging
@@ -31,6 +5,21 @@ from collections import deque
 from typing import Optional, Tuple, Dict, List
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Detect cv2.cuda once at module import
+# ---------------------------------------------------------------------------
+try:
+    _CV2_CUDA: bool = (
+        hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0
+    )
+except Exception:
+    _CV2_CUDA = False
+
+if _CV2_CUDA:
+    logger.info("[LaneV4] cv2.cuda detected ✅ — all image ops routed to GPU")
+else:
+    logger.info("[LaneV4] cv2.cuda not available — CPU image ops (fallback)")
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +222,20 @@ class LaneDetectorV4:
         # Stats
         self._frame_count = 0
 
+        # ── GPU acceleration (cv2.cuda) ──────────────────────────────────
+        # _cuda_ok  : False if cv2.cuda not available OR a GPU op fails at runtime
+        # _gf       : dict of pre-created cv2.cuda filter objects (lazy, per resolution)
+        # _gf_res   : (w, h) for which _gf was built — rebuild on resolution change
+        self._cuda_ok: bool      = _CV2_CUDA
+        self._gf     : Optional[Dict] = None
+        self._gf_res : tuple     = (0, 0)
+        if self._cuda_ok:
+            self._init_gpu_filters(frame_w, frame_h)
+
         logger.info(
             f"[LaneV4] Initialized — BEV {frame_w}×{frame_h}  "
-            f"smooth_window={smooth_window}  alpha={smooth_alpha}"
+            f"smooth_window={smooth_window}  alpha={smooth_alpha}  "
+            f"cuda={'ON' if self._cuda_ok else 'OFF'}"
         )
 
     # ------------------------------------------------------------------
@@ -314,49 +314,151 @@ class LaneDetectorV4:
         self._right_smoother.reset()
 
     # ------------------------------------------------------------------
+    # GPU filter init
+    # ------------------------------------------------------------------
+
+    def _init_gpu_filters(self, w: int, h: int) -> None:
+        """
+        Pre-create all cv2.cuda filter objects.
+        Called once at startup and whenever the input resolution changes.
+        All filters are stateless w.r.t. image size — they apply to any GpuMat.
+        The ROI mask IS size-dependent and is rebuilt here.
+        """
+        # ROI mask: zeros in top 40 % (sky + car hood), ones in bottom 60 %
+        roi_cpu = np.ones((h, w), dtype=np.uint8) * 255
+        roi_cpu[:int(h * 0.40), :] = 0
+        gpu_roi = cv2.cuda_GpuMat()
+        gpu_roi.upload(roi_cpu)
+
+        k3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+        self._gf = {
+            'gauss'       : cv2.cuda.createGaussianFilter(
+                                cv2.CV_8UC1, cv2.CV_8UC1, (5, 5), 0),
+            'sobel'       : cv2.cuda.createSobelFilter(
+                                cv2.CV_8UC1, cv2.CV_32F, 1, 0, ksize=3),
+            'morph_close' : cv2.cuda.createMorphologyFilter(
+                                cv2.MORPH_CLOSE, cv2.CV_8UC1, k3),
+            'morph_open'  : cv2.cuda.createMorphologyFilter(
+                                cv2.MORPH_OPEN,  cv2.CV_8UC1, k3),
+            'roi_mask'    : gpu_roi,
+        }
+        self._gf_res = (w, h)
+        logger.debug(f"[LaneV4] GPU filters built for {w}\u00d7{h}")
+
+    # ------------------------------------------------------------------
     # Step 1: Binary mask in BEV space
     # ------------------------------------------------------------------
 
     def _bev_binary_mask(self, frame: np.ndarray) -> np.ndarray:
         """
-        Produce binary image (H×W, uint8, 0/255) showing lane pixels in BEV.
-
-        Strategy:
-          - Yellow lane:  HSV threshold
-          - White lane:   grayscale threshold on V-channel
-          - Gradient:     Sobel-x for vertical edge detection
+        Binary lane mask in BEV space (0/255).
+        Routes to GPU (cv2.cuda) when available; falls back to CPU on error.
         """
+        h, w = frame.shape[:2]
+        # Rebuild GPU filters if input resolution changed
+        if self._cuda_ok and self._gf_res != (w, h):
+            self._init_gpu_filters(w, h)
+
+        if self._cuda_ok and self._gf:
+            try:
+                return self._bev_binary_mask_gpu(frame)
+            except Exception as exc:
+                logger.warning(f"[LaneV4] GPU mask error ({exc}) — falling back to CPU")
+                self._cuda_ok = False   # disable GPU for this session
+
+        return self._bev_binary_mask_cpu(frame)
+
+    # -- GPU path (cv2.cuda) --
+
+    def _bev_binary_mask_gpu(self, frame: np.ndarray) -> np.ndarray:
+        """
+        GPU-accelerated binary mask.
+        ALL heavy ops run on GPU (BEV warp, color convert, Sobel, morph).
+        CPU is only used for the final download.
+        """
+        gf   = self._gf
+        bw   = self.bev.frame_w
+        bh   = self.bev.frame_h
+
+        # ── Upload once → BEV warp on GPU ────────────────────────────────
+        gpu_src = cv2.cuda_GpuMat()
+        gpu_src.upload(frame)
+        gpu_bev = cv2.cuda.warpPerspective(
+            gpu_src, self.bev.M, (bw, bh), flags=cv2.INTER_LINEAR
+        )
+
+        # ── Yellow mask: per-channel HSV thresholds on GPU ───────────────
+        gpu_hsv = cv2.cuda.cvtColor(gpu_bev, cv2.COLOR_BGR2HSV)
+        chs = cv2.cuda.split(gpu_hsv)          # [H, S, V] GpuMats
+        gh, gs, gv = chs[0], chs[1], chs[2]
+
+        _, h_lo = cv2.cuda.threshold(gh, int(self.YELLOW_HSV_LO[0]) - 1, 255, cv2.THRESH_BINARY)
+        _, h_hi = cv2.cuda.threshold(gh, int(self.YELLOW_HSV_HI[0]),     255, cv2.THRESH_BINARY_INV)
+        _, s_lo = cv2.cuda.threshold(gs, int(self.YELLOW_HSV_LO[1]) - 1, 255, cv2.THRESH_BINARY)
+        _, v_lo = cv2.cuda.threshold(gv, int(self.YELLOW_HSV_LO[2]) - 1, 255, cv2.THRESH_BINARY)
+        yellow  = cv2.cuda.bitwise_and(
+            cv2.cuda.bitwise_and(h_lo, h_hi),
+            cv2.cuda.bitwise_and(s_lo, v_lo),
+        )
+
+        # ── White mask: grayscale threshold on GPU ────────────────────────
+        gpu_gray = cv2.cuda.cvtColor(gpu_bev, cv2.COLOR_BGR2GRAY)
+        _, white = cv2.cuda.threshold(gpu_gray, self.WHITE_V_THRESH, 255, cv2.THRESH_BINARY)
+
+        # ── Sobel-x gradient mask on GPU ──────────────────────────────────
+        gpu_blur = gf['gauss'].apply(gpu_gray)          # uint8 blur
+        gpu_sx   = gf['sobel'].apply(gpu_blur)          # float32, signed
+        try:
+            gpu_abs = cv2.cuda.abs(gpu_sx)              # element-wise abs (float32)
+        except AttributeError:
+            # Older OpenCV without cuda.abs: 1 download/upload (~0.5 ms)
+            gpu_abs = cv2.cuda_GpuMat()
+            gpu_abs.upload(np.abs(gpu_sx.download()).astype(np.float32))
+        gpu_norm = cv2.cuda_GpuMat(gpu_sx.size(), cv2.CV_8UC1)
+        cv2.cuda.normalize(gpu_abs, gpu_norm, 0, 255, cv2.NORM_MINMAX, cv2.CV_8UC1)
+        _, grad  = cv2.cuda.threshold(gpu_norm, 30, 255, cv2.THRESH_BINARY)
+
+        # ── Combine all masks + apply pre-built ROI mask ──────────────────
+        combined = cv2.cuda.bitwise_or(cv2.cuda.bitwise_or(yellow, white), grad)
+        combined = cv2.cuda.bitwise_and(combined, gf['roi_mask'])
+
+        # ── Morphological cleanup on GPU ──────────────────────────────────
+        combined = gf['morph_close'].apply(combined)
+        combined = gf['morph_open'].apply(combined)
+
+        # ── Download: only 1 D2H copy per frame ──────────────────────────
+        return combined.download()
+
+    # -- CPU fallback path --
+
+    def _bev_binary_mask_cpu(self, frame: np.ndarray) -> np.ndarray:
+        """CPU fallback — identical algorithm, pure OpenCV/numpy."""
         bev = self.bev.warp(frame)
 
-        # --- Yellow mask (HSV) ---
+        # Yellow mask (HSV)
         hsv = cv2.cvtColor(bev, cv2.COLOR_BGR2HSV)
         yellow_mask = cv2.inRange(hsv, self.YELLOW_HSV_LO, self.YELLOW_HSV_HI)
 
-        # --- White mask (grayscale) ---
+        # White mask (grayscale)
         gray = cv2.cvtColor(bev, cv2.COLOR_BGR2GRAY)
-        # Use adaptive threshold to handle varying lighting
         _, white_mask = cv2.threshold(gray, self.WHITE_V_THRESH, 255, cv2.THRESH_BINARY)
 
-        # --- Sobel-x gradient mask ---
-        blur  = cv2.GaussianBlur(gray, (5, 5), 0)
+        # Sobel-x gradient
+        blur   = cv2.GaussianBlur(gray, (5, 5), 0)
         sobelx = cv2.Sobel(blur, cv2.CV_64F, 1, 0, ksize=3)
         abs_sx = np.absolute(sobelx)
         scaled = np.uint8(255 * abs_sx / (abs_sx.max() + 1e-6))
         _, grad_mask = cv2.threshold(scaled, 30, 255, cv2.THRESH_BINARY)
 
-        # --- Combine ---
         combined = cv2.bitwise_or(yellow_mask, white_mask)
         combined = cv2.bitwise_or(combined, grad_mask)
 
-        # --- Remove top 40 % (sky/car hood) ---
         roi_h = int(combined.shape[0] * 0.40)
         combined[:roi_h, :] = 0
 
-        # --- Morphological clean-up ---
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
         combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN,  kernel)
-
         return combined
 
     # ------------------------------------------------------------------
@@ -545,25 +647,34 @@ class LaneDetectorV4:
                 if 0 <= x1 < w and 0 <= x2 < w:
                     cv2.line(bev_canvas, (x1, y1), (x2, y2), clr, 4)
 
-        # Inverse warp BEV corridor back to original camera view
-        corridor_unwarped = self.bev.unwarp(bev_canvas, w, h)
+        # ── Inverse warp BEV corridor → original camera view (GPU if available) ──
+        if self._cuda_ok:
+            _gc = cv2.cuda_GpuMat()
+            _gc.upload(bev_canvas)
+            _gu = cv2.cuda.warpPerspective(
+                _gc, self.bev.M_inv, (w, h), flags=cv2.INTER_LINEAR
+            )
+            corridor_unwarped = _gu.download()
+        else:
+            corridor_unwarped = self.bev.unwarp(bev_canvas, w, h)
 
-        # Alpha-blend onto original frame
-        annotated = original.copy().astype(np.float32)
-        corridor_f = corridor_unwarped.astype(np.float32)
-        mask = (corridor_unwarped.sum(axis=2) > 0).astype(np.float32)[:, :, np.newaxis]
-
-        annotated = (
-            annotated * (1.0 - mask * self.CORRIDOR_ALPHA)
-            + corridor_f * mask * self.CORRIDOR_ALPHA
-            + annotated * mask * (1.0 - self.CORRIDOR_ALPHA)    # keep original under
-        )
-        # Simpler equivalent (same visual result, faster):
-        annotated = cv2.addWeighted(
-            original.astype(np.uint8), 1.0 - self.CORRIDOR_ALPHA,
-            corridor_unwarped,          self.CORRIDOR_ALPHA,
-            0
-        )
+        # ── Alpha-blend corridor onto original frame (GPU if available) ──
+        if self._cuda_ok:
+            _go = cv2.cuda_GpuMat(); _go.upload(original.astype(np.uint8))
+            _gcr = cv2.cuda_GpuMat(); _gcr.upload(corridor_unwarped)
+            _gout = cv2.cuda_GpuMat()
+            cv2.cuda.addWeighted(
+                _go,  1.0 - self.CORRIDOR_ALPHA,
+                _gcr, self.CORRIDOR_ALPHA,
+                0, _gout
+            )
+            annotated = _gout.download()
+        else:
+            annotated = cv2.addWeighted(
+                original.astype(np.uint8), 1.0 - self.CORRIDOR_ALPHA,
+                corridor_unwarped,          self.CORRIDOR_ALPHA,
+                0
+            )
 
         # Project corridor polygon vertices back to original space for reference
         corridor_pts_orig = None

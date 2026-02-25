@@ -102,8 +102,10 @@ class GPUWorkerV4(SimpleGPUWorker):
     ):
         super().__init__(worker_id, database_url, device)
 
-        # V4-specific state (overlay renderer is stateful — holds flash timer)
+        # V4-specific state
         self._overlay_renderer: Optional[VietnameseOverlayRenderer] = None
+        # Separate CUDA stream for lane cv2.cuda ops (runs in parallel with YOLO stream)
+        self._stream_lane = None
 
         logger.info(f"[V4WORKER] {worker_id} — V4 pipeline enabled")
 
@@ -184,9 +186,12 @@ class GPUWorkerV4(SimpleGPUWorker):
 
             # CUDA stream for GPU inference
             if torch.cuda.is_available():
-                self._stream_obj = torch.cuda.Stream()
+                self._stream_obj  = torch.cuda.Stream()   # YOLO inference
+                self._stream_lane = torch.cuda.Stream()   # lane cv2.cuda ops
+            # 2 workers: thread-0 → YOLO (torch CUDA stream_obj)
+            #            thread-1 → lane (cv2.cuda, own thread = own stream)
             self._infer_pool = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix='v4_obj'
+                max_workers=2, thread_name_prefix='v4_gpu'
             )
 
             # Warm-up
@@ -410,33 +415,46 @@ class GPUWorkerV4(SimpleGPUWorker):
         """
         import torch
 
-        # ── 1. BEV Lane Detection (CPU, ~2ms) ────────────────────────────
-        lane_result = {}
-        try:
-            lane_result = pipeline['lane'].process_frame(frame)
-        except Exception as e:
-            logger.warning(f"[V4LANE] {e}")
-            # Provide safe default so rest of pipeline continues
-            lane_result = {
-                'annotated_frame': frame.copy(),
-                'has_lane'       : False,
-                'lane_offset'    : 0.0,
-                'offset_level'   : 'SAFE',
-            }
+        # ── 1 ∥ 2. Lane + Object Detection — concurrent GPU streams ─────
+        # Submit BOTH to the thread pool simultaneously so they run in parallel.
+        # Thread-0 (lane)  → cv2.cuda ops, each thread has its own CUDA stream.
+        # Thread-1 (object)→ YOLO on torch stream_obj.
+        # CPU blocks on BOTH futures → true dual-stream GPU utilization.
 
-        # ── 2. Object Detection (GPU async) ──────────────────────────────
+        _safe_lane_default = {
+            'annotated_frame': frame.copy(),
+            'has_lane'       : False,
+            'lane_offset'    : 0.0,
+            'offset_level'   : 'SAFE',
+        }
+
+        def _lane():
+            try:
+                return pipeline['lane'].process_frame(frame)
+            except Exception as exc:
+                logger.warning(f"[V4LANE] {exc}")
+                return _safe_lane_default
+
         def _detect():
             try:
                 if self._stream_obj and torch.cuda.is_available():
                     with torch.cuda.stream(self._stream_obj):
                         return pipeline['object'].process_frame(frame)
                 return pipeline['object'].process_frame(frame)
-            except Exception as e:
-                logger.warning(f"[V4OBJ] {e}")
+            except Exception as exc:
+                logger.warning(f"[V4OBJ] {exc}")
                 return {}
 
-        fut = self._infer_pool.submit(_detect) if self._infer_pool else None
-        obj_result = fut.result() if fut else _detect()
+        if self._infer_pool:
+            # Fire both simultaneously — GPU does two things at once
+            fut_lane = self._infer_pool.submit(_lane)
+            fut_obj  = self._infer_pool.submit(_detect)
+            lane_result = fut_lane.result()     # wait both
+            obj_result  = fut_obj.result()
+        else:
+            lane_result = _lane()
+            obj_result  = _detect()
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
