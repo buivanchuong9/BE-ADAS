@@ -1,31 +1,3 @@
-#!/usr/bin/env python3
-"""
-GPU WORKER - SIMPLE & STABLE (Python Only)
-===========================================
-Production-ready GPU worker with ZERO zombie processes.
-
-ARCHITECTURE:
-- Python ONLY (no C++, no pybind11)
-- 1 worker = 1 GPU = 1 process
-- Sequential job processing (no multiprocessing)
-- FFmpeg NVENC for encoding (safe cleanup)
-- OpenCV for overlay (CPU is acceptable for demo)
-
-PERFORMANCE TARGET:
-- 1080p @ 30fps: 40-60 FPS processing (1.5-2x realtime)
-- VRAM per worker: ~4-5 GB
-- Latency: <30s for 60s video
-
-STABILITY:
-- ✅ No zombie FFmpeg processes
-- ✅ Guaranteed cleanup on exception
-- ✅ Web-compatible video output
-- ✅ Detailed logging for debugging
-
-Author: Senior Backend + AI Engineer
-Date: 2026-02-09
-"""
-
 import os
 import sys
 import time
@@ -44,6 +16,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Import dependencies
 import asyncio
 import asyncpg
+import subprocess
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
 from dotenv import load_dotenv
@@ -52,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
 # Import FFmpeg utilities (SAFE)
-from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info
+from backend.app.core.ffmpeg_utils import FFmpegEncoder, get_video_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +69,17 @@ class SimpleGPUWorker:
         
         # AI Pipeline (lazy-loaded)
         self.pipeline = None
+
+        # GPU inference: pre-created CUDA streams + thread pool (set during _load_pipeline)
+        self._stream_obj:     object = None   # torch.cuda.Stream for object detection
+        self._stream_driver:  object = None   # torch.cuda.Stream for driver monitoring
+        self._stream_traffic: object = None   # torch.cuda.Stream for traffic sign
+        self._infer_pool: Optional[ThreadPoolExecutor] = None  # 3-worker thread pool
+
+        # Vietnamese TTS for warnings
+        self.voice_enabled = True
+        self.last_warning_time = 0
+        self.warning_cooldown = 3.0  # seconds between warnings
         
         # Stats
         self.jobs_processed = 0
@@ -128,23 +115,82 @@ class SimpleGPUWorker:
         logger.info(f"[WORKER] {self.worker_id} shutdown complete")
     
     def _load_pipeline(self):
-        """Lazy-load AI pipeline."""
-        if self.pipeline is None:
-            logger.info(f"[GPU] Loading AI models to {self.device}...")
-            
-            from backend.perception.object.object_detector_v11 import ObjectDetectorV11
-            from backend.perception.distance.distance_estimator import DistanceEstimator
-            from backend.perception.lane.lane_detector_v11 import LaneDetectorV11
-            
-            # Load models
-            self.pipeline = {
-                'object': ObjectDetectorV11(device=self.device),
-                'distance': DistanceEstimator(),
-                'lane': LaneDetectorV11(device=self.device),
-            }
-            
-            logger.info(f"[GPU] ✓ AI pipeline loaded successfully")
-        
+        """
+        Lazy-load AI pipeline với tối ưu hóa tối đa cho GPU NVIDIA A30.
+
+        Optimizations:
+        - TF32 matmul/cuDNN  → Tensor Core throughput (Ampere)
+        - cudnn.benchmark    → auto-tune conv kernels for fixed input size
+        - Pre-created CUDA streams → 3 YOLO models chạy song song
+        - ThreadPoolExecutor → release Python GIL during CUDA kernels
+        - Warmup 2 passes    → trigger CUDA JIT / cuDNN heuristics trước khi
+                               job thật đến (triệt tiêu first-frame stall)
+        """
+        if self.pipeline is not None:
+            return self.pipeline
+
+        import torch
+
+        # ── A30 (Ampere) GPU flags ────────────────────────────────────────
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark        = True   # auto-tune conv
+            torch.backends.cuda.matmul.allow_tf32 = True   # TF32 Tensor Core
+            torch.backends.cudnn.allow_tf32        = True   # TF32 in cuDNN
+            torch.set_float32_matmul_precision('high')      # FP32 → TF32
+            torch.cuda.empty_cache()
+            props = torch.cuda.get_device_properties(0)
+            logger.info(
+                f"[GPU] {props.name}  "
+                f"VRAM={props.total_memory // 1024**2}MB  "
+                f"SM={props.multi_processor_count}"
+            )
+
+        logger.info(f"[GPU] Đang tải AI models lên {self.device}...")
+
+        from backend.perception.object.object_detector_v11  import ObjectDetectorV11
+        from backend.perception.distance.distance_estimator import DistanceEstimator
+        from backend.perception.lane.lane_detector_v11       import LaneDetectorV11
+        from backend.perception.driver.driver_monitor_v11   import DriverMonitorV11
+        from backend.perception.traffic.traffic_sign_v11    import TrafficSignV11
+
+        self.pipeline = {
+            'object':   ObjectDetectorV11(device=self.device, conf_threshold=0.5),
+            'distance': DistanceEstimator(focal_length=700.0, camera_height=1.2),
+            'lane':     LaneDetectorV11(device=self.device, use_cyan=False),
+            'driver':   DriverMonitorV11(device=self.device),
+            'traffic':  TrafficSignV11(device=self.device, conf_threshold=0.6),
+        }
+
+        # ── Pre-create CUDA streams (1 per YOLO model) ───────────────────
+        # Objects/driver/traffic YOLO models chạy đồng thời trên 3 stream
+        # riêng biệt → A30 có 56 SM, 3 stream tận dụng tốt hardware.
+        if torch.cuda.is_available():
+            self._stream_obj     = torch.cuda.Stream()
+            self._stream_driver  = torch.cuda.Stream()
+            self._stream_traffic = torch.cuda.Stream()
+
+        # Thread pool: 3 workers, mỗi worker bind 1 CUDA stream
+        # GIL được release khi CUDA kernel chạy → thực sự song song
+        self._infer_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='adas_infer')
+
+        # ── Warmup: 2 passes để cuDNN cache conv heuristics ──────────────
+        logger.info("[GPU] Warming up all models (2 passes)...")
+        dummy = np.zeros((480, 640, 3), dtype=np.uint8)
+        for _ in range(2):
+            try:
+                self.pipeline['object'].process_frame(dummy)
+                self.pipeline['lane'].process_frame(dummy)
+                self.pipeline['driver'].process_frame(dummy)
+                self.pipeline['traffic'].process_frame(dummy)
+            except Exception as e:
+                logger.warning(f"[GPU] Warmup (non-fatal): {e}")
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        logger.info("[GPU] ✅ Pipeline ADAS sẵn sàng trên A30")
+        logger.info("     object/driver/traffic → 3 CUDA streams song song")
+        logger.info("     lane → BEV classical CV (cv2.cuda nếu có)")
         return self.pipeline
     
     async def claim_job(self) -> Optional[Dict]:
@@ -217,67 +263,121 @@ class SimpleGPUWorker:
             
             # === LOAD PIPELINE ===
             pipeline = self._load_pipeline()
-            
-            # === OPEN VIDEO ===
-            logger.info(f"[DECODE] Opening video...")
-            cap = cv2.VideoCapture(str(input_path))
-            if not cap.isOpened():
+
+            # ── Probe video metadata (CPU-light, 1 call only) ───────────
+            logger.info("[DECODE] Probing video metadata...")
+            cap_probe = cv2.VideoCapture(str(input_path))
+            if not cap_probe.isOpened():
                 raise RuntimeError(f"Cannot open video: {input_path}")
-            
-            # Get video properties (DATA TYPE SAFE)
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            
+            fps          = cap_probe.get(cv2.CAP_PROP_FPS) or 30.0
+            total_frames = int(cap_probe.get(cv2.CAP_PROP_FRAME_COUNT))
+            width        = int(cap_probe.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height       = int(cap_probe.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap_probe.release()
             logger.info(f"[VIDEO] {width}x{height} @ {fps:.1f}fps, {total_frames} frames")
-            
+
+            # ── NVDEC producer thread ─────────────────────────────────────
+            # FFmpeg -hwaccel cuda -c:v h264_cuvid → GPU hardware decoder (NVDEC)
+            # giải phóng CPU hoàn toàn khỏi H.264 decoding.
+            # Frames được pipe ra raw BGR24 bytes, đẩy vào bounded queue.
+            frame_queue: queue.Queue = queue.Queue(maxsize=16)
+            frame_size = width * height * 3  # bytes per BGR24 frame
+
+            def _nvdec_reader(path: str, fq: queue.Queue):
+                """
+                Chạy FFmpeg NVDEC trong background thread.
+                Thử h264_cuvid → hevc_cuvid → software fallback.
+                CPU chỉ read từ pipe, không decode bitstream.
+                """
+                codecs_to_try = ['h264_cuvid', 'hevc_cuvid', None]
+                for codec in codecs_to_try:
+                    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
+                    if codec:
+                        # NVDEC hardware decode
+                        cmd += ['-hwaccel', 'cuda', '-c:v', codec]
+                    cmd += ['-i', path,
+                            '-f', 'rawvideo', '-pix_fmt', 'bgr24',
+                            '-vsync', '0', 'pipe:1']
+                    try:
+                        proc = subprocess.Popen(
+                            cmd,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL,
+                            bufsize=frame_size * 4,   # 4-frame read buffer
+                        )
+                        hw_label = codec if codec else 'software'
+                        logger.info(f"[DECODE] FFmpeg decoder: {hw_label}")
+                        while True:
+                            raw = proc.stdout.read(frame_size)
+                            if len(raw) < frame_size:
+                                break
+                            frame = np.frombuffer(raw, dtype=np.uint8
+                                                  ).reshape(height, width, 3).copy()
+                            fq.put(frame)       # blocks when queue is full (back-pressure)
+                        proc.stdout.close()
+                        proc.wait()
+                        break                    # success → stop trying fallbacks
+                    except Exception as e:
+                        logger.warning(f"[DECODE] {codec} failed: {e}, trying next...")
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                fq.put(None)  # sentinel: stream finished
+
+            reader_thread = threading.Thread(
+                target=_nvdec_reader,
+                args=(str(input_path), frame_queue),
+                daemon=True,
+                name='nvdec_reader',
+            )
+            reader_thread.start()
+
             # === PROCESS VIDEO WITH SAFE ENCODER ===
             frame_idx = 0
             events = []
-            
-            # Use context manager - GUARANTEED cleanup!
+
             with FFmpegEncoder(
                 output_path=str(result_video_path),
                 width=width,
                 height=height,
                 fps=fps,
-                use_nvenc=True,  # GPU encoding
+                use_nvenc=True,   # NVENC GPU encode
                 preset='fast'
             ) as encoder:
-                
-                logger.info(f"[ENCODE] FFmpeg encoder started")
-                
+
+                logger.info("[ENCODE] FFmpeg NVENC encoder started")
+
                 while True:
-                    # === DECODE FRAME ===
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    
-                    # === INFERENCE ===
-                    results = self._run_inference(frame, frame_idx, pipeline)
-                    
-                    # === DRAW OVERLAY (Python/OpenCV) ===
-                    frame_with_overlay = self._draw_overlay(frame, results)
-                    
-                    # === ENCODE FRAME ===
+                    # ── Pull decoded frame from NVDEC queue ─────────────
+                    frame = frame_queue.get()
+                    if frame is None:
+                        break                    # end of video
+
+                    # === INFERENCE ADAS HOÀN CHỈNH (GPU parallel) ===
+                    results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline)
+
+                    # === VẼ OVERLAY TIẾNG VIỆT ===
+                    frame_with_overlay = self._draw_vietnamese_overlay(frame, results)
+
+                    # === PHÁT CẢNH BÁO GIỌNG NÓI ===
+                    self._handle_voice_warnings(results)
+
+                    # === ENCODE FRAME (NVENC) ===
                     encoder.write(frame_with_overlay)
-                    
+
                     # === COLLECT EVENTS ===
                     if results.get('events'):
                         events.extend(results['events'])
-                    
-                    # === PROGRESS UPDATE ===
+
+                    # === PROGRESS UPDATE (DB write, lightweight) ===
                     frame_idx += 1
                     if frame_idx % 30 == 0:
-                        progress = int((frame_idx / total_frames) * 100)
+                        progress = int((frame_idx / max(1, total_frames)) * 100)
                         await self.update_progress(job_id, progress)
                         logger.info(f"[PROGRESS] {progress}% ({frame_idx}/{total_frames})")
-                
-                # Encoder automatically closes here (context manager)
-            
-            # Release video capture
-            cap.release()
+
+            reader_thread.join(timeout=5)
             
             # === FINALIZE ===
             processing_time = int(time.time() - start_time)
@@ -306,90 +406,482 @@ class SimpleGPUWorker:
             self.current_job_id = None
             # FFmpeg cleanup is guaranteed by context manager
     
-    def _run_inference(self, frame, frame_idx, pipeline) -> Dict:
-        """Run AI inference (YOLO + Lane)."""
-        results = {}
-        
-        # === OBJECT DETECTION ===
+    def _run_comprehensive_adas_inference(self, frame: np.ndarray, frame_idx: int, pipeline) -> Dict:
+        """
+        ADAS inference tối ưu cho A30: 3 YOLO models chạy song song.
+
+        Architecture:
+          ┌─ Thread-1 (stream_obj)     ─ ObjectDetectorV11  (YOLOv11x detection)
+          ├─ Thread-2 (stream_driver)  ─ DriverMonitorV11   (YOLOv11x pose)
+          └─ Thread-3 (stream_traffic) ─ TrafficSignV11     (YOLOv11x classify)
+                          ↓ sync (join)
+          Serial: LaneDetectorV11 (BEV, cv2.cuda nếu có)
+                          ↓
+          Serial: DistanceEstimator + risk assessment (pure Python, light)
+
+        Python GIL được release khi CUDA kernels đang chạy
+        → 3 threads thực sự song song trên 3 CUDA streams riêng biệt.
+        """
+        import torch
+
+        results: Dict = {'frame_idx': frame_idx, 'warnings': []}
+
+        # ── 1. PARALLEL GPU INFERENCE (object + driver + traffic) ────────
+        obj_result     = {}
+        driver_result  = {}
+        traffic_result = {}
+
+        def _run_objects():
+            try:
+                if self._stream_obj and torch.cuda.is_available():
+                    with torch.cuda.stream(self._stream_obj):
+                        return pipeline['object'].process_frame(frame)
+                return pipeline['object'].process_frame(frame)
+            except Exception as e:
+                logger.warning(f"[INFER] object: {e}")
+                return {}
+
+        def _run_driver():
+            try:
+                if self._stream_driver and torch.cuda.is_available():
+                    with torch.cuda.stream(self._stream_driver):
+                        return pipeline['driver'].process_frame(frame)
+                return pipeline['driver'].process_frame(frame)
+            except Exception as e:
+                logger.warning(f"[INFER] driver: {e}")
+                return {}
+
+        def _run_traffic():
+            try:
+                if self._stream_traffic and torch.cuda.is_available():
+                    with torch.cuda.stream(self._stream_traffic):
+                        return pipeline['traffic'].process_frame(frame)
+                return pipeline['traffic'].process_frame(frame)
+            except Exception as e:
+                logger.warning(f"[INFER] traffic: {e}")
+                return {}
+
+        # Submit 3 tasks to thread pool → họ chạy đồng thời trên GPU
+        if self._infer_pool:
+            fut_obj     = self._infer_pool.submit(_run_objects)
+            fut_driver  = self._infer_pool.submit(_run_driver)
+            fut_traffic = self._infer_pool.submit(_run_traffic)
+            obj_result     = fut_obj.result()       # blocking until all 3 done
+            driver_result  = fut_driver.result()
+            traffic_result = fut_traffic.result()
+        else:
+            obj_result     = _run_objects()
+            driver_result  = _run_driver()
+            traffic_result = _run_traffic()
+
+        # Sync all streams before reading GPU results back to CPU
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+        results['objects']      = obj_result.get('detections', [])
+        results['object_stats'] = obj_result.get('stats', {})
+
+        # ── 2. LANE DETECTION (serial, cv2.cuda GPU warp) ────────────────
         try:
-            objects = pipeline['object'].detect(frame)
-            results['objects'] = objects
+            lane_result = pipeline['lane'].process_frame(frame)
+            results['lane_mask']      = lane_result.get('mask')
+            results['has_lane']       = lane_result.get('has_lane', False)
+            results['lane_confidence']= lane_result.get('confidence', 0.0)
+            results['lane_colored']   = getattr(pipeline['lane'], '_last_colored', None)
         except Exception as e:
-            logger.warning(f"Object detection failed: {e}")
-            results['objects'] = []
-        
-        # === LANE DETECTION ===
-        try:
-            lane_mask = pipeline['lane'].detect(frame)
-            results['lane_mask'] = lane_mask
-        except Exception as e:
-            logger.warning(f"Lane detection failed: {e}")
+            logger.warning(f"[INFER] lane: {e}")
             results['lane_mask'] = None
-        
-        # === DISTANCE ESTIMATION ===
+            results['has_lane']  = False
+            results['lane_confidence'] = 0.0
+
+        # ── 3. DISTANCE + TTC (pure Python, CPU-light) ───────────────────
+        distances = []
         try:
-            if results['objects']:
-                # Use first object for distance
-                obj = results['objects'][0]
-                distance_info = pipeline['distance'].process_detection(
-                    obj,
-                    height=frame.shape[0]
+            for obj in results['objects']:
+                if not obj.get('bbox'):
+                    continue
+                dist_info  = pipeline['distance'].estimate_distance_bbox(
+                    bbox=obj['bbox'],
+                    vehicle_type=obj.get('class_name', 'car'),
+                    frame_height=frame.shape[0]
                 )
-                results['distance'] = distance_info
+                velocity   = obj.get('velocity', 0)
+                ttc        = (pipeline['distance'].calculate_ttc(dist_info, velocity)
+                              if velocity > 0 else float('inf'))
+                risk_level = self._assess_risk(dist_info, ttc, obj.get('class_name', ''))
+                obj_d = {**obj, 'distance': dist_info, 'ttc': ttc, 'risk_level': risk_level}
+                distances.append(obj_d)
+                if risk_level in ('DANGER', 'CRITICAL'):
+                    results['warnings'].append(self._create_vietnamese_warning(obj_d))
+            results['objects_with_distance'] = distances
         except Exception as e:
-            logger.warning(f"Distance estimation failed: {e}")
-            results['distance'] = None
-        
-        # === EVENT DETECTION ===
-        results['events'] = []
-        
+            logger.warning(f"[INFER] distance: {e}")
+            results['objects_with_distance'] = []
+
+        # ── 4. DRIVER state (from parallel result) ───────────────────────
+        results['driver_state']      = driver_result.get('state', 'unknown')
+        results['driver_confidence'] = driver_result.get('confidence', 0.0)
+        results['driver_warnings']   = driver_result.get('warnings', [])
+        results['warnings'].extend(results['driver_warnings'])
+
+        # ── 5. TRAFFIC SIGNS (from parallel result) ──────────────────────
+        results['traffic_signs']  = traffic_result.get('signs', [])
+        results['sign_warnings']  = traffic_result.get('warnings', [])
+        results['warnings'].extend(results['sign_warnings'])
+
+        # ── Events summary ────────────────────────────────────────────────
+        results['events'] = [
+            {
+                'type':  w.get('type', 'warning'),
+                'level': w.get('severity', 'medium'),
+                'time':  frame_idx / 30.0,
+                'frame': frame_idx,
+                'data':  {'message': w.get('message', '')},
+            }
+            for w in results['warnings']
+        ]
         return results
     
-    def _draw_overlay(self, frame, results) -> np.ndarray:
+    def _draw_vietnamese_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
         """
-        Draw overlay using OpenCV (Python).
+        Vẽ overlay tiếng Việt với thông tin ADAS hoàn chỉnh.
         
-        Note: This is CPU-based, which is acceptable for demo.
-              For production, consider optimizing critical paths only.
+        Hiển thị:
+        - Lane detection (màu xanh cyan Tesla-style)
+        - Object bboxes với tên tiếng Việt
+        - Khoảng cách & TTC cho từng vật thể
+        - Risk level (màu sắc cảnh báo)
+        - HUD panel thông tin
+        - Driver state và biển báo
         """
         overlay = frame.copy()
+        h, w, _ = overlay.shape
         
-        # === DRAW LANE MASK ===
-        lane_mask = results.get('lane_mask')
-        if lane_mask is not None:
-            # Convert mask to color (green)
-            lane_color = np.zeros_like(frame)
-            lane_color[lane_mask > 0] = [0, 255, 0]  # Green BGR
-            
-            # Blend with original frame
-            overlay = cv2.addWeighted(overlay, 0.7, lane_color, 0.3, 0)
+        # === 1. VẼ LÀN ĐƯỜNG (BACKGROUND LAYER) ===
+        lane_colored = results.get('lane_colored')
+        lane_mask    = results.get('lane_mask')
+        if lane_colored is not None:
+            # Use the rich coloured BEV canvas from the new lane detector
+            h_o, w_o = overlay.shape[:2]
+            if lane_colored.shape[:2] != (h_o, w_o):
+                lane_colored = cv2.resize(lane_colored, (w_o, h_o))
+            overlay = cv2.addWeighted(overlay, 0.65, lane_colored, 0.35, 0)
+        elif lane_mask is not None:
+            # Fallback flat colour
+            lane_color_img = np.zeros_like(frame)
+            lane_color_img[lane_mask > 0] = [0, 200, 0]  # Green BGR
+            overlay = cv2.addWeighted(overlay, 0.70, lane_color_img, 0.30, 0)
         
-        # === DRAW BOUNDING BOXES ===
-        for obj in results.get('objects', []):
+        # === 2. VẼ OBJECTS VỚI KHOẢNG CÁCH ===
+        for obj in results.get('objects_with_distance', []):
             bbox = obj.get('bbox')
+            if not bbox:
+                continue
+                
+            x1, y1, x2, y2 = map(int, bbox)
+            
+            # Màu theo risk level
+            risk_level = obj.get('risk_level', 'SAFE')
+            color = self._get_risk_color(risk_level)
+            thickness = 3 if risk_level in ['DANGER', 'CRITICAL'] else 2
+            
+            # Vẽ bounding box
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
+            
+            # Class name tiếng Việt
+            class_name = self._translate_class_name(obj.get('class_name', ''))
+            confidence = obj.get('confidence', 0)
+            distance = obj.get('distance', 0)
+            ttc = obj.get('ttc', float('inf'))
+            
+            # Text chính (tên + confidence)
+            main_text = f"{class_name} {confidence:.0%}"
+            cv2.putText(overlay, main_text, (x1, y1-35), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            # Text khoảng cách
+            distance_text = f"KC: {distance:.1f}m"
+            cv2.putText(overlay, distance_text, (x1, y1-15), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            
+            # Text TTC nếu < 10s
+            if ttc < 10:
+                ttc_text = f"TTC: {ttc:.1f}s"
+                cv2.putText(overlay, ttc_text, (x1, y1-5), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)  # Cam
+        
+        # === 3. VẼ TRAFFIC SIGNS ===
+        for sign in results.get('traffic_signs', []):
+            bbox = sign.get('bbox')
             if bbox:
                 x1, y1, x2, y2 = map(int, bbox)
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Vàng
                 
-                # Draw box
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                
-                # Draw label
-                label = f"{obj.get('class_name', 'object')} {obj.get('confidence', 0):.2f}"
-                cv2.putText(
-                    overlay, label, (x1, y1 - 10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2
-                )
+                sign_name = sign.get('class_name', 'Biển báo')
+                cv2.putText(overlay, sign_name, (x1, y1-10), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
         
-        # === DRAW DISTANCE ===
-        distance_info = results.get('distance')
-        if distance_info:
-            text = f"Distance: {distance_info.get('distance_m', 0):.1f}m"
-            cv2.putText(
-                overlay, text, (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2
-            )
+        # === 4. HUD PANEL (GÓC TRÊN TRÁI) ===
+        self._draw_hud_panel(overlay, results, w, h)
+        
+        # === 5. WARNINGS CENTER TOP ===
+        self._draw_warnings(overlay, results, w)
         
         return overlay
+    
+    def _get_risk_color(self, risk_level: str) -> tuple:
+        """Trả về màu BGR theo risk level."""
+        colors = {
+            'SAFE': (0, 255, 0),      # Xanh lá
+            'CAUTION': (0, 255, 255), # Vàng  
+            'DANGER': (0, 165, 255),  # Cam
+            'CRITICAL': (0, 0, 255)   # Đỏ
+        }
+        return colors.get(risk_level, (255, 255, 255))
+    
+    def _translate_class_name(self, class_name: str) -> str:
+        """Dịch tên class sang tiếng Việt.""" 
+        translations = {
+            'person': 'Người',
+            'car': 'Ô tô', 
+            'truck': 'Xe tải',
+            'bus': 'Xe buýt',
+            'motorcycle': 'Xe máy',
+            'bicycle': 'Xe đạp',
+            'traffic light': 'Đèn giao thông'
+        }
+        return translations.get(class_name.lower(), class_name)
+    
+    def _draw_hud_panel(self, overlay: np.ndarray, results: Dict, w: int, h: int):
+        """Vẽ HUD panel ADAS hoàn chỉnh (góc trên trái)."""
+        # ── Determine closest dangerous object ──────────────────────────
+        objects = results.get('objects_with_distance', [])
+        dangerous = [o for o in objects if o.get('risk_level') in ('CRITICAL', 'DANGER', 'CAUTION')]
+        closest = None
+        if dangerous:
+            closest = min(dangerous, key=lambda o: o.get('distance', 9999))
+        elif objects:
+            closest = min(objects, key=lambda o: o.get('distance', 9999))
+
+        # ── Panel layout ────────────────────────────────────────────────
+        panel_w = 310
+        panel_h = 150 if closest else 130
+        pad = 10
+        x0, y0 = pad, pad
+
+        # Semi-transparent background
+        sub = overlay[y0: y0 + panel_h, x0: x0 + panel_w]
+        black_bg = np.zeros_like(sub)
+        cv2.addWeighted(sub, 0.3, black_bg, 0.7, 0, sub)
+
+        # Border (colour by max risk)
+        max_risk = 'SAFE'
+        if objects:
+            risk_order = {'CRITICAL': 4, 'DANGER': 3, 'CAUTION': 2, 'SAFE': 1}
+            max_risk = max(objects, key=lambda o: risk_order.get(o.get('risk_level', 'SAFE'), 1)).get('risk_level', 'SAFE')
+        border_color = self._get_risk_color(max_risk)
+        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), border_color, 2)
+
+        # ── Header bar ──────────────────────────────────────────────────
+        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + 24), border_color, -1)
+        cv2.putText(overlay, "HE THONG ADAS", (x0 + 8, y0 + 18),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+
+        y_pos = y0 + 42
+        sp    = 22
+
+        # ── Object count ────────────────────────────────────────────────
+        obj_count = len(objects)
+        cv2.putText(overlay, f"Vat the: {obj_count}", (x0 + 8, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        y_pos += sp
+
+        # ── Closest vehicle ─────────────────────────────────────────────
+        if closest:
+            name  = self._translate_class_name(closest.get('class_name', ''))
+            dist  = closest.get('distance', 0)
+            ttc   = closest.get('ttc', float('inf'))
+            rlvl  = closest.get('risk_level', 'SAFE')
+            rc    = self._get_risk_color(rlvl)
+            dist_txt = f"Gan nhat: {name} - {dist:.1f}m"
+            cv2.putText(overlay, dist_txt, (x0 + 8, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
+            y_pos += sp
+            if ttc < 10:
+                ttc_txt = f"TTC: {ttc:.1f}s  [{rlvl}]"
+                cv2.putText(overlay, ttc_txt, (x0 + 8, y_pos),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
+                y_pos += sp
+
+        # ── Lane status ─────────────────────────────────────────────────
+        has_lane   = results.get('has_lane', False)
+        lane_txt   = "Lan duong: CO"   if has_lane else "Lan duong: KHONG RO"
+        lane_color = (0, 220, 0)       if has_lane else (0, 165, 255)
+        cv2.putText(overlay, lane_txt, (x0 + 8, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, lane_color, 1)
+        y_pos += sp
+
+        # ── Driver state ────────────────────────────────────────────────
+        driver_state = results.get('driver_state', 'unknown')
+        state_vn     = self._translate_driver_state(driver_state)
+        d_color      = (0, 255, 0) if driver_state == 'normal' else (0, 0, 255)
+        cv2.putText(overlay, f"Tai xe: {state_vn}", (x0 + 8, y_pos),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, d_color, 1)
+        y_pos += sp
+
+        # ── Traffic signs ───────────────────────────────────────────────
+        sign_count = len(results.get('traffic_signs', []))
+        if sign_count:
+            cv2.putText(overlay, f"Bien bao: {sign_count}", (x0 + 8, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+    
+    def _translate_driver_state(self, state: str) -> str:
+        """Dịch trạng thái tài xế."""
+        states = {
+            'normal': 'Binh thuong',
+            'drowsy': 'Buon ngu', 
+            'distracted': 'Mat tap trung',
+            'looking_away': 'Nhin ra ngoai',
+            'unknown': 'Khong ro'
+        }
+        return states.get(state, 'Khong ro')
+    
+    def _draw_warnings(self, overlay: np.ndarray, results: Dict, w: int):
+        """Vẽ warnings nổi bật ở phần trên giữa màn hình."""
+        warnings = results.get('warnings', [])
+        if not warnings:
+            return
+
+        # Sort: critical first
+        severity_order = {'critical': 0, 'high': 1, 'medium': 2}
+        warnings = sorted(warnings, key=lambda x: severity_order.get(x.get('severity', 'medium'), 2))
+
+        frame_idx = results.get('frame_idx', 0)
+        # Flashing: show on even-numbered 15-frame blocks
+        flash_on = (frame_idx // 8) % 2 == 0
+
+        y_start = 55  # below the HUD panel header
+        for i, warning in enumerate(warnings[:3]):   # max 3 warnings
+            msg      = warning.get('message', '')
+            severity = warning.get('severity', 'medium')
+
+            if severity == 'critical':
+                color     = (0, 0, 255)     # Red
+                bg_color  = (0, 0, 120)
+                thickness = 3
+                scale     = 0.85
+                if not flash_on:
+                    continue                # flash effect - skip on odd blocks
+            elif severity == 'high':
+                color     = (0, 100, 255)   # Orange
+                bg_color  = (0, 40, 100)
+                thickness = 2
+                scale     = 0.75
+            else:
+                color     = (0, 220, 220)   # Yellow
+                bg_color  = (0, 80, 80)
+                thickness = 2
+                scale     = 0.65
+
+            (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+            x_c  = (w - tw) // 2
+            y_pos = y_start + i * 44
+            pad   = 6
+
+            # Background rect
+            cv2.rectangle(overlay,
+                          (x_c - pad, y_pos - th - pad),
+                          (x_c + tw + pad, y_pos + pad),
+                          bg_color, -1)
+            # Coloured border
+            cv2.rectangle(overlay,
+                          (x_c - pad, y_pos - th - pad),
+                          (x_c + tw + pad, y_pos + pad),
+                          color, thickness)
+            # Text
+            cv2.putText(overlay, msg, (x_c, y_pos),
+                        cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
+    
+    def _assess_risk(self, distance: float, ttc: float, obj_type: str) -> str:
+        """Đánh giá mức độ rủi ro dựa trên khoảng cách và TTC."""
+        # Thresholds tùy chỉnh theo loại xe Việt Nam
+        if obj_type in ['motorcycle', 'bicycle']:
+            # Xe máy cần khoảng cách gần hơn
+            critical_dist = 2.0
+            danger_dist = 5.0
+            caution_dist = 10.0
+        else:
+            # Ô tô, xe tải
+            critical_dist = 3.0  
+            danger_dist = 7.0
+            caution_dist = 15.0
+        
+        # Risk theo distance
+        if distance <= critical_dist:
+            return 'CRITICAL'
+        elif distance <= danger_dist:
+            return 'DANGER'
+        elif distance <= caution_dist:
+            return 'CAUTION'
+        
+        # Risk theo TTC
+        if ttc <= 1.0:
+            return 'CRITICAL'
+        elif ttc <= 2.0:
+            return 'DANGER'
+        elif ttc <= 3.0:
+            return 'CAUTION'
+        
+        return 'SAFE'
+    
+    def _create_vietnamese_warning(self, obj_with_distance: Dict) -> Dict:
+        """Tạo cảnh báo tiếng Việt cho vật thể nguy hiểm."""
+        class_name = self._translate_class_name(obj_with_distance.get('class_name', ''))
+        distance = obj_with_distance.get('distance', 0)
+        ttc = obj_with_distance.get('ttc', float('inf'))
+        risk = obj_with_distance.get('risk_level', 'SAFE')
+        
+        if risk == 'CRITICAL':
+            message = f"NGUY HIỂM! {class_name} rất gần - {distance:.1f}m"
+            severity = 'critical'
+        elif risk == 'DANGER':
+            message = f"CẢNH BÁO! {class_name} ở {distance:.1f}m"
+            severity = 'high'
+        else:
+            message = f"Chú ý {class_name} ở {distance:.1f}m"
+            severity = 'medium'
+        
+        return {
+            'type': 'collision_warning',
+            'message': message,
+            'severity': severity,
+            'object_type': class_name,
+            'distance': distance,
+            'ttc': ttc
+        }
+    
+    def _handle_voice_warnings(self, results: Dict):
+        """Xử lý cảnh báo giọng nói tiếng Việt."""
+        if not self.voice_enabled:
+            return
+            
+        current_time = time.time()
+        if current_time - self.last_warning_time < self.warning_cooldown:
+            return  # Cooldown chưa hết
+        
+        # Tìm warning nghiêm trọng nhất
+        critical_warnings = [
+            w for w in results.get('warnings', []) 
+            if w.get('severity') == 'critical'
+        ]
+        
+        if critical_warnings:
+            warning = critical_warnings[0]  # Lấy warning đầu tiên
+            message = warning.get('message', '')
+            
+            # Log voice warning (implement TTS sau nếu cần)
+            logger.warning(f"[VOICE] {message}")
+            self.last_warning_time = current_time
     
     # === DATABASE METHODS ===
     

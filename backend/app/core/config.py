@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_ECHO: bool = False  # Set True for SQL query logging
-    
+        
     # v3.0 Storage Paths (production: /hdd3/adas/)
     HDD3_ROOT: str = "/hdd3/adas"
     VIDEOS_RAW_DIR: str = "/hdd3/adas/videos/raw"
@@ -145,6 +145,46 @@ class Settings(BaseSettings):
     MAX_VIDEO_SIZE_MB: int = 1024  # 1GB - Server mạnh, GPU T4 16GB VRAM
     MAX_CONCURRENT_JOBS: int = 12  # Increased to 12 for GPU A30 (24GB VRAM)
     VIDEO_CHUNK_SIZE_MB: int = 10
+    
+    # === ADAS CONFIGURATION - HỆ THỐNG ADAS THUẦN VIỆT ===
+    # GPU Configuration
+    ADAS_GPU_DEVICE: str = "cuda"  # GPU device for ADAS models
+    ADAS_GPU_MEMORY_FRACTION: float = 0.8  # Use 80% GPU memory
+    ADAS_BATCH_SIZE: int = 1  # Batch size for video processing
+    
+    # Model Performance Thresholds
+    ADAS_OBJECT_CONFIDENCE: float = 0.5   # Confidence threshold for object detection  
+    ADAS_LANE_CONFIDENCE: float = 0.4     # Confidence threshold for lane detection
+    ADAS_TRAFFIC_CONFIDENCE: float = 0.6  # Confidence threshold for traffic signs
+    ADAS_DRIVER_CONFIDENCE: float = 0.7   # Confidence threshold for driver monitoring
+    
+    # Distance & Risk Assessment (Vietnamese driving conditions)
+    ADAS_CRITICAL_DISTANCE_M: float = 3.0     # Critical collision distance (meters)
+    ADAS_DANGER_DISTANCE_M: float = 8.0       # Danger zone distance (meters) 
+    ADAS_CAUTION_DISTANCE_M: float = 15.0     # Caution zone distance (meters)
+    ADAS_CRITICAL_TTC_S: float = 1.0          # Critical time-to-collision (seconds)
+    ADAS_DANGER_TTC_S: float = 2.5            # Danger TTC threshold
+    ADAS_CAUTION_TTC_S: float = 4.0           # Caution TTC threshold
+    
+    # Vietnamese-specific settings
+    ADAS_MOTORCYCLE_FACTOR: float = 0.7       # Distance factor for motorcycles (closer following)
+    ADAS_URBAN_SPEED_FACTOR: float = 0.8      # Speed factor for urban areas
+    ADAS_VOICE_WARNINGS: bool = True          # Enable Vietnamese voice warnings
+    ADAS_WARNING_COOLDOWN_S: float = 3.0      # Seconds between voice warnings
+    
+    # Output Settings
+    ADAS_OUTPUT_RESOLUTION: str = "1280x720"  # HD output for clear Vietnamese text
+    ADAS_OVERLAY_ALPHA: float = 0.7           # Transparency for overlays
+    ADAS_HUD_ENABLED: bool = True             # Enable Vietnamese HUD
+    ADAS_LANE_COLOR: str = "cyan"             # Tesla-style cyan lanes
+    
+    # Processing Features Toggle
+    ADAS_ENABLE_OBJECT_DETECTION: bool = True
+    ADAS_ENABLE_LANE_DETECTION: bool = True
+    ADAS_ENABLE_DISTANCE_ESTIMATION: bool = True
+    ADAS_ENABLE_DRIVER_MONITORING: bool = True
+    ADAS_ENABLE_TRAFFIC_SIGNS: bool = True
+    ADAS_ENABLE_RISK_ASSESSMENT: bool = True
     
     # Logging
     LOG_LEVEL: str = "INFO"

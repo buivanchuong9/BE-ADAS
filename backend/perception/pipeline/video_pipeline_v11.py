@@ -154,59 +154,182 @@ class ADASPipeline:
     
     def process_frame(self, frame: np.ndarray) -> Dict:
         """
-        Xử lý 1 frame với 4 AI models.
+        Xử lý 1 frame với pipeline ADAS hoàn chỉnh - Tối ưu GPU.
         
-        WHY Sequential (không parallel):
-        - Python GIL khóa multi-threading cho CPU-bound tasks
-        - Nhưng GPU inference là I/O-bound → GIL release khi gọi CUDA
-        - Sequential đơn giản hơn, ít race condition
+        Pipeline Sequence (tối ưu performance):
+        1. Lane Detection (background layer)
+        2. Object Detection + Distance Estimation 
+        3. Traffic Signs Recognition
+        4. Driver Monitoring
+        5. Risk Assessment & Vietnam Warnings
         
         Args:
-            frame: Frame RGB
+            frame: Frame RGB/BGR input
             
         Returns:
-            Dictionary chứa kết quả từ 4 models
+            Dictionary với kết quả đầy đủ + annotated frame
         """
         try:
-            # Resize nếu cần
+            # Chuẩn hóa input frame
             if frame.shape[1] != self.input_resolution[0]:
                 frame = cv2.resize(frame, self.input_resolution)
+            
+            h, w = frame.shape[:2]
+            results = {'frame_shape': (h, w), 'warnings': []}
             
             # ===================================
             # LAYER 1: LANE SEGMENTATION (Background)
             # ===================================
-            lane_result = self.lane_detector.process_frame(frame)
-            overlay_frame = lane_result['annotated_frame'].copy()
+            try:
+                lane_result = self.lane_detector.process_frame(frame)
+                results['lane'] = lane_result
+                overlay_frame = lane_result.get('annotated_frame', frame).copy()
+                
+                # Đánh giá lane departure risk
+                if not lane_result.get('has_lane', False):
+                    results['warnings'].append({
+                        'type': 'lane_departure',
+                        'message': 'CẢNH BÁO: Không phát hiện làn đường!',
+                        'severity': 'high'
+                    })
+            except Exception as e:
+                logger.warning(f"Lỗi phát hiện làn đường: {e}")
+                results['lane'] = {'error': str(e), 'has_lane': False}
+                overlay_frame = frame.copy()
             
+            # ===================================  
+            # LAYER 2: OBJECT DETECTION + DISTANCE
             # ===================================
-            # LAYER 2: OBJECT DETECTION (Middle)
-            # ===================================
-            object_result = self.object_detector.process_frame(overlay_frame)
-            overlay_frame = object_result['annotated_frame'].copy()
-            
+            try:
+                object_result = self.object_detector.process_frame(overlay_frame)
+                detections = object_result.get('detections', [])
+                
+                # Tính distance cho từng object
+                objects_with_distance = []
+                for obj in detections:
+                    try:
+                        # Distance estimation
+                        bbox = obj.get('bbox')
+                        if bbox:
+                            from backend.perception.distance.distance_estimator import DistanceEstimator
+                            estimator = DistanceEstimator()
+                            
+                            distance = estimator.estimate_distance_bbox(
+                                bbox=bbox,
+                                vehicle_type=obj.get('class_name', 'car'),
+                                frame_height=h
+                            )
+                            
+                            # TTC calculation (giả sử velocity = 0 nếu không có tracking)
+                            velocity = obj.get('velocity', 0)  # m/s
+                            ttc = distance / max(velocity, 0.1) if velocity > 0 else float('inf')
+                            
+                            # Risk assessment
+                            risk_level = self._assess_collision_risk(distance, ttc, obj.get('class_name', ''))
+                            
+                            obj_enhanced = {
+                                **obj,
+                                'distance_m': distance,
+                                'ttc_s': ttc,
+                                'risk_level': risk_level
+                            }
+                            
+                            # Tạo warning nếu nguy hiểm
+                            if risk_level in ['DANGER', 'CRITICAL']:
+                                class_vn = self._translate_class_name(obj.get('class_name', ''))
+                                warning_msg = f"NGUY HIỂM! {class_vn} ở {distance:.1f}m"
+                                if ttc < 3.0:
+                                    warning_msg += f" (TTC: {ttc:.1f}s)"
+                                
+                                results['warnings'].append({
+                                    'type': 'collision_risk',
+                                    'message': warning_msg,
+                                    'severity': 'critical' if risk_level == 'CRITICAL' else 'high',
+                                    'object_id': obj.get('track_id', 0),
+                                    'distance': distance,
+                                    'ttc': ttc
+                                })
+                            
+                            objects_with_distance.append(obj_enhanced)
+                    
+                    except Exception as dist_error:
+                        logger.debug(f"Lỗi tính distance cho object: {dist_error}")
+                        objects_with_distance.append(obj)
+                
+                results['objects'] = {
+                    'detections': objects_with_distance,
+                    'total_count': len(objects_with_distance),
+                    'stats': object_result.get('stats', {}),
+                    'annotated_frame': object_result.get('annotated_frame', overlay_frame)
+                }
+                overlay_frame = results['objects']['annotated_frame'].copy()
+                        
+            except Exception as e:
+                logger.warning(f"Lỗi nhận diện vật thể: {e}")
+                results['objects'] = {'error': str(e), 'detections': [], 'total_count': 0}
+                
             # ===================================
             # LAYER 3: TRAFFIC SIGNS (Middle)
             # ===================================
-            traffic_result = self.traffic_detector.process_frame(overlay_frame)
-            overlay_frame = traffic_result['annotated_frame'].copy()
+            try:
+                traffic_result = self.traffic_detector.process_frame(overlay_frame)
+                results['traffic'] = traffic_result
+                overlay_frame = traffic_result.get('annotated_frame', overlay_frame).copy()
+                
+                # Cảnh báo biển báo quan trọng
+                signs = traffic_result.get('detections', [])
+                for sign in signs:
+                    sign_type = sign.get('class_name', '')
+                    if sign_type in ['stop_sign', 'yield_sign', 'speed_limit']:
+                        results['warnings'].append({
+                            'type': 'traffic_sign',
+                            'message': f"Phát hiện: {self._translate_sign(sign_type)}",
+                            'severity': 'medium'
+                        })
+                        
+            except Exception as e:
+                logger.warning(f"Lỗi nhận diện biển báo: {e}")
+                results['traffic'] = {'error': str(e)}
             
             # ===================================
             # LAYER 4: DRIVER MONITORING (Top)
             # ===================================
-            driver_result = self.driver_monitor.process_frame(overlay_frame)
-            overlay_frame = driver_result['annotated_frame'].copy()
+            try:
+                driver_result = self.driver_monitor.process_frame(overlay_frame)
+                results['driver'] = driver_result
+                overlay_frame = driver_result.get('annotated_frame', overlay_frame).copy()
+                
+                # Driver state warnings
+                driver_state = driver_result.get('state', 'normal')
+                if driver_state != 'normal':
+                    state_vn = self._translate_driver_state(driver_state)
+                    results['warnings'].append({
+                        'type': 'driver_state',
+                        'message': f"CẢNH BÁO TÀI XẾ: {state_vn}",
+                        'severity': 'high' if driver_state in ['drowsy', 'distracted'] else 'medium'
+                    })
+                        
+            except Exception as e:
+                logger.warning(f"Lỗi giám sát tài xế: {e}")
+                results['driver'] = {'error': str(e), 'state': 'unknown'}
             
-            return {
-                'frame': overlay_frame,
-                'lane': lane_result,
-                'objects': object_result,
-                'traffic': traffic_result,
-                'driver': driver_result
-            }
+            # ===================================
+            # FINAL: VIETNAM HUD & ANNOTATIONS  
+            # ===================================
+            final_frame = self.draw_vietnamese_hud(overlay_frame, results)
+            results['annotated_frame'] = final_frame
+            results['success'] = True
+            
+            return results
             
         except Exception as e:
-            logger.error(f"❌ Lỗi process frame: {e}")
-            return {'frame': frame, 'error': str(e)}
+            logger.error(f"❌ Lỗi nghiêm trọng trong process_frame: {e}")
+            return {
+                'annotated_frame': frame,
+                'error': str(e), 
+                'success': False,
+                'warnings': [{'type': 'system_error', 'message': f'Lỗi hệ thống: {str(e)}', 'severity': 'critical'}]
+            }
     
     def draw_hud(self, frame: np.ndarray, results: Dict) -> np.ndarray:
         """
@@ -425,6 +548,309 @@ class ADASPipeline:
         
         logger.info("✅ Writer Thread: Hoàn thành")
     
+    def _assess_collision_risk(self, distance: float, ttc: float, obj_type: str) -> str:
+        """
+        Đánh giá mức độ rủi ro va chạm cho giao thông Việt Nam.
+        
+        Args:
+            distance: Khoảng cách (m)
+            ttc: Time to collision (s)  
+            obj_type: Loại vật thể
+            
+        Returns:
+            Risk level: SAFE, CAUTION, DANGER, CRITICAL
+        """
+        # Thresholds khác nhau cho các loại xe ở VN
+        if obj_type in ['motorcycle', 'bicycle', 'person']:
+            # Xe máy, xe đạp, người đi bộ - khoảng cách gần hơn
+            critical_dist = 2.0
+            danger_dist = 5.0  
+            caution_dist = 10.0
+        else:
+            # Ô tô, xe tải, xe buýt
+            critical_dist = 3.0
+            danger_dist = 8.0
+            caution_dist = 15.0
+        
+        # Risk assessment theo distance
+        if distance <= critical_dist:
+            return 'CRITICAL'
+        elif distance <= danger_dist:
+            return 'DANGER'
+        elif distance <= caution_dist:
+            return 'CAUTION'
+        
+        # Risk assessment theo TTC
+        if ttc <= 1.0:
+            return 'CRITICAL'
+        elif ttc <= 2.5:
+            return 'DANGER'
+        elif ttc <= 4.0:
+            return 'CAUTION'
+            
+        return 'SAFE'
+    
+    def _translate_class_name(self, class_name: str) -> str:
+        """Dịch tên class sang tiếng Việt."""
+        translations = {
+            'person': 'Người đi bộ',
+            'car': 'Ô tô',
+            'truck': 'Xe tải', 
+            'bus': 'Xe buýt',
+            'motorcycle': 'Xe máy',
+            'bicycle': 'Xe đạp',
+            'traffic_light': 'Đèn giao thông'
+        }
+        return translations.get(class_name.lower(), class_name)
+    
+    def _translate_driver_state(self, state: str) -> str:
+        """Dịch trạng thái tài xế."""
+        states = {
+            'normal': 'Bình thường',
+            'drowsy': 'Buồn ngủ',
+            'distracted': 'Mất tập trung', 
+            'looking_away': 'Nhìn ra ngoài',
+            'eyes_closed': 'Nhắm mắt',
+            'phone_use': 'Sử dụng điện thoại',
+            'unknown': 'Không rõ'
+        }
+        return states.get(state, 'Không rõ')
+    
+    def _translate_sign(self, sign_type: str) -> str:
+        """Dịch biển báo giao thông."""
+        signs = {
+            'stop_sign': 'Biển báo DỪNG',
+            'yield_sign': 'Biển nhường đường',
+            'speed_limit': 'Biển giới hạn tốc độ',
+            'no_entry': 'Biển cấm đi vào',
+            'turn_left': 'Biển rẽ trái',
+            'turn_right': 'Biển rẽ phải'
+        }
+        return signs.get(sign_type, 'Biển báo')
+    
+    def draw_vietnamese_hud(self, frame: np.ndarray, results: Dict) -> np.ndarray:
+        """
+        Vẽ HUD (Head-Up Display) tiếng Việt đầy đủ.
+        
+        HUD Layout:
+        - Top Left: System info (FPS, models status)
+        - Top Right: Detection stats  
+        - Center Top: Critical warnings
+        - Bottom Left: Driver state
+        - Bottom Right: Distance info cho closest object
+        
+        Args:
+            frame: Annotated frame từ các AI models
+            results: Kết quả từ process_frame
+            
+        Returns:
+            Frame với HUD hoàn chỉnh
+        """
+        hud_frame = frame.copy()
+        h, w, _ = hud_frame.shape
+        
+        # === TOP LEFT: SYSTEM INFO ===
+        self._draw_system_panel(hud_frame, results)
+        
+        # === TOP RIGHT: DETECTION STATS ===
+        self._draw_stats_panel(hud_frame, results, w)
+        
+        # === CENTER TOP: CRITICAL WARNINGS ===
+        self._draw_warning_panel(hud_frame, results, w)
+        
+        # === BOTTOM LEFT: DRIVER STATE ===
+        self._draw_driver_panel(hud_frame, results, h)
+        
+        # === BOTTOM RIGHT: CLOSEST OBJECT INFO ===
+        self._draw_distance_panel(hud_frame, results, w, h)
+        
+        return hud_frame
+    
+    def _draw_system_panel(self, frame: np.ndarray, results: Dict):
+        """Vẽ system info panel (top left)."""
+        panel_bg = (0, 0, 0, 180)  # Đen trong suốt
+        text_color = (0, 255, 0)   # Xanh lá
+        
+        # Background panel
+        cv2.rectangle(frame, (10, 10), (300, 120), (0, 0, 0), -1)
+        cv2.rectangle(frame, (10, 10), (300, 120), (0, 255, 0), 2)
+        
+        # System info
+        y_pos, spacing = 30, 18
+        
+        cv2.putText(frame, f"FPS: {self.fps:.1f}", (20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
+        y_pos += spacing
+        
+        cv2.putText(frame, f"Độ phân giải: {self.input_resolution[0]}x{self.input_resolution[1]}", 
+                   (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
+        y_pos += spacing
+        
+        # Model status
+        lane_ok = not results.get('lane', {}).get('error')
+        obj_ok = not results.get('objects', {}).get('error') 
+        traffic_ok = not results.get('traffic', {}).get('error')
+        driver_ok = not results.get('driver', {}).get('error')
+        
+        status_color = (0, 255, 0) if all([lane_ok, obj_ok, traffic_ok, driver_ok]) else (0, 165, 255)
+        cv2.putText(frame, "Models: " + ("HOẠT ĐỘNG" if status_color == (0, 255, 0) else "LỖI"), 
+                   (20, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+        y_pos += spacing
+        
+        cv2.putText(frame, f"Device: {self.device.upper()}", (20, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
+    
+    def _draw_stats_panel(self, frame: np.ndarray, results: Dict, w: int):
+        """Vẽ detection statistics panel (top right).""" 
+        # Background
+        cv2.rectangle(frame, (w-250, 10), (w-10, 150), (0, 0, 0), -1)
+        cv2.rectangle(frame, (w-250, 10), (w-10, 150), (255, 255, 255), 2)
+        
+        y_pos, spacing = 30, 20
+        text_color = (255, 255, 255)
+        
+        # Object stats
+        objects = results.get('objects', {}).get('detections', [])
+        total_objects = len(objects)
+        
+        cv2.putText(frame, f"Tổng vật thể: {total_objects}", (w-240, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
+        y_pos += spacing
+        
+        # Đếm theo loại
+        type_counts = {}
+        for obj in objects:
+            class_vn = self._translate_class_name(obj.get('class_name', ''))
+            type_counts[class_vn] = type_counts.get(class_vn, 0) + 1
+        
+        for obj_type, count in type_counts.items():
+            cv2.putText(frame, f"{obj_type}: {count}", (w-240, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
+            y_pos += spacing if y_pos < 140 else 0
+        
+        # Lane status
+        has_lane = results.get('lane', {}).get('has_lane', False)
+        lane_color = (0, 255, 0) if has_lane else (0, 165, 255)
+        lane_text = "Có làn đường" if has_lane else "Không có làn"
+        cv2.putText(frame, lane_text, (w-240, 140), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, lane_color, 1)
+    
+    def _draw_warning_panel(self, frame: np.ndarray, results: Dict, w: int):
+        """Vẽ critical warnings panel (center top)."""
+        warnings = results.get('warnings', [])
+        critical_warnings = [w for w in warnings if w.get('severity') in ['critical', 'high']]
+        
+        if not critical_warnings:
+            return
+        
+        y_start = 50
+        for i, warning in enumerate(critical_warnings[:2]):  # Tối đa 2 warnings
+            msg = warning.get('message', '')
+            severity = warning.get('severity', 'medium')
+            
+            # Màu theo severity
+            if severity == 'critical':
+                color = (0, 0, 255)  # Đỏ
+                bg_color = (0, 0, 100)
+            else:
+                color = (0, 165, 255)  # Cam
+                bg_color = (0, 50, 100)
+            
+            # Tính kích thước text
+            text_size = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+            text_w, text_h = text_size
+            
+            # Vị trí center
+            x_center = (w - text_w) // 2
+            y_pos = y_start + i * 50
+            
+            # Background với padding
+            padding = 15
+            cv2.rectangle(frame, 
+                         (x_center - padding, y_pos - text_h - padding//2), 
+                         (x_center + text_w + padding, y_pos + padding//2),
+                         bg_color, -1)
+            cv2.rectangle(frame,
+                         (x_center - padding, y_pos - text_h - padding//2), 
+                         (x_center + text_w + padding, y_pos + padding//2),
+                         color, 3)
+            
+            # Warning text
+            cv2.putText(frame, msg, (x_center, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+    
+    def _draw_driver_panel(self, frame: np.ndarray, results: Dict, h: int):
+        """Vẽ driver state panel (bottom left)."""
+        driver_info = results.get('driver', {})
+        state = driver_info.get('state', 'unknown')
+        confidence = driver_info.get('confidence', 0.0)
+        
+        # Background
+        cv2.rectangle(frame, (10, h-80), (300, h-10), (0, 0, 0), -1)
+        
+        # Màu theo driver state
+        if state == 'normal':
+            color = (0, 255, 0)  # Xanh - an toàn
+        elif state in ['drowsy', 'distracted', 'eyes_closed']:
+            color = (0, 0, 255)  # Đỏ - nguy hiểm
+        else:
+            color = (0, 165, 255)  # Cam - cảnh báo
+        
+        cv2.rectangle(frame, (10, h-80), (300, h-10), color, 2)
+        
+        # Driver state text
+        state_vn = self._translate_driver_state(state)
+        cv2.putText(frame, f"Tài xế: {state_vn}", (20, h-50), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        # Confidence
+        if confidence > 0:
+            cv2.putText(frame, f"Độ tin cậy: {confidence:.0%}", (20, h-25), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+    
+    def _draw_distance_panel(self, frame: np.ndarray, results: Dict, w: int, h: int):
+        """Vẽ distance info panel cho object gần nhất (bottom right)."""
+        objects = results.get('objects', {}).get('detections', [])
+        if not objects:
+            return
+        
+        # Tìm object gần nhất
+        closest_obj = min(objects, key=lambda obj: obj.get('distance_m', float('inf')))
+        distance = closest_obj.get('distance_m', 0)
+        ttc = closest_obj.get('ttc_s', float('inf'))
+        risk = closest_obj.get('risk_level', 'SAFE')
+        class_vn = self._translate_class_name(closest_obj.get('class_name', ''))
+        
+        # Background  
+        cv2.rectangle(frame, (w-280, h-100), (w-10, h-10), (0, 0, 0), -1)
+        
+        # Màu theo risk level
+        risk_colors = {
+            'SAFE': (0, 255, 0),
+            'CAUTION': (0, 255, 255), 
+            'DANGER': (0, 165, 255),
+            'CRITICAL': (0, 0, 255)
+        }
+        color = risk_colors.get(risk, (255, 255, 255))
+        cv2.rectangle(frame, (w-280, h-100), (w-10, h-10), color, 2)
+        
+        # Distance info
+        y_pos = h-75
+        cv2.putText(frame, f"Gần nhất: {class_vn}", (w-270, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
+        y_pos += 20
+        cv2.putText(frame, f"Khoảng cách: {distance:.1f}m", (w-270, y_pos), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+        
+        y_pos += 18
+        if ttc < 10:
+            cv2.putText(frame, f"TTC: {ttc:.1f}s", (w-270, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+        else:
+            cv2.putText(frame, "TTC: An toàn", (w-270, y_pos), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
     def start(self, video_source: str):
         """
         Khởi động pipeline với video source.

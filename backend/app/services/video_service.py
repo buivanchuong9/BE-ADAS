@@ -126,24 +126,43 @@ class VideoService:
         filename: str,
         video_type: str = "dashcam",
         trip_id: Optional[int] = None,
-        device: str = "cuda",  # GPU by default
-        user_id: Optional[int] = None
+        device: str = "cuda",  # GPU by default for ADAS
+        user_id: Optional[int] = None,
+        priority: int = 1  # 1=normal, 2=high, 3=urgent
     ) -> VideoJobResponse:
         """
-        Create a new video processing job.
+        Tạo job xử lý video ADAS hoàn chỉnh.
+        
+        Job sẽ được GPU worker xử lý với:
+        - Nhận diện vật thể (YOLOv11x)
+        - Phát hiện làn đường (Segmentation)  
+        - Tính khoảng cách & TTC
+        - Giám sát tài xế
+        - Nhận diện biển báo
+        - Overlay tiếng Việt
         
         Args:
-            filename: Video filename
-            video_type: "dashcam" or "in_cabin"
-            trip_id: Optional trip ID
-            device: "cpu" or "cuda"
-            user_id: Optional user ID
+            filename: Tên file video
+            video_type: "dashcam" (camera trước) hoặc "in_cabin" (camera trong cabin)
+            trip_id: ID chuyến đi (optional)
+            device: "cuda" (GPU) hoặc "cpu" 
+            user_id: ID người dùng
+            priority: Độ ưu tiên (1=thường, 2=cao, 3=khẩn cấp)
             
         Returns:
-            Created job
+            Thông tin job đã tạo
         """
+        # Validate device
+        if device not in ["cuda", "cpu"]:
+            device = "cuda"  # Default to GPU for better performance
+        
         # Generate job ID
         job_id_uuid = str(uuid.uuid4())
+        
+        # Validate video type cho ADAS
+        if video_type not in ["dashcam", "in_cabin"]:
+            logger.warning(f"Invalid video_type '{video_type}', defaulting to 'dashcam'")
+            video_type = "dashcam"
         
         # Prepare paths
         input_path = str(self.raw_dir / f"{job_id_uuid}_{filename}")
@@ -167,16 +186,40 @@ class VideoService:
         self.session.add(video)
         await self.session.flush()  # Get video.id without committing
         
-        # Create job record with video_id
+        # Create job record với ADAS processing info
         repo = JobQueueRepository(self.session)
         job_data = {
             "job_id": job_id_uuid,
-            "video_id": video.id,  # Required foreign key (video_path will come from video.storage_path)
+            "video_id": video.id,  # Required foreign key
             "trip_id": trip_id,
             "video_type": video_type,
             "device": device,
             "status": "pending",
             "progress_percent": 0,
+            "priority": priority,  # Higher priority for urgent processing
+            "max_attempts": 3,     # Retry up to 3 times if fails
+        }
+        
+        # Thêm metadata cho ADAS processing
+        processing_config = {
+            "adas_features": {
+                "object_detection": True,
+                "lane_detection": True,
+                "distance_estimation": True,
+                "driver_monitoring": video_type == "in_cabin",  # Chỉ bật nếu camera trong cabin
+                "traffic_signs": True,
+                "vietnamese_overlay": True
+            },
+            "confidence_thresholds": {
+                "object_detection": 0.5,
+                "lane_detection": 0.4,
+                "traffic_signs": 0.6
+            },
+            "output_settings": {
+                "resolution": "1280x720",  # HD output
+                "fps_preserve": True,      # Giữ nguyên FPS input
+                "compression": "h264_nvenc" if device == "cuda" else "h264"
+            }
         }
         
         try:
@@ -204,7 +247,14 @@ class VideoService:
                 details={"error": str(e)}
             )
         
-        logger.info(f"Created job {job_id_uuid} for video: {filename}")
+        logger.info(
+            f"[ADAS JOB] Tạo job {job_id_uuid}:\n"
+            f"  - Video: {filename} ({video_type})\n"
+            f"  - Device: {device.upper()}\n" 
+            f"  - Priority: {priority}\n"
+            f"  - Features: Object+Lane+Distance+Driver+Traffic+VN_Overlay\n"
+            f"  - User ID: {user_id}"
+        )
         
         return job
     
