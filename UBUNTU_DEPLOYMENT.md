@@ -178,7 +178,7 @@ cat backend/app/core/config.py | grep ANON_KEY
 - [ ] `pip install -r requirements.txt` thành công
 - [ ] `pip list | grep supabase` hiển thị version 2.x.x
 - [ ] Server restart thành công (process ID hiển thị)
-- [ ] `tail -f backend.log` thấy log "Application startup complete"
+- [ ] `tail -f api.log` thấy log "Application startup complete"
 - [ ] `curl localhost:52000/health` return 200
 - [ ] `curl https://adas-api.aiotlab.edu.vn/health` return 200
 - [ ] Frontend có thể gọi API với Supabase token
@@ -203,8 +203,8 @@ pkill -9 ffmpeg  # Kill zombie FFmpeg (CRITICAL!)
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
 
-# Start API
-nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers > backend.log 2>&1 &
+# Start API (log vào api.log)
+nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >> api.log 2>&1 &
 
 # Start GPU Worker (Python Only - STABLE)
 cd ~/BE-ADAS

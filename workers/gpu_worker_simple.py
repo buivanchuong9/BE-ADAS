@@ -201,14 +201,14 @@ class SimpleGPUWorker:
         async with self.pool.acquire() as conn:
             async with conn.transaction():
                 row = await conn.fetchrow("""
-                    UPDATE job_queue
+                    UPDATE job_queue jq
                     SET 
                         status = 'processing',
                         worker_id = $1,
                         worker_heartbeat = NOW(),
                         started_at = NOW(),
                         attempts = attempts + 1
-                    WHERE id = (
+                    WHERE jq.id = (
                         SELECT id FROM job_queue
                         WHERE status = 'pending'
                           AND attempts < max_attempts
@@ -217,16 +217,29 @@ class SimpleGPUWorker:
                         FOR UPDATE SKIP LOCKED
                     )
                     RETURNING 
-                        id, job_id, video_path, video_filename, 
-                        video_type, device
+                        jq.id, jq.job_id, jq.video_id,
+                        jq.video_filename, jq.video_type, jq.device
                 """, self.worker_id)
                 
                 if row:
+                    # Lấy storage_path từ bảng videos
+                    video_path = None
+                    video_filename = row['video_filename']
+                    if row['video_id']:
+                        vrow = await conn.fetchrow(
+                            "SELECT storage_path, original_filename FROM videos WHERE id = $1",
+                            row['video_id']
+                        )
+                        if vrow:
+                            video_path = vrow['storage_path']
+                            if not video_filename:
+                                video_filename = vrow['original_filename']
+                    
                     return {
                         'id': row['id'],
                         'job_id': row['job_id'],
-                        'video_path': row['video_path'],
-                        'video_filename': row['video_filename'],
+                        'video_path': video_path,
+                        'video_filename': video_filename,
                         'video_type': row['video_type'],
                         'device': row['device']
                     }
