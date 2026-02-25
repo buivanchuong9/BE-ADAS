@@ -370,12 +370,19 @@ class SimpleGPUWorker:
                     if results.get('events'):
                         events.extend(results['events'])
 
-                    # === PROGRESS UPDATE (DB write, lightweight) ===
+                    # === PROGRESS UPDATE (DB write + detailed log) ===
                     frame_idx += 1
                     if frame_idx % 30 == 0:
-                        progress = int((frame_idx / max(1, total_frames)) * 100)
+                        progress   = int((frame_idx / max(1, total_frames)) * 100)
+                        elapsed    = time.time() - start_time
+                        fps_proc   = frame_idx / max(elapsed, 0.001)
+                        remaining  = (total_frames - frame_idx) / max(fps_proc, 0.001)
                         await self.update_progress(job_id, progress)
-                        logger.info(f"[PROGRESS] {progress}% ({frame_idx}/{total_frames})")
+                        logger.info(
+                            f"[PROGRESS] [{job_id}] "
+                            f"{progress:3d}%  frame={frame_idx}/{total_frames}  "
+                            f"speed={fps_proc:.1f}fps  ETA={remaining:.0f}s"
+                        )
 
             reader_thread.join(timeout=5)
             

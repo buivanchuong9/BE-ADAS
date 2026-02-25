@@ -36,13 +36,21 @@ nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --work
 # 8. Start GPU Workers (Python Only - STABLE)
 # Khuyến nghị: 1 worker cho mỗi GPU A30
 echo "🚀 Starting GPU Worker (Simple & Stable)..."
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" > worker_0.log 2>&1 &
+# Log worker vào api.log luôn để xem 1 chỗ
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # Nếu có nhiều GPU, chạy thêm worker:
 # CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda > worker_1.log 2>&1 &
 
-# 9. Xem log (API)
+# 9. Xem log (API + Worker cùng 1 chỗ)
 tail -f api.log
+# Sẽ thấy:
+#   [GPU] Loading pipeline for 'dashcam'...
+#   [GPU] ✅ dashcam pipeline sẵn sàng
+#   [JOB] <uuid> - Start processing
+#   [PROGRESS] [<uuid>]  15%  frame=150/1000  speed=42.3fps  ETA=20s
+#   [PROGRESS] [<uuid>]  45%  frame=450/1000  speed=45.1fps  ETA=12s
+#   [DONE] Job <uuid> completed in 22s (45.4 fps)
 
 # 10. Verify latest code is pulled
 git log --oneline -1
@@ -200,10 +208,11 @@ nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >
 
 # Start GPU Worker (Python Only - STABLE)
 cd ~/BE-ADAS
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" > worker_0.log 2>&1 &
+# Gộp worker log vào api.log để theo dõi 1 chỗ
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
-# Xem log
-tail -f backend.log
+# Xem log tất cả (API + Worker trong 1 luồng)
+tail -f api.log
 
 # Check worker running
 ps aux | grep gpu_worker_simple
@@ -221,11 +230,11 @@ curl https://adas-api.aiotlab.edu.vn/health
 # Monitor GPU utilization (should be >80% when processing)
 watch nvidia-smi
 
-# View worker logs
-tail -f worker_0.log
+# View ALL logs (API + Worker) in one stream
+tail -f api.log
 
-# View API logs with job tracking
-tail -f api.log | grep -E "JOB|CLEANUP|GPU|DONE"
+# Filter chỉ worker progress
+tail -f api.log | grep -E "PROGRESS|JOB|DONE|GPU|ERROR"
 ```
 
 **Thời gian:** 2-3 phút  
@@ -247,9 +256,12 @@ nvidia-smi
 ps aux | grep ffmpeg
 # Should be EMPTY when no job running
 
-# 4. Check worker logs for CLEANUP messages
-grep CLEANUP worker_0.log | tail -5
-# Should see: [CLEANUP] ✓ FFmpeg PID xxx cleaned up
+# 4. Check worker logs (gộp trong api.log)
+grep PROGRESS api.log | tail -5
+# Should see: [PROGRESS] [uuid]  75%  frame=750/1000  speed=45fps  ETA=5s
+
+grep DONE api.log | tail -5
+# Should see: [DONE] Job uuid completed in 22s (45.4 fps)
 
 # 5. Test video upload
 curl -X POST http://localhost:52000/api/video/upload \
@@ -278,7 +290,7 @@ ffprobe -v error -select_streams v:0 \
 # If VRAM leak detected:
 # Restart worker to clear
 pkill -f gpu_worker_simple
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda > worker_0.log 2>&1 &
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" >> api.log 2>&1 &
 ```
 
 ✅ **Sẵn sàng!**
