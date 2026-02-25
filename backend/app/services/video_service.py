@@ -225,7 +225,20 @@ class VideoService:
         try:
             job = await repo.create(**job_data)
             await self.session.commit()  # Commit both video and job
-            
+
+            # ── Instant worker wakeup: PostgreSQL NOTIFY ──────────────────
+            # Workers LISTEN on 'adas_new_job' instead of polling;
+            # this fires them immediately instead of waiting up to 10 s.
+            try:
+                from sqlalchemy import text as _text
+                await self.session.execute(
+                    _text("SELECT pg_notify('adas_new_job', :jid)"),
+                    {"jid": job_id_uuid}
+                )
+                await self.session.commit()
+            except Exception as _ne:
+                logger.warning(f"[Job] NOTIFY failed (non-fatal): {_ne}")
+
             # CRITICAL: Refresh job with eager loading to prevent MissingGreenlet
             await self.session.refresh(job)
             

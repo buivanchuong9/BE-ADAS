@@ -107,7 +107,17 @@ class GPUWorkerV4(SimpleGPUWorker):
         # Separate CUDA stream for lane cv2.cuda ops (runs in parallel with YOLO stream)
         self._stream_lane = None
 
-        logger.info(f"[V4WORKER] {worker_id} — V4 pipeline enabled")
+        # Frame-stride inference cache (avoids running YOLO+Lane on every frame)
+        # CPU reuses previous GPU results for skipped frames — still runs
+        # ByteTrack / Distance / Risk / Overlay on every frame.
+        self._infer_cache: Dict = {
+            'lane_result'    : None,
+            'obj_result'     : None,
+            'last_infer_idx' : -99,
+        }
+        self.INFER_STRIDE: int = 2     # run GPU inference every N frames
+
+        logger.info(f"[V4WORKER] {worker_id} — V4 pipeline enabled  stride={self.INFER_STRIDE}")
 
     # -----------------------------------------------------------------------
     # Override: _load_pipeline
@@ -188,11 +198,20 @@ class GPUWorkerV4(SimpleGPUWorker):
             if torch.cuda.is_available():
                 self._stream_obj  = torch.cuda.Stream()   # YOLO inference
                 self._stream_lane = torch.cuda.Stream()   # lane cv2.cuda ops
-            # 2 workers: thread-0 → YOLO (torch CUDA stream_obj)
-            #            thread-1 → lane (cv2.cuda, own thread = own stream)
+            # 2 workers: thread-0 → YOLO, thread-1 → lane
             self._infer_pool = ThreadPoolExecutor(
                 max_workers=2, thread_name_prefix='v4_gpu'
             )
+
+            # ── FP16 YOLO: ~30 % faster inference, same accuracy on A30 ──
+            if torch.cuda.is_available():
+                try:
+                    pipeline['object'].model.model.half()
+                    # Tell YOLO to keep using fp16 for subsequent calls
+                    pipeline['object'].model.overrides['half'] = True
+                    logger.info("[V4] YOLO FP16 ✅")
+                except Exception as _fp:
+                    logger.warning(f"[V4] FP16 failed (non-fatal): {_fp}")
 
             # Warm-up
             logger.info("[V4] Warming up V4 dashcam models …")
@@ -415,11 +434,15 @@ class GPUWorkerV4(SimpleGPUWorker):
         """
         import torch
 
-        # ── 1 ∥ 2. Lane + Object Detection — concurrent GPU streams ─────
-        # Submit BOTH to the thread pool simultaneously so they run in parallel.
-        # Thread-0 (lane)  → cv2.cuda ops, each thread has its own CUDA stream.
-        # Thread-1 (object)→ YOLO on torch stream_obj.
-        # CPU blocks on BOTH futures → true dual-stream GPU utilization.
+        # ── Frame-stride cache ────────────────────────────────────────────
+        # Run GPU inference (lane + YOLO) only every INFER_STRIDE frames.
+        # Skipped frames reuse the previous result — ByteTrack / Distance /
+        # Risk / Overlay still execute on every frame.
+        cache = self._infer_cache
+        run_inference = (
+            cache['lane_result'] is None
+            or (frame_idx - cache['last_infer_idx']) >= self.INFER_STRIDE
+        )
 
         _safe_lane_default = {
             'annotated_frame': frame.copy(),
@@ -428,35 +451,50 @@ class GPUWorkerV4(SimpleGPUWorker):
             'offset_level'   : 'SAFE',
         }
 
-        def _lane():
-            try:
-                return pipeline['lane'].process_frame(frame)
-            except Exception as exc:
-                logger.warning(f"[V4LANE] {exc}")
-                return _safe_lane_default
+        if run_inference:
+            # ── 1 ∥ 2. Concurrent GPU: lane cv2.cuda  +  YOLO FP16 ───────
+            def _lane():
+                try:
+                    return pipeline['lane'].process_frame(frame)
+                except Exception as exc:
+                    logger.warning(f"[V4LANE] {exc}")
+                    return _safe_lane_default
 
-        def _detect():
-            try:
-                if self._stream_obj and torch.cuda.is_available():
-                    with torch.cuda.stream(self._stream_obj):
-                        return pipeline['object'].process_frame(frame)
-                return pipeline['object'].process_frame(frame)
-            except Exception as exc:
-                logger.warning(f"[V4OBJ] {exc}")
-                return {}
+            def _detect():
+                try:
+                    if self._stream_obj and torch.cuda.is_available():
+                        with torch.cuda.stream(self._stream_obj):
+                            return pipeline['object'].process_frame(frame)
+                    return pipeline['object'].process_frame(frame)
+                except Exception as exc:
+                    logger.warning(f"[V4OBJ] {exc}")
+                    return {}
 
-        if self._infer_pool:
-            # Fire both simultaneously — GPU does two things at once
-            fut_lane = self._infer_pool.submit(_lane)
-            fut_obj  = self._infer_pool.submit(_detect)
-            lane_result = fut_lane.result()     # wait both
-            obj_result  = fut_obj.result()
+            if self._infer_pool:
+                fut_lane = self._infer_pool.submit(_lane)
+                fut_obj  = self._infer_pool.submit(_detect)
+                lane_result = fut_lane.result()
+                obj_result  = fut_obj.result()
+            else:
+                lane_result = _lane()
+                obj_result  = _detect()
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            # Update cache
+            cache['lane_result']    = lane_result
+            cache['obj_result']     = obj_result
+            cache['last_infer_idx'] = frame_idx
         else:
-            lane_result = _lane()
-            obj_result  = _detect()
-
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+            # ── Stride skip: reuse GPU results, patch annotated_frame ─────
+            # Replace annotated_frame with fresh copy of current frame so the
+            # corridor overlay is drawn on the correct frame (not a stale copy).
+            lane_result = {
+                **cache['lane_result'],
+                'annotated_frame': frame.copy(),
+            }
+            obj_result = cache['obj_result']
 
         detections: List[Dict] = obj_result.get('detections', [])
 
@@ -535,6 +573,69 @@ class GPUWorkerV4(SimpleGPUWorker):
             )
 
         return final_frame, risk_result, events
+
+
+    # -----------------------------------------------------------------------
+    # Override run(): LISTEN/NOTIFY instead of polling backoff
+    # -----------------------------------------------------------------------
+
+    async def run(self):
+        """
+        V4 main loop with PostgreSQL LISTEN/NOTIFY.
+
+        When the API inserts a new job it sends:
+            SELECT pg_notify('adas_new_job', '<job_id>')
+
+        This listener wakes up immediately (instead of sleeping up to 10 s)
+        and tries to claim the job.  Falls back to a 30-s timeout poll in
+        case the NOTIFY was missed (e.g. worker started after NOTIFY sent).
+        """
+        await self.init()
+        logger.info(f"[V4] {self.worker_id} starting with LISTEN/NOTIFY loop")
+
+        # Dedicated connection for LISTEN (separate from the pool)
+        notify_conn = await asyncpg.connect(self.database_url)
+        _wakeup = asyncio.Event()
+
+        def _on_notify(conn, pid, channel, payload):
+            _wakeup.set()
+
+        await notify_conn.execute("LISTEN adas_new_job")
+        await notify_conn.add_listener('adas_new_job', _on_notify)
+        logger.info(f"[V4] Listening on PostgreSQL channel 'adas_new_job'")
+
+        try:
+            while self.running:
+                try:
+                    job = await self.claim_job()
+                    if job:
+                        _wakeup.clear()
+                        await self.process_job(job)
+                        # After finishing, immediately try to claim next
+                        # (there may be more pending jobs queued up)
+                    else:
+                        # Nothing to do — wait for NOTIFY or 30-s timeout
+                        try:
+                            await asyncio.wait_for(_wakeup.wait(), timeout=30.0)
+                        except asyncio.TimeoutError:
+                            pass
+                        _wakeup.clear()
+
+                except Exception as exc:
+                    logger.error(f"[V4] Worker error: {exc}", exc_info=True)
+                    await asyncio.sleep(5)
+        finally:
+            try:
+                await notify_conn.remove_listener('adas_new_job', _on_notify)
+                await notify_conn.close()
+            except Exception:
+                pass
+            await self.shutdown()
+
+        logger.info(
+            f"[V4STATS] {self.jobs_processed} jobs  "
+            f"avg={self.total_processing_time / max(1, self.jobs_processed):.1f}s"
+        )
 
 
 # ---------------------------------------------------------------------------
