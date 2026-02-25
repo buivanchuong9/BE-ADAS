@@ -152,7 +152,7 @@ class SimpleGPUWorker:
 
             logger.info("[GPU] Loading pipeline 'dashcam': ObjectDetector + Lane + Distance...")
             pipeline['object']   = ObjectDetectorV11(device=self.device, conf_threshold=0.5)
-            pipeline['lane']     = LaneDetectorV11(device=self.device, use_cyan=False)
+            pipeline['lane']     = LaneDetectorV11(device=self.device)
             pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
 
             if torch.cuda.is_available():
