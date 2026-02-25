@@ -38,8 +38,6 @@ nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --work
 echo "🚀 Starting GPU Worker (Simple & Stable)..."
 nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" > worker_0.log 2>&1 &
 
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda > worker_0.log 2>&1 &
-
 # Nếu có nhiều GPU, chạy thêm worker:
 # CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda > worker_1.log 2>&1 &
 
@@ -202,7 +200,7 @@ nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >
 
 # Start GPU Worker (Python Only - STABLE)
 cd ~/BE-ADAS
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda > worker_0.log 2>&1 &
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" > worker_0.log 2>&1 &
 
 # Xem log
 tail -f backend.log
