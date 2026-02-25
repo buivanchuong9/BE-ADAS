@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
 # Import FFmpeg utilities (SAFE)
-from backend.app.core.ffmpeg_utils import FFmpegEncoder, get_video_info
+from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info
 
 logging.basicConfig(
     level=logging.INFO,
@@ -67,14 +67,14 @@ class SimpleGPUWorker:
         self.current_job_id: Optional[UUID] = None
         self.pool: Optional[asyncpg.Pool] = None
         
-        # AI Pipeline (lazy-loaded)
-        self.pipeline = None
+        # AI Pipelines (lazy-loaded per video_type, cached after first load)
+        # Keys: 'dashcam' | 'in_cabin'
+        self._pipelines: Dict[str, Dict] = {}
 
-        # GPU inference: pre-created CUDA streams + thread pool (set during _load_pipeline)
-        self._stream_obj:     object = None   # torch.cuda.Stream for object detection
-        self._stream_driver:  object = None   # torch.cuda.Stream for driver monitoring
-        self._stream_traffic: object = None   # torch.cuda.Stream for traffic sign
-        self._infer_pool: Optional[ThreadPoolExecutor] = None  # 3-worker thread pool
+        # GPU inference: CUDA streams + thread pool (set during _load_pipeline)
+        self._stream_obj:    object = None   # torch.cuda.Stream (dashcam)
+        self._stream_driver: object = None   # torch.cuda.Stream (in_cabin)
+        self._infer_pool: Optional[ThreadPoolExecutor] = None
 
         # Vietnamese TTS for warnings
         self.voice_enabled = True
@@ -114,29 +114,26 @@ class SimpleGPUWorker:
             await self.pool.close()
         logger.info(f"[WORKER] {self.worker_id} shutdown complete")
     
-    def _load_pipeline(self):
+    def _load_pipeline(self, video_type: str = 'dashcam') -> Dict:
         """
-        Lazy-load AI pipeline với tối ưu hóa tối đa cho GPU NVIDIA A30.
+        Lazy-load AI pipeline theo loại video.
 
-        Optimizations:
-        - TF32 matmul/cuDNN  → Tensor Core throughput (Ampere)
-        - cudnn.benchmark    → auto-tune conv kernels for fixed input size
-        - Pre-created CUDA streams → 3 YOLO models chạy song song
-        - ThreadPoolExecutor → release Python GIL during CUDA kernels
-        - Warmup 2 passes    → trigger CUDA JIT / cuDNN heuristics trước khi
-                               job thật đến (triệt tiêu first-frame stall)
+        dashcam  → ObjectDetectorV11 (yolo11x) + LaneDetectorV11 (BEV) + DistanceEstimator
+        in_cabin → DriverMonitorV11 (yolo11x-pose)
+
+        Pipeline được cache sau lần đầu → job thứ 2 cùng loại không mất thời gian load lại.
         """
-        if self.pipeline is not None:
-            return self.pipeline
+        if video_type in self._pipelines:
+            return self._pipelines[video_type]
 
         import torch
 
-        # ── A30 (Ampere) GPU flags ────────────────────────────────────────
-        if torch.cuda.is_available():
-            torch.backends.cudnn.benchmark        = True   # auto-tune conv
-            torch.backends.cuda.matmul.allow_tf32 = True   # TF32 Tensor Core
-            torch.backends.cudnn.allow_tf32        = True   # TF32 in cuDNN
-            torch.set_float32_matmul_precision('high')      # FP32 → TF32
+        # A30 flags - chỉ set 1 lần khi load pipeline đầu tiên
+        if torch.cuda.is_available() and not self._pipelines:
+            torch.backends.cudnn.benchmark        = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32        = True
+            torch.set_float32_matmul_precision('high')
             torch.cuda.empty_cache()
             props = torch.cuda.get_device_properties(0)
             logger.info(
@@ -145,53 +142,59 @@ class SimpleGPUWorker:
                 f"SM={props.multi_processor_count}"
             )
 
-        logger.info(f"[GPU] Đang tải AI models lên {self.device}...")
-
-        from backend.perception.object.object_detector_v11  import ObjectDetectorV11
-        from backend.perception.distance.distance_estimator import DistanceEstimator
-        from backend.perception.lane.lane_detector_v11       import LaneDetectorV11
-        from backend.perception.driver.driver_monitor_v11   import DriverMonitorV11
-        from backend.perception.traffic.traffic_sign_v11    import TrafficSignV11
-
-        self.pipeline = {
-            'object':   ObjectDetectorV11(device=self.device, conf_threshold=0.5),
-            'distance': DistanceEstimator(focal_length=700.0, camera_height=1.2),
-            'lane':     LaneDetectorV11(device=self.device, use_cyan=False),
-            'driver':   DriverMonitorV11(device=self.device),
-            'traffic':  TrafficSignV11(device=self.device, conf_threshold=0.6),
-        }
-
-        # ── Pre-create CUDA streams (1 per YOLO model) ───────────────────
-        # Objects/driver/traffic YOLO models chạy đồng thời trên 3 stream
-        # riêng biệt → A30 có 56 SM, 3 stream tận dụng tốt hardware.
-        if torch.cuda.is_available():
-            self._stream_obj     = torch.cuda.Stream()
-            self._stream_driver  = torch.cuda.Stream()
-            self._stream_traffic = torch.cuda.Stream()
-
-        # Thread pool: 3 workers, mỗi worker bind 1 CUDA stream
-        # GIL được release khi CUDA kernel chạy → thực sự song song
-        self._infer_pool = ThreadPoolExecutor(max_workers=3, thread_name_prefix='adas_infer')
-
-        # ── Warmup: 2 passes để cuDNN cache conv heuristics ──────────────
-        logger.info("[GPU] Warming up all models (2 passes)...")
+        pipeline: Dict = {}
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-        for _ in range(2):
-            try:
-                self.pipeline['object'].process_frame(dummy)
-                self.pipeline['lane'].process_frame(dummy)
-                self.pipeline['driver'].process_frame(dummy)
-                self.pipeline['traffic'].process_frame(dummy)
-            except Exception as e:
-                logger.warning(f"[GPU] Warmup (non-fatal): {e}")
+
+        if video_type == 'dashcam':
+            from backend.perception.object.object_detector_v11  import ObjectDetectorV11
+            from backend.perception.distance.distance_estimator import DistanceEstimator
+            from backend.perception.lane.lane_detector_v11       import LaneDetectorV11
+
+            logger.info("[GPU] Loading pipeline 'dashcam': ObjectDetector + Lane + Distance...")
+            pipeline['object']   = ObjectDetectorV11(device=self.device, conf_threshold=0.5)
+            pipeline['lane']     = LaneDetectorV11(device=self.device, use_cyan=False)
+            pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
+
+            if torch.cuda.is_available():
+                self._stream_obj = torch.cuda.Stream()
+            self._infer_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='adas_obj')
+
+            logger.info("[GPU] Warming up dashcam models (2 passes)...")
+            for _ in range(2):
+                try:
+                    pipeline['object'].process_frame(dummy)
+                    pipeline['lane'].process_frame(dummy)
+                except Exception as e:
+                    logger.warning(f"[GPU] Warmup (non-fatal): {e}")
+            logger.info("[GPU] ✅ dashcam pipeline ready (1 YOLO + BEV lane)")
+
+        elif video_type == 'in_cabin':
+            from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
+
+            logger.info("[GPU] Loading pipeline 'in_cabin': DriverMonitor...")
+            pipeline['driver'] = DriverMonitorV11(device=self.device)
+
+            if torch.cuda.is_available():
+                self._stream_driver = torch.cuda.Stream()
+            self._infer_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='adas_drv')
+
+            logger.info("[GPU] Warming up in_cabin model (2 passes)...")
+            for _ in range(2):
+                try:
+                    pipeline['driver'].process_frame(dummy)
+                except Exception as e:
+                    logger.warning(f"[GPU] Warmup (non-fatal): {e}")
+            logger.info("[GPU] ✅ in_cabin pipeline ready (driver monitor)")
+
+        else:
+            logger.warning(f"[GPU] Unknown video_type '{video_type}', fallback to dashcam")
+            return self._load_pipeline('dashcam')
 
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
-        logger.info("[GPU] ✅ Pipeline ADAS sẵn sàng trên A30")
-        logger.info("     object/driver/traffic → 3 CUDA streams song song")
-        logger.info("     lane → BEV classical CV (cv2.cuda nếu có)")
-        return self.pipeline
+        self._pipelines[video_type] = pipeline
+        return pipeline
     
     async def claim_job(self) -> Optional[Dict]:
         """Claim next pending job atomically."""
@@ -261,8 +264,10 @@ class SimpleGPUWorker:
             
             result_video_path = job_output_dir / "result.mp4"
             
-            # === LOAD PIPELINE ===
-            pipeline = self._load_pipeline()
+            # === LOAD PIPELINE (chỉ load models cần thiết cho video_type) ===
+            video_type = job.get('video_type', 'dashcam')
+            pipeline = self._load_pipeline(video_type)
+            logger.info(f"[JOB] video_type='{video_type}' | models: {list(pipeline.keys())}")
 
             # ── Probe video metadata (CPU-light, 1 call only) ───────────
             logger.info("[DECODE] Probing video metadata...")
@@ -355,7 +360,7 @@ class SimpleGPUWorker:
                         break                    # end of video
 
                     # === INFERENCE ADAS HOÀN CHỈNH (GPU parallel) ===
-                    results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline)
+                    results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline, video_type)
 
                     # === VẼ OVERLAY TIẾNG VIỆT ===
                     frame_with_overlay = self._draw_vietnamese_overlay(frame, results)
@@ -413,140 +418,115 @@ class SimpleGPUWorker:
             self.current_job_id = None
             # FFmpeg cleanup is guaranteed by context manager
     
-    def _run_comprehensive_adas_inference(self, frame: np.ndarray, frame_idx: int, pipeline) -> Dict:
+    def _run_comprehensive_adas_inference(
+        self, frame: np.ndarray, frame_idx: int, pipeline: Dict,
+        video_type: str = 'dashcam'
+    ) -> Dict:
         """
-        ADAS inference tối ưu cho A30: 3 YOLO models chạy song song.
-
-        Architecture:
-          ┌─ Thread-1 (stream_obj)     ─ ObjectDetectorV11  (YOLOv11x detection)
-          ├─ Thread-2 (stream_driver)  ─ DriverMonitorV11   (YOLOv11x pose)
-          └─ Thread-3 (stream_traffic) ─ TrafficSignV11     (YOLOv11x classify)
-                          ↓ sync (join)
-          Serial: LaneDetectorV11 (BEV, cv2.cuda nếu có)
-                          ↓
-          Serial: DistanceEstimator + risk assessment (pure Python, light)
-
-        Python GIL được release khi CUDA kernels đang chạy
-        → 3 threads thực sự song song trên 3 CUDA streams riêng biệt.
+        ADAS inference - chỉ chạy models đã load theo video_type.
+        dashcam  → object(GPU) + lane(BEV) + distance
+        in_cabin → driver monitoring
         """
         import torch
-
         results: Dict = {'frame_idx': frame_idx, 'warnings': []}
 
-        # ── 1. PARALLEL GPU INFERENCE (object + driver + traffic) ────────
-        obj_result     = {}
-        driver_result  = {}
-        traffic_result = {}
+        if video_type == 'dashcam':
+            # 1. Object detection trên CUDA stream
+            def _run_objects():
+                try:
+                    if self._stream_obj and torch.cuda.is_available():
+                        with torch.cuda.stream(self._stream_obj):
+                            return pipeline['object'].process_frame(frame)
+                    return pipeline['object'].process_frame(frame)
+                except Exception as e:
+                    logger.warning(f"[INFER] object: {e}")
+                    return {}
 
-        def _run_objects():
+            # Submit object detection → chạy song song với lane detection bên dưới
+            fut_obj = self._infer_pool.submit(_run_objects) if self._infer_pool else None
+
+            # 2. Lane detection (cv2.cuda BEV - chạy trong main thread)
             try:
-                if self._stream_obj and torch.cuda.is_available():
-                    with torch.cuda.stream(self._stream_obj):
-                        return pipeline['object'].process_frame(frame)
-                return pipeline['object'].process_frame(frame)
+                lane_result = pipeline['lane'].process_frame(frame)
+                results['lane_mask']       = lane_result.get('mask')
+                results['has_lane']        = lane_result.get('has_lane', False)
+                results['lane_confidence'] = lane_result.get('confidence', 0.0)
+                results['lane_colored']    = getattr(pipeline['lane'], '_last_colored', None)
             except Exception as e:
-                logger.warning(f"[INFER] object: {e}")
-                return {}
+                logger.warning(f"[INFER] lane: {e}")
+                results['lane_mask'] = None; results['has_lane'] = False
+                results['lane_confidence'] = 0.0
 
-        def _run_driver():
+            # 3. Lấy kết quả object (xong lúc lane đang chạy → song song thực sự)
+            obj_result = fut_obj.result() if fut_obj else _run_objects()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+
+            results['objects']      = obj_result.get('detections', [])
+            results['object_stats'] = obj_result.get('stats', {})
+
+            # 4. Distance + TTC + risk (CPU)
+            distances = []
+            try:
+                for obj in results['objects']:
+                    if not obj.get('bbox'):
+                        continue
+                    dist_info  = pipeline['distance'].estimate_distance_bbox(
+                        bbox=obj['bbox'],
+                        vehicle_type=obj.get('class_name', 'car'),
+                        frame_height=frame.shape[0]
+                    )
+                    velocity   = obj.get('velocity', 0)
+                    ttc        = (pipeline['distance'].calculate_ttc(dist_info, velocity)
+                                  if velocity > 0 else float('inf'))
+                    risk_level = self._assess_risk(dist_info, ttc, obj.get('class_name', ''))
+                    obj_d = {**obj, 'distance': dist_info, 'ttc': ttc, 'risk_level': risk_level}
+                    distances.append(obj_d)
+                    if risk_level in ('DANGER', 'CRITICAL'):
+                        results['warnings'].append(self._create_vietnamese_warning(obj_d))
+                results['objects_with_distance'] = distances
+            except Exception as e:
+                logger.warning(f"[INFER] distance: {e}")
+                results['objects_with_distance'] = []
+
+            results['driver_state']  = 'n/a'
+            results['traffic_signs'] = []
+
+        elif video_type == 'in_cabin':
+            driver_result: Dict = {}
             try:
                 if self._stream_driver and torch.cuda.is_available():
                     with torch.cuda.stream(self._stream_driver):
-                        return pipeline['driver'].process_frame(frame)
-                return pipeline['driver'].process_frame(frame)
+                        driver_result = pipeline['driver'].process_frame(frame)
+                else:
+                    driver_result = pipeline['driver'].process_frame(frame)
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
             except Exception as e:
                 logger.warning(f"[INFER] driver: {e}")
-                return {}
 
-        def _run_traffic():
-            try:
-                if self._stream_traffic and torch.cuda.is_available():
-                    with torch.cuda.stream(self._stream_traffic):
-                        return pipeline['traffic'].process_frame(frame)
-                return pipeline['traffic'].process_frame(frame)
-            except Exception as e:
-                logger.warning(f"[INFER] traffic: {e}")
-                return {}
-
-        # Submit 3 tasks to thread pool → họ chạy đồng thời trên GPU
-        if self._infer_pool:
-            fut_obj     = self._infer_pool.submit(_run_objects)
-            fut_driver  = self._infer_pool.submit(_run_driver)
-            fut_traffic = self._infer_pool.submit(_run_traffic)
-            obj_result     = fut_obj.result()       # blocking until all 3 done
-            driver_result  = fut_driver.result()
-            traffic_result = fut_traffic.result()
-        else:
-            obj_result     = _run_objects()
-            driver_result  = _run_driver()
-            traffic_result = _run_traffic()
-
-        # Sync all streams before reading GPU results back to CPU
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-        results['objects']      = obj_result.get('detections', [])
-        results['object_stats'] = obj_result.get('stats', {})
-
-        # ── 2. LANE DETECTION (serial, cv2.cuda GPU warp) ────────────────
-        try:
-            lane_result = pipeline['lane'].process_frame(frame)
-            results['lane_mask']      = lane_result.get('mask')
-            results['has_lane']       = lane_result.get('has_lane', False)
-            results['lane_confidence']= lane_result.get('confidence', 0.0)
-            results['lane_colored']   = getattr(pipeline['lane'], '_last_colored', None)
-        except Exception as e:
-            logger.warning(f"[INFER] lane: {e}")
-            results['lane_mask'] = None
-            results['has_lane']  = False
-            results['lane_confidence'] = 0.0
-
-        # ── 3. DISTANCE + TTC (pure Python, CPU-light) ───────────────────
-        distances = []
-        try:
-            for obj in results['objects']:
-                if not obj.get('bbox'):
-                    continue
-                dist_info  = pipeline['distance'].estimate_distance_bbox(
-                    bbox=obj['bbox'],
-                    vehicle_type=obj.get('class_name', 'car'),
-                    frame_height=frame.shape[0]
-                )
-                velocity   = obj.get('velocity', 0)
-                ttc        = (pipeline['distance'].calculate_ttc(dist_info, velocity)
-                              if velocity > 0 else float('inf'))
-                risk_level = self._assess_risk(dist_info, ttc, obj.get('class_name', ''))
-                obj_d = {**obj, 'distance': dist_info, 'ttc': ttc, 'risk_level': risk_level}
-                distances.append(obj_d)
-                if risk_level in ('DANGER', 'CRITICAL'):
-                    results['warnings'].append(self._create_vietnamese_warning(obj_d))
-            results['objects_with_distance'] = distances
-        except Exception as e:
-            logger.warning(f"[INFER] distance: {e}")
+            results['driver_state']          = driver_result.get('state', 'unknown')
+            results['driver_confidence']     = driver_result.get('confidence', 0.0)
+            results['driver_warnings']       = driver_result.get('warnings', [])
+            results['warnings'].extend(results['driver_warnings'])
             results['objects_with_distance'] = []
+            results['traffic_signs']         = []
 
-        # ── 4. DRIVER state (from parallel result) ───────────────────────
-        results['driver_state']      = driver_result.get('state', 'unknown')
-        results['driver_confidence'] = driver_result.get('confidence', 0.0)
-        results['driver_warnings']   = driver_result.get('warnings', [])
-        results['warnings'].extend(results['driver_warnings'])
+        else:
+            results['objects_with_distance'] = []
+            results['traffic_signs']         = []
 
-        # ── 5. TRAFFIC SIGNS (from parallel result) ──────────────────────
-        results['traffic_signs']  = traffic_result.get('signs', [])
-        results['sign_warnings']  = traffic_result.get('warnings', [])
-        results['warnings'].extend(results['sign_warnings'])
-
-        # ── Events summary ────────────────────────────────────────────────
+        # Events summary
         results['events'] = [
-            {
-                'type':  w.get('type', 'warning'),
-                'level': w.get('severity', 'medium'),
-                'time':  frame_idx / 30.0,
-                'frame': frame_idx,
-                'data':  {'message': w.get('message', '')},
-            }
+            {'type': w.get('type', 'warning'), 'level': w.get('severity', 'medium'),
+             'time': frame_idx / 30.0, 'frame': frame_idx,
+             'data': {'message': w.get('message', '')}}
             for w in results['warnings']
         ]
+        if frame_idx % 60 == 0:
+            obj_count = len(results.get('objects_with_distance', []))
+            has_lane  = results.get('has_lane', False)
+            logger.info(f"[FRAME {frame_idx}] objects={obj_count} lane={'YES' if has_lane else 'NO'} warnings={len(results['warnings'])}")
         return results
     
     def _draw_vietnamese_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
