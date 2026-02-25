@@ -148,7 +148,7 @@ class SimpleGPUWorker:
         if video_type == 'dashcam':
             from backend.perception.object.object_detector_v11  import ObjectDetectorV11
             from backend.perception.distance.distance_estimator import DistanceEstimator
-            from backend.perception.lane.lane_detector_v11       import LaneDetectorV11
+            from backend.perception.lane.lane_detector_v4        import LaneDetectorV4 as LaneDetectorV11
 
             logger.info("[GPU] Loading pipeline 'dashcam': ObjectDetector + Lane + Distance...")
             pipeline['object']   = ObjectDetectorV11(device=self.device, conf_threshold=0.5)

@@ -28,7 +28,7 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from backend.perception.object.object_detector_v11 import ObjectDetectorV11
-from backend.perception.lane.lane_detector_v11 import LaneDetectorV11
+from backend.perception.lane.lane_detector_v4 import LaneDetectorV4 as LaneDetectorV11
 from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
 from backend.perception.traffic.traffic_sign_v11 import TrafficSignV11
 
