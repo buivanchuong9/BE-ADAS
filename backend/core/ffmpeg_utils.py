@@ -2,6 +2,7 @@ import subprocess
 import logging
 import atexit
 import shutil
+import glob as _glob
 from typing import Optional, List, Tuple
 from pathlib import Path
 import signal
@@ -10,47 +11,105 @@ import os
 
 def _resolve_binary(name: str) -> str:
     """
-    Resolve an ffmpeg/ffprobe binary path.
+    Resolve an ffmpeg/ffprobe binary that works even when the worker is
+    started via `nohup` and the conda PATH is NOT inherited.
 
-    When the worker runs as a nohup background process the conda PATH is
-    often NOT inherited.  We probe common install locations so the code
-    works regardless of how the process was started.
+    Resolution order:
+      1. Explicit env override  FFMPEG_BIN / FFPROBE_BIN
+      2. shutil.which           (works when PATH is set)
+      3. bash -i -c 'which …'  (interactive shell → sources .bashrc/conda)
+      4. Static candidate list  (/opt/anaconda, conda envs, snap, system)
+      5. Raise RuntimeError with install instructions (fail fast, clear message)
     """
-    # 1. Honour explicit env override: FFMPEG_BIN / FFPROBE_BIN
+    # 1. Explicit env override
     env_key = f"{name.upper()}_BIN"
     if os.environ.get(env_key):
         return os.environ[env_key]
 
-    # 2. shutil.which — works when PATH is set correctly
+    # 2. shutil.which — honours current PATH
     found = shutil.which(name)
     if found:
         return found
 
-    # 3. Common install locations (conda, system)
+    # 3. bash interactive shell — sources .bashrc / conda init so conda bin
+    #    dirs are on PATH even when the parent process never ran `conda activate`
+    try:
+        result = subprocess.run(
+            ['bash', '-i', '-c', f'which {name}'],
+            capture_output=True, text=True, timeout=8,
+            env={**os.environ, 'TERM': 'dumb'},   # suppress colour codes
+        )
+        path = result.stdout.strip().splitlines()[-1] if result.stdout.strip() else ''
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            # Inject the containing dir into PATH so child processes also work
+            bin_dir = os.path.dirname(path)
+            os.environ['PATH'] = bin_dir + ':' + os.environ.get('PATH', '')
+            return path
+    except Exception:
+        pass
+
+    # 4. Static candidate list (common conda + system locations)
+    home = os.path.expanduser('~')
     candidates = [
+        # Anaconda / Miniconda system-wide
         f"/opt/anaconda/bin/{name}",
         f"/opt/anaconda3/bin/{name}",
+        f"/opt/miniconda/bin/{name}",
         f"/opt/miniconda3/bin/{name}",
-        os.path.expanduser(f"~/anaconda3/bin/{name}"),
-        os.path.expanduser(f"~/miniconda3/bin/{name}"),
+        # Per-user
+        f"{home}/anaconda3/bin/{name}",
+        f"{home}/miniconda3/bin/{name}",
+        f"{home}/.conda/bin/{name}",
+        # Conda envs (glob all active envs)
+        *_glob.glob(f"/opt/anaconda/envs/*/bin/{name}"),
+        *_glob.glob(f"/opt/anaconda3/envs/*/bin/{name}"),
+        *_glob.glob(f"{home}/anaconda3/envs/*/bin/{name}"),
+        *_glob.glob(f"{home}/miniconda3/envs/*/bin/{name}"),
+        # System
         f"/usr/bin/{name}",
         f"/usr/local/bin/{name}",
         f"/snap/bin/{name}",
+        f"/snap/{name}/current/bin/{name}",
     ]
     for path in candidates:
         if os.path.isfile(path) and os.access(path, os.X_OK):
+            bin_dir = os.path.dirname(path)
+            os.environ['PATH'] = bin_dir + ':' + os.environ.get('PATH', '')
             return path
 
-    # 4. Fall back — Popen will raise FileNotFoundError with a clear message
-    return name
+    # 5. Not found anywhere — raise immediately with clear install instructions
+    raise RuntimeError(
+        f"\n"
+        f"╔══════════════════════════════════════════════════════════╗\n"
+        f"║  {name} NOT FOUND — please install it on the server:    \n"
+        f"║                                                          \n"
+        f"║  Option A (apt):                                         \n"
+        f"║    sudo apt-get update && sudo apt-get install -y ffmpeg \n"
+        f"║                                                          \n"
+        f"║  Option B (conda):                                       \n"
+        f"║    conda install -c conda-forge ffmpeg                   \n"
+        f"║                                                          \n"
+        f"║  Option C (manual path override):                        \n"
+        f"║    export FFMPEG_BIN=/path/to/ffmpeg                     \n"
+        f"║    export FFPROBE_BIN=/path/to/ffprobe                   \n"
+        f"╚══════════════════════════════════════════════════════════╝"
+    )
 
 
-# Module-level resolved paths — computed once at import time
-FFMPEG  = _resolve_binary('ffmpeg')
-FFPROBE = _resolve_binary('ffprobe')
+# ── Resolved at import time; raises clearly if binary is missing ──────────────
+try:
+    FFMPEG  = _resolve_binary('ffmpeg')
+    FFPROBE = _resolve_binary('ffprobe')
+except RuntimeError as _e:
+    import sys as _sys
+    print(str(_e), file=_sys.stderr, flush=True)
+    # Re-raise so the worker exits immediately with a useful message instead
+    # of silently failing 100 frames into a job.
+    raise
 
 _logger_init = logging.getLogger(__name__)
-_logger_init.debug(f"[ffmpeg_utils] ffmpeg={FFMPEG}  ffprobe={FFPROBE}")
+_logger_init.info(f"[ffmpeg_utils] ffmpeg={FFMPEG}")
+_logger_init.info(f"[ffmpeg_utils] ffprobe={FFPROBE}")
 
 logger = logging.getLogger(__name__)
 

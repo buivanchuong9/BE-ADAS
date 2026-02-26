@@ -18,6 +18,12 @@ git pull origin main
 # 4. Install dependencies mới
 pip install -r requirements.txt
 
+# 4b. Đảm bảo FFmpeg đã cài (REQUIRED — worker không chạy được nếu thiếu)
+which ffmpeg || sudo apt-get update && sudo apt-get install -y ffmpeg
+# Kiểm tra:
+ffmpeg -version | head -1
+# Expected: ffmpeg version 4.x.x ...
+
 # 5. Kill tất cả services cũ
 pkill -u phonglv -f "gpu_worker"
 pkill -u phonglv -f "uvicorn backend.app.main"
