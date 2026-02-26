@@ -111,6 +111,41 @@ _logger_init = logging.getLogger(__name__)
 _logger_init.info(f"[ffmpeg_utils] ffmpeg={FFMPEG}")
 _logger_init.info(f"[ffmpeg_utils] ffprobe={FFPROBE}")
 
+
+def _check_nvenc() -> bool:
+    """
+    Thực sự encode 1 frame giả để kiểm tra h264_nvenc có hoạt động không.
+    Chỉ chạy 1 lần lúc import — kết quả cache vào NVENC_AVAILABLE.
+
+    ffmpeg -encoders | grep nvenc KHÔNG đủ — encoder có thể được compile vào
+    ffmpeg nhưng OpenEncodeSession vẫn fail khi NVENC SDK không tương thích
+    với driver (lỗi "unsupported device (2)").
+    """
+    try:
+        result = subprocess.run(
+            [
+                FFMPEG, '-y',
+                '-f', 'lavfi', '-i', 'color=black:size=32x32:rate=1',
+                '-frames:v', '1',
+                '-c:v', 'h264_nvenc',
+                '-f', 'null', '-',
+            ],
+            capture_output=True,
+            timeout=15,
+        )
+        ok = (result.returncode == 0)
+        _logger_init.info(
+            f"[ffmpeg_utils] NVENC probe: {'OK ✅' if ok else 'FAILED — will use libx264 CPU fallback'}"
+        )
+        return ok
+    except Exception as exc:
+        _logger_init.warning(f"[ffmpeg_utils] NVENC probe exception: {exc} — using libx264")
+        return False
+
+
+# Kiểm tra NVENC 1 lần khi module load
+NVENC_AVAILABLE: bool = _check_nvenc()
+
 logger = logging.getLogger(__name__)
 
 # Global registry of active FFmpeg processes
@@ -179,9 +214,17 @@ class FFmpegEncoder:
         self.height = int(height)
         self.fps = float(fps)
         self.output_path = Path(output_path)
-        self.use_nvenc = use_nvenc
         self.crf = int(crf)
         self.preset = preset
+
+        # Tự động fallback sang CPU nếu NVENC không khả dụng trên server này
+        if use_nvenc and not NVENC_AVAILABLE:
+            logger.warning(
+                "[FFmpeg] NVENC không khả dụng (OpenEncodeSession failed) — "
+                "dùng libx264 CPU thay thế. GPU vẫn chạy YOLO + lane detection."
+            )
+            use_nvenc = False
+        self.use_nvenc = use_nvenc
         
         self.process: Optional[subprocess.Popen] = None
         self.frames_written = 0
