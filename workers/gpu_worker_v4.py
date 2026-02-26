@@ -50,7 +50,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 load_dotenv(PROJECT_ROOT / ".env")
 
-from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info
+from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info, FFMPEG
 
 # Reuse parent class DB/queue/NVDEC/NVENC helpers
 from workers.gpu_worker_simple import SimpleGPUWorker
@@ -309,7 +309,7 @@ class GPUWorkerV4(SimpleGPUWorker):
             def _nvdec_reader(path: str, fq: queue.Queue):
                 codecs = ['h264_cuvid', 'hevc_cuvid', None]
                 for codec in codecs:
-                    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
+                    cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error']
                     if codec:
                         cmd += ['-hwaccel', 'cuda', '-c:v', codec]
                     cmd += ['-i', path,

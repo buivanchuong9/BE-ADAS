@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv(PROJECT_ROOT / ".env")
 
 # Import FFmpeg utilities (SAFE)
-from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info
+from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info, FFMPEG
 
 logging.basicConfig(
     level=logging.INFO,
@@ -309,7 +309,7 @@ class SimpleGPUWorker:
                 """
                 codecs_to_try = ['h264_cuvid', 'hevc_cuvid', None]
                 for codec in codecs_to_try:
-                    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error']
+                    cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error']
                     if codec:
                         # NVDEC hardware decode
                         cmd += ['-hwaccel', 'cuda', '-c:v', codec]

@@ -1,25 +1,56 @@
-"""
-FFmpeg Utilities - Safe Subprocess Management
-==============================================
-Context manager for FFmpeg subprocess with guaranteed cleanup.
-
-CRITICAL FEATURES:
-- Auto-kill FFmpeg on exception (prevents zombie processes)
-- NVENC GPU encoding with web-compatible format
-- Data type safety (int() all dimensions)
-- Detailed logging for debugging
-
-Author: Senior Backend Engineer
-Date: 2026-02-09
-"""
-
 import subprocess
 import logging
 import atexit
+import shutil
 from typing import Optional, List, Tuple
 from pathlib import Path
 import signal
 import os
+
+
+def _resolve_binary(name: str) -> str:
+    """
+    Resolve an ffmpeg/ffprobe binary path.
+
+    When the worker runs as a nohup background process the conda PATH is
+    often NOT inherited.  We probe common install locations so the code
+    works regardless of how the process was started.
+    """
+    # 1. Honour explicit env override: FFMPEG_BIN / FFPROBE_BIN
+    env_key = f"{name.upper()}_BIN"
+    if os.environ.get(env_key):
+        return os.environ[env_key]
+
+    # 2. shutil.which — works when PATH is set correctly
+    found = shutil.which(name)
+    if found:
+        return found
+
+    # 3. Common install locations (conda, system)
+    candidates = [
+        f"/opt/anaconda/bin/{name}",
+        f"/opt/anaconda3/bin/{name}",
+        f"/opt/miniconda3/bin/{name}",
+        os.path.expanduser(f"~/anaconda3/bin/{name}"),
+        os.path.expanduser(f"~/miniconda3/bin/{name}"),
+        f"/usr/bin/{name}",
+        f"/usr/local/bin/{name}",
+        f"/snap/bin/{name}",
+    ]
+    for path in candidates:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+
+    # 4. Fall back — Popen will raise FileNotFoundError with a clear message
+    return name
+
+
+# Module-level resolved paths — computed once at import time
+FFMPEG  = _resolve_binary('ffmpeg')
+FFPROBE = _resolve_binary('ffprobe')
+
+_logger_init = logging.getLogger(__name__)
+_logger_init.debug(f"[ffmpeg_utils] ffmpeg={FFMPEG}  ffprobe={FFPROBE}")
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +179,7 @@ class FFmpegEncoder:
         - faststart flag (progressive download)
         """
         cmd = [
-            'ffmpeg',
+            FFMPEG,
             '-y',  # Overwrite output
             '-f', 'rawvideo',
             '-vcodec', 'rawvideo',
@@ -299,8 +330,8 @@ class FFmpegDecoder:
         """Start FFmpeg decoder."""
         global _active_processes
         
-        cmd = ['ffmpeg']
-        
+        cmd = [FFMPEG]
+
         if self.use_nvdec:
             cmd.extend(['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'])
         
@@ -363,7 +394,7 @@ def get_video_info(video_path: str) -> Tuple[int, int, float, int]:
         RuntimeError: If ffprobe fails
     """
     cmd = [
-        'ffprobe',
+        FFPROBE,
         '-v', 'error',
         '-select_streams', 'v:0',
         '-count_packets',
