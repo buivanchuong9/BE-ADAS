@@ -13,6 +13,12 @@ from uuid import UUID
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# ── MUST be before any cv2 import ──────────────────────────────────────────
+# Injects OpenCV CUDA build paths so cv2 resolves to the GPU build even when
+# the process is started via nohup (no ~/.bashrc, no LD_LIBRARY_PATH).
+import backend.core.cv2_loader   # noqa: F401, E402
+# ───────────────────────────────────────────────────────────────────────────
+
 # Import dependencies
 import asyncio
 import asyncpg
@@ -151,7 +157,7 @@ class SimpleGPUWorker:
             from backend.perception.lane.lane_detector_v4        import LaneDetectorV4 as LaneDetectorV11
 
             logger.info("[GPU] Loading pipeline 'dashcam': ObjectDetector + Lane + Distance...")
-            pipeline['object']   = ObjectDetectorV11(device=self.device, conf_threshold=0.5)
+            pipeline['object']   = ObjectDetectorV11(device=self.device, conf_threshold=0.5, imgsz=416)
             pipeline['lane']     = LaneDetectorV11(device=self.device)
             pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
 
@@ -366,6 +372,24 @@ class SimpleGPUWorker:
 
                 logger.info("[ENCODE] FFmpeg NVENC encoder started")
 
+                # ── Separate encode thread ───────────────────────────────
+                # CPU libx264 encode (~3-5ms/frame) chạy trong background thread
+                # → GPU không phải chờ → tăng throughput đáng kể
+                _encode_q: queue.Queue = queue.Queue(maxsize=8)
+
+                def _encode_worker():
+                    while True:
+                        item = _encode_q.get()
+                        if item is None:   # sentinel
+                            break
+                        encoder.write(item)
+
+                _encode_thread = threading.Thread(
+                    target=_encode_worker, daemon=True, name='encode_worker'
+                )
+                _encode_thread.start()
+                logger.info("[ENCODE] Async encode thread started")
+
                 while True:
                     # ── Pull decoded frame from NVDEC queue ─────────────
                     frame = frame_queue.get()
@@ -381,8 +405,8 @@ class SimpleGPUWorker:
                     # === PHÁT CẢNH BÁO GIỌNG NÓI ===
                     self._handle_voice_warnings(results)
 
-                    # === ENCODE FRAME (NVENC) ===
-                    encoder.write(frame_with_overlay)
+                    # === ENCODE FRAME — async (libx264 in bg thread) ===
+                    _encode_q.put(frame_with_overlay)   # non-blocking; 8-frame buffer
 
                     # === COLLECT EVENTS ===
                     if results.get('events'):
@@ -401,6 +425,11 @@ class SimpleGPUWorker:
                             f"{progress:3d}%  frame={frame_idx}/{total_frames}  "
                             f"speed={fps_proc:.1f}fps  ETA={remaining:.0f}s"
                         )
+
+                # Drain encode queue — flush tất cả frames trước khi FFmpegEncoder đóng pipe
+                _encode_q.put(None)   # sentinel: dừng encode thread
+                _encode_thread.join(timeout=60)
+                logger.info("[ENCODE] All frames written, closing encoder")
 
             reader_thread.join(timeout=5)
             
@@ -458,13 +487,20 @@ class SimpleGPUWorker:
             # Submit object detection → chạy song song với lane detection bên dưới
             fut_obj = self._infer_pool.submit(_run_objects) if self._infer_pool else None
 
-            # 2. Lane detection (cv2.cuda BEV - chạy trong main thread)
+            # 2. Lane detection (stride=3) — chỉ chạy mỗi 3 frame, cache kết quả giữa các frame
+            _LANE_STRIDE = 3
             try:
-                lane_result = pipeline['lane'].process_frame(frame)
+                if frame_idx % _LANE_STRIDE == 0:
+                    lane_result = pipeline['lane'].process_frame(frame)
+                    # cache toàn bộ kế quả incl. colored layer (dùng cho frame tiếp theo)
+                    lane_result['_colored'] = getattr(pipeline['lane'], '_last_colored', None)
+                    pipeline['_cached_lane'] = lane_result
+                else:
+                    lane_result = pipeline.get('_cached_lane', {})
                 results['lane_mask']       = lane_result.get('mask')
                 results['has_lane']        = lane_result.get('has_lane', False)
                 results['lane_confidence'] = lane_result.get('confidence', 0.0)
-                results['lane_colored']    = getattr(pipeline['lane'], '_last_colored', None)
+                results['lane_colored']    = lane_result.get('_colored')
             except Exception as e:
                 logger.warning(f"[INFER] lane: {e}")
                 results['lane_mask'] = None; results['has_lane'] = False

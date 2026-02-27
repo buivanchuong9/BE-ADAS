@@ -33,6 +33,17 @@ import argparse
 import asyncio
 import asyncpg
 import subprocess
+
+# ── MUST be before any cv2 import ──────────────────────────────────────────
+# Injects OpenCV CUDA build paths (LD_LIBRARY_PATH + sys.path + ctypes preload)
+# so cv2 resolves to the custom CUDA build regardless of how the process was
+# started (nohup, ADF, supervisor — all missing ~/.bashrc).
+from pathlib import Path as _Path
+_PROJECT_ROOT = _Path(__file__).parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+import backend.core.cv2_loader   # noqa: F401, E402
+# ───────────────────────────────────────────────────────────────────────────
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor
