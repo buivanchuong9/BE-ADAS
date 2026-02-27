@@ -652,7 +652,7 @@ class SimpleGPUWorker:
                 lane_color_img[lane_mask > 0] = [0, 200, 0]
                 overlay = cv2.addWeighted(overlay, 0.70, lane_color_img, 0.30, 0)
 
-        # === 2. OBJECT BOUNDING BOXES WITH DISTANCE ===
+        # === 2. VẼ OBJECTS VỚI KHOẢNG CÁCH ===
         for obj in results.get('objects_with_distance', []):
             bbox = obj.get('bbox')
             if not bbox:
@@ -664,18 +664,20 @@ class SimpleGPUWorker:
             color = self._get_risk_color(risk_level)
             thickness = 3 if risk_level in ['DANGER', 'CRITICAL'] else 2
 
+            # Bounding box
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
 
-            class_name = obj.get('class_name', '')
+            # Tên tiếng Việt + confidence
+            class_name_vi = self._translate_class_name(obj.get('class_name', ''))
             confidence = obj.get('confidence', 0)
             distance   = obj.get('distance', 0)
             ttc        = obj.get('ttc', float('inf'))
 
-            main_text = f"{class_name} {confidence:.0%}"
+            main_text = f"{class_name_vi} {confidence:.0%}"
             cv2.putText(overlay, main_text, (x1, y1-35),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-            distance_text = f"Dist: {distance:.1f}m"
+            distance_text = f"KC: {distance:.1f}m"
             cv2.putText(overlay, distance_text, (x1, y1-15),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
@@ -684,13 +686,13 @@ class SimpleGPUWorker:
                 cv2.putText(overlay, ttc_text, (x1, y1-5),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
 
-        # === 3. TRAFFIC SIGNS ===
+        # === 3. VẼ BIỂN BÁO ===
         for sign in results.get('traffic_signs', []):
             bbox = sign.get('bbox')
             if bbox:
                 x1, y1, x2, y2 = map(int, bbox)
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                sign_name = sign.get('class_name', 'Sign')
+                sign_name = sign.get('class_name', 'Bien bao')
                 cv2.putText(overlay, sign_name, (x1, y1-10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
@@ -703,17 +705,45 @@ class SimpleGPUWorker:
         return overlay
     
     def _get_risk_color(self, risk_level: str) -> tuple:
-        """Return BGR colour for a given risk level."""
+        """Trả về màu BGR theo risk level."""
         colors = {
-            'SAFE': (0, 255, 0),       # Green
-            'CAUTION': (0, 255, 255),  # Yellow
-            'DANGER': (0, 165, 255),   # Orange
-            'CRITICAL': (0, 0, 255)    # Red
+            'SAFE': (0, 255, 0),       # Xanh lá
+            'CAUTION': (0, 255, 255),  # Vàng
+            'DANGER': (0, 165, 255),   # Cam
+            'CRITICAL': (0, 0, 255)    # Đỏ
         }
         return colors.get(risk_level, (255, 255, 255))
+
+    def _translate_class_name(self, class_name: str) -> str:
+        """Dịch tên class YOLO sang tiếng Việt (Việt hoá giao diện)."""
+        translations = {
+            'person': 'Nguoi',
+            'car': 'O to',
+            'truck': 'Xe tai',
+            'bus': 'Xe buyt',
+            'motorcycle': 'Xe may',
+            'bicycle': 'Xe dap',
+            'traffic light': 'Den giao thong',
+            'stop sign': 'Bien dung',
+            'fire hydrant': 'Tru nuoc',
+            'dog': 'Cho',
+            'cat': 'Meo',
+            'bird': 'Chim',
+            'horse': 'Ngua',
+            'cow': 'Bo',
+            'sheep': 'Cuu',
+            'train': 'Tau hoa',
+            'airplane': 'May bay',
+            'boat': 'Thuyen',
+            'bench': 'Ghe dai',
+            'backpack': 'Ba lo',
+            'umbrella': 'Du/O',
+            'suitcase': 'Vali',
+        }
+        return translations.get(class_name.lower(), class_name)
     
     def _draw_hud_panel(self, overlay: np.ndarray, results: Dict, w: int, h: int):
-        """Draw ADAS HUD panel (top-left corner)."""
+        """Vẽ HUD panel ADAS (góc trên trái) — giao diện tiếng Việt."""
         objects = results.get('objects_with_distance', [])
         dangerous = [o for o in objects if o.get('risk_level') in ('CRITICAL', 'DANGER', 'CAUTION')]
         closest = None
@@ -727,12 +757,12 @@ class SimpleGPUWorker:
         pad = 10
         x0, y0 = pad, pad
 
-        # Semi-transparent background
+        # Nền bán trong suốt
         sub = overlay[y0: y0 + panel_h, x0: x0 + panel_w]
         black_bg = np.zeros_like(sub)
         cv2.addWeighted(sub, 0.3, black_bg, 0.7, 0, sub)
 
-        # Border colour = max risk
+        # Viền theo mức rủi ro cao nhất
         max_risk = 'SAFE'
         if objects:
             risk_order = {'CRITICAL': 4, 'DANGER': 3, 'CAUTION': 2, 'SAFE': 1}
@@ -740,28 +770,28 @@ class SimpleGPUWorker:
         border_color = self._get_risk_color(max_risk)
         cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), border_color, 2)
 
-        # Header bar
+        # Thanh header
         cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + 24), border_color, -1)
-        cv2.putText(overlay, "ADAS SYSTEM", (x0 + 8, y0 + 18),
+        cv2.putText(overlay, "HE THONG ADAS", (x0 + 8, y0 + 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
         y_pos = y0 + 42
         sp    = 22
 
-        # Object count
+        # Số vật thể
         obj_count = len(objects)
-        cv2.putText(overlay, f"Objects: {obj_count}", (x0 + 8, y_pos),
+        cv2.putText(overlay, f"Vat the: {obj_count}", (x0 + 8, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         y_pos += sp
 
-        # Closest object
+        # Vật thể gần nhất
         if closest:
-            name  = closest.get('class_name', '')
+            name  = self._translate_class_name(closest.get('class_name', ''))
             dist  = closest.get('distance', 0)
             ttc   = closest.get('ttc', float('inf'))
             rlvl  = closest.get('risk_level', 'SAFE')
             rc    = self._get_risk_color(rlvl)
-            dist_txt = f"Nearest: {name} - {dist:.1f}m"
+            dist_txt = f"Gan nhat: {name} - {dist:.1f}m"
             cv2.putText(overlay, dist_txt, (x0 + 8, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
             y_pos += sp
@@ -771,39 +801,39 @@ class SimpleGPUWorker:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
                 y_pos += sp
 
-        # Lane status
+        # Trạng thái làn đường
         has_lane   = results.get('has_lane', False)
-        lane_txt   = "Lane: DETECTED" if has_lane else "Lane: NOT CLEAR"
-        lane_color = (0, 220, 0)       if has_lane else (0, 165, 255)
+        lane_txt   = "Lan duong: CO" if has_lane else "Lan duong: KHONG RO"
+        lane_color = (0, 220, 0)     if has_lane else (0, 165, 255)
         cv2.putText(overlay, lane_txt, (x0 + 8, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, lane_color, 1)
         y_pos += sp
 
-        # Driver state
+        # Trạng thái tài xế
         driver_state = results.get('driver_state', 'unknown')
-        state_label  = self._format_driver_state(driver_state)
+        state_vn     = self._translate_driver_state(driver_state)
         d_color      = (0, 255, 0) if driver_state == 'normal' else (0, 0, 255)
-        cv2.putText(overlay, f"Driver: {state_label}", (x0 + 8, y_pos),
+        cv2.putText(overlay, f"Tai xe: {state_vn}", (x0 + 8, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, d_color, 1)
         y_pos += sp
 
-        # Traffic signs
+        # Biển báo giao thông
         sign_count = len(results.get('traffic_signs', []))
         if sign_count:
-            cv2.putText(overlay, f"Signs: {sign_count}", (x0 + 8, y_pos),
+            cv2.putText(overlay, f"Bien bao: {sign_count}", (x0 + 8, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
 
-    def _format_driver_state(self, state: str) -> str:
-        """Human-readable driver state label."""
+    def _translate_driver_state(self, state: str) -> str:
+        """Dịch trạng thái tài xế sang tiếng Việt (không dấu, tương thích cv2.putText)."""
         states = {
-            'normal': 'Normal',
-            'drowsy': 'Drowsy',
-            'distracted': 'Distracted',
-            'looking_away': 'Looking Away',
-            'unknown': 'N/A',
+            'normal': 'Binh thuong',
+            'drowsy': 'Buon ngu',
+            'distracted': 'Mat tap trung',
+            'looking_away': 'Nhin ra ngoai',
+            'unknown': 'Khong ro',
             'n/a': 'N/A'
         }
-        return states.get(state, state.replace('_', ' ').title())
+        return states.get(state, 'Khong ro')
     
     def _draw_warnings(self, overlay: np.ndarray, results: Dict, w: int):
         """Draw prominent warnings at top-centre of frame."""
@@ -884,27 +914,27 @@ class SimpleGPUWorker:
         return 'SAFE'
     
     def _create_warning(self, obj_with_distance: Dict) -> Dict:
-        """Create collision warning for a dangerous object."""
-        class_name = obj_with_distance.get('class_name', '')
-        distance   = obj_with_distance.get('distance', 0)
-        ttc        = obj_with_distance.get('ttc', float('inf'))
-        risk       = obj_with_distance.get('risk_level', 'SAFE')
+        """Tạo cảnh báo va chạm tiếng Việt."""
+        class_name_vi = self._translate_class_name(obj_with_distance.get('class_name', ''))
+        distance      = obj_with_distance.get('distance', 0)
+        ttc           = obj_with_distance.get('ttc', float('inf'))
+        risk          = obj_with_distance.get('risk_level', 'SAFE')
 
         if risk == 'CRITICAL':
-            message  = f"DANGER! {class_name} very close - {distance:.1f}m"
+            message  = f"NGUY HIEM! {class_name_vi} rat gan - {distance:.1f}m"
             severity = 'critical'
         elif risk == 'DANGER':
-            message  = f"WARNING! {class_name} at {distance:.1f}m"
+            message  = f"CANH BAO! {class_name_vi} o {distance:.1f}m"
             severity = 'high'
         else:
-            message  = f"Caution: {class_name} at {distance:.1f}m"
+            message  = f"Chu y {class_name_vi} o {distance:.1f}m"
             severity = 'medium'
 
         return {
             'type': 'collision_warning',
             'message': message,
             'severity': severity,
-            'object_type': class_name,
+            'object_type': class_name_vi,
             'distance': distance,
             'ttc': ttc
         }
