@@ -1,12 +1,3 @@
-"""
-Authentication API Endpoints - Hybrid ID System
-================================================
-Handles user authentication using Supabase JWT tokens with
-integer ID support for legacy compatibility.
-
-Author: Senior ADAS Engineer  
-Date: 2026-01-04
-"""
 from fastapi import APIRouter, Depends
 from typing import Optional
 from pydantic import BaseModel

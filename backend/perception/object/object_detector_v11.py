@@ -54,7 +54,8 @@ class ObjectDetectorV11:
         self,
         model_path: str = "backend/models/yolo11x.pt",
         device: str = "cuda",
-        conf_threshold: float = 0.5
+        conf_threshold: float = 0.5,
+        imgsz: int = 640
     ):
         """
         Khởi tạo bộ nhận diện YOLOv11x.
@@ -63,9 +64,11 @@ class ObjectDetectorV11:
             model_path: Đường dẫn tới file yolo11x.pt
             device: Thiết bị ("cuda" cho GPU)
             conf_threshold: Ngưỡng confidence
+            imgsz: Kích thước ảnh đầu vào cho YOLO (416 / 512 / 640). Nhỏ hơn = nhanh hơn.
         """
         self.device = device
         self.conf_threshold = conf_threshold
+        self.imgsz = imgsz
         
         # Kiểm tra CUDA
         if device == "cuda" and not torch.cuda.is_available():
@@ -137,6 +140,7 @@ class ObjectDetectorV11:
                 frame,
                 conf=self.conf_threshold,
                 device=self.device,
+                imgsz=self.imgsz,
                 verbose=False
             )
             
@@ -199,6 +203,7 @@ class ObjectDetectorV11:
                 frames,
                 conf=self.conf_threshold,
                 device=self.device,
+                imgsz=self.imgsz,
                 verbose=False
             )
             

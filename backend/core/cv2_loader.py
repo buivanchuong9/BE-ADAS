@@ -1,29 +1,3 @@
-"""
-cv2_loader.py — Runtime path injection for CUDA-enabled OpenCV
-===============================================================
-Import THIS MODULE before any other import that uses cv2.
-
-Problem:
-    ADF / nohup background processes do NOT load ~/.bashrc, so
-    LD_LIBRARY_PATH and PYTHONPATH are NOT set.
-    OpenCV was built from source with CUDA and installed to a custom
-    prefix, so the system Python cannot find it.
-
-Solution (code-level, no .bashrc needed):
-    1. Prepend the OpenCV Python bindings directory to sys.path
-       → allows  `import cv2`  to succeed.
-    2. Prepend the OpenCV shared-library directory to LD_LIBRARY_PATH
-       → propagates to any child subprocesses (ffmpeg, etc.).
-    3. Pre-load the core OpenCV shared libraries with ctypes so the
-       dynamic linker finds them before cv2's own __import__ runs.
-
-Usage (must be the very first import in the entrypoint):
-
-    import backend.core.cv2_loader   # noqa: F401  ← inject paths
-    import cv2                        # now finds CUDA build
-    print(cv2.cuda.getCudaEnabledDeviceCount())
-"""
-
 import os
 import sys
 import ctypes

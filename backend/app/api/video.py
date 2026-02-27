@@ -1,17 +1,3 @@
-"""
-VIDEO API - REST Endpoints
-===========================
-FastAPI routes for video upload and result retrieval.
-
-Endpoints:
-- POST /api/video/upload - Upload video for analysis
-- GET /api/video/result/{job_id} - Get analysis results
-- GET /api/video/download/{job_id}/{filename} - Download result video
-
-Author: Senior ADAS Engineer
-Date: 2025-12-21 (Refactored for production)
-"""
-
 from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
