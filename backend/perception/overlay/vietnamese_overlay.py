@@ -139,18 +139,30 @@ class VietnameseOverlayRenderer:
         active    : bool = False,
     ) -> np.ndarray:
         """
-        Draw ego danger zone polygon.
+        Draw ego danger zone polygon — GPU-accelerated blending.
         active=True  → faint red fill (threat present)
         active=False → dashed cyan outline
         """
         if zone_pts is None or len(zone_pts) < 3:
             return frame
 
-        overlay = frame.copy()
-        col = (0, 0, 60) if active else (0, 0, 0)
         if active:
+            overlay = frame.copy()
+            col = (0, 0, 60)
             cv2.fillPoly(overlay, [zone_pts], col)
-            cv2.addWeighted(frame, 0.75, overlay, 0.25, 0, frame)
+            # GPU blend
+            if hasattr(cv2, "cuda") and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                try:
+                    gpu_f = cv2.cuda_GpuMat()
+                    gpu_f.upload(frame)
+                    gpu_o = cv2.cuda_GpuMat()
+                    gpu_o.upload(overlay)
+                    gpu_r = cv2.cuda.addWeighted(gpu_f, 0.75, gpu_o, 0.25, 0)
+                    frame = gpu_r.download()
+                except Exception:
+                    cv2.addWeighted(frame, 0.75, overlay, 0.25, 0, frame)
+            else:
+                cv2.addWeighted(frame, 0.75, overlay, 0.25, 0, frame)
 
         border_col = (0, 80, 255) if active else (0, 200, 200)
         cv2.polylines(frame, [zone_pts], isClosed=True, color=border_col, thickness=1)

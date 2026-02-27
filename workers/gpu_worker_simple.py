@@ -125,8 +125,12 @@ class SimpleGPUWorker:
         self._stream_driver: object = None   # torch.cuda.Stream (in_cabin)
         self._infer_pool: Optional[ThreadPoolExecutor] = None
 
-        # Whether cv2.cuda.addWeighted is available for GPU-accelerated overlay blending
-        self._cuda_overlay: bool = False
+        # GPU overlay blending is REQUIRED (no CPU fallback)
+        self._cuda_overlay: bool = True
+
+        # GPU FPS measurement
+        self._gpu_frame_times: list = []
+        self._gpu_fps: float = 0.0
 
         # TensorRT optimizer (lazy-init)
         self._trt_optimizer = None
@@ -277,21 +281,20 @@ class SimpleGPUWorker:
                 except Exception as e:
                     logger.warning(f"[GPU] Warmup (non-fatal): {e}")
 
-            # Probe cv2.cuda.addWeighted — available only with the CUDA-built OpenCV
-            try:
-                if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
-                    _t = cv2.cuda_GpuMat()
-                    _t.upload(dummy)
-                    _t2 = cv2.cuda_GpuMat()
-                    _t2.upload(dummy)
-                    cv2.cuda.addWeighted(_t, 0.5, _t2, 0.5, 0)
-                    self._cuda_overlay = True
-                    logger.info("[GPU] ✅ cv2.cuda.addWeighted available — overlay blending on GPU")
-            except Exception as _cv:
-                self._cuda_overlay = False
-                logger.info(f"[GPU] cv2.cuda.addWeighted not available, overlay on CPU ({_cv})")
+            # Enforce cv2.cuda.addWeighted — REQUIRED for GPU overlay
+            _t = cv2.cuda_GpuMat()
+            _t.upload(dummy)
+            _t2 = cv2.cuda_GpuMat()
+            _t2.upload(dummy)
+            cv2.cuda.addWeighted(_t, 0.5, _t2, 0.5, 0)
+            self._cuda_overlay = True
+            cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+            logger.info(
+                f"[GPU] GPU overlay ENABLED — cv2.cuda.addWeighted verified — "
+                f"CUDA devices={cuda_count}"
+            )
 
-            logger.info("[GPU] ✅ dashcam pipeline ready (1 YOLO + BEV lane)")
+            logger.info("[GPU] ✅ dashcam pipeline ready (YOLO + UFLD lane + GPU overlay)")
 
         elif video_type == 'in_cabin':
             from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
@@ -555,7 +558,9 @@ class SimpleGPUWorker:
                         logger.info(
                             f"[PROGRESS] [{job_id}] "
                             f"{progress:3d}%  frame={frame_idx}/{total_frames}  "
-                            f"speed={fps_proc:.1f}fps  ETA={remaining:.0f}s"
+                            f"speed={fps_proc:.1f}fps  "
+                            f"gpu_overlay={self._gpu_fps:.1f}fps  "
+                            f"ETA={remaining:.0f}s"
                         )
 
                 # Drain encode queue — flush tất cả frames trước khi FFmpegEncoder đóng pipe
@@ -847,11 +852,20 @@ class SimpleGPUWorker:
         lane_colored = results.get('lane_colored')
         h, w, _ = frame.shape
 
-        # === 1. LÀN ĐƯỜNG (corridor xanh từ LaneDetectorV4) ===
+        # === 1. LÀN ĐƯỜNG (corridor xanh — GPU blending) ===
         if lane_colored is not None:
             if lane_colored.shape[:2] != (h, w):
                 lane_colored = cv2.resize(lane_colored, (w, h))
-            overlay = lane_colored.copy()
+            # GPU-accelerated alpha blend: lane corridor onto base frame
+            if self._cuda_overlay:
+                gpu_base = cv2.cuda_GpuMat()
+                gpu_base.upload(frame)
+                gpu_lane = cv2.cuda_GpuMat()
+                gpu_lane.upload(lane_colored)
+                gpu_blend = cv2.cuda.addWeighted(gpu_base, 0.4, gpu_lane, 0.6, 0)
+                overlay = gpu_blend.download()
+            else:
+                overlay = cv2.addWeighted(frame, 0.4, lane_colored, 0.6, 0)
         else:
             overlay = frame.copy()
 
@@ -899,9 +913,19 @@ class SimpleGPUWorker:
         # 3d. Cảnh báo va chạm / lệch làn (top-center)
         self._draw_warnings_pil(draw, results, w)
 
-        # === 4. COMPOSITE & TRẢ VỀ BGR ===
+        # === 4. COMPOSITE & TRẢ VỀ BGR (GPU resize if needed) ===
         result = Image.alpha_composite(pil_base, ui_layer)
-        return cv2.cvtColor(np.array(result.convert('RGB')), cv2.COLOR_RGB2BGR)
+        final = cv2.cvtColor(np.array(result.convert('RGB')), cv2.COLOR_RGB2BGR)
+
+        # GPU FPS tracking
+        self._gpu_frame_times.append(time.time())
+        if len(self._gpu_frame_times) > 60:
+            self._gpu_frame_times = self._gpu_frame_times[-60:]
+        if len(self._gpu_frame_times) >= 2:
+            dt = self._gpu_frame_times[-1] - self._gpu_frame_times[0]
+            self._gpu_fps = (len(self._gpu_frame_times) - 1) / max(dt, 0.001)
+
+        return final
 
     # ===================================================================
     # OBJECT LABELS (PIL)

@@ -1,23 +1,28 @@
 """
-ABI-safe OpenCV CUDA loader.
+STRICT OpenCV CUDA Loader — NO CPU FALLBACK.
 
-Loads CUDA-enabled OpenCV ONLY when the binding was built for the running
-Python version.  Falls back to the pip-installed cv2 (no CUDA) otherwise.
+This loader **requires** a CUDA-enabled OpenCV build that matches the
+running Python version.  If CUDA is unavailable or the binding ABI does
+not match, the process is terminated immediately.
+
+Contract:  NO GPU → NO SERVICE.
 
 Safety rules
 ────────────
-• The runtime Python version is detected dynamically.
-• Only binding directories matching the runtime version are considered.
-• A config-{major}.{minor}.py sentinel file must exist inside the cv2
-  package directory for the CUDA path to be trusted.
-• Mismatched bindings (e.g. python3.10 on a python3.12 runtime) are
-  NEVER loaded — doing so would cause an ABI crash or recursion error.
+• Runtime Python version detected dynamically.
+• Only binding dirs matching runtime ``python{major}.{minor}`` are used.
+• ``cv2/config-{major}.{minor}.py`` must exist (ABI proof).
+• Mismatched bindings are NEVER loaded.
+• After import, ``cv2.cuda.getCudaEnabledDeviceCount() > 0`` is enforced.
+• A real GPU memory upload test is performed to prove the device works.
 """
 
 import os
 import sys
+import time
 import ctypes
 import logging
+import numpy as np
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -29,13 +34,13 @@ PY_VER = f"{sys.version_info.major}.{sys.version_info.minor}"
 _OPENCV_PREFIX  = Path(os.environ.get("OPENCV_PREFIX", "/home/phonglv/opencv_cuda"))
 _OPENCV_LIB_DIR = Path(os.environ.get("OPENCV_LIB_DIR", str(_OPENCV_PREFIX / "lib")))
 
-# ONLY version-matched binding directories — no fallback to other versions.
+# ONLY version-matched binding directories — no fallback to other Python versions.
 _OPENCV_PY_DIRS = [
     _OPENCV_PREFIX / "lib" / f"python{PY_VER}" / "dist-packages",
     _OPENCV_PREFIX / "lib" / f"python{PY_VER}" / "site-packages",
 ]
 
-# Core shared libraries to pre-load (newest first)
+# Core .so to pre-load (newest first)
 _OPENCV_CORE_LIBS = [
     "libopencv_world.so.4.14",
     "libopencv_world.so.4.10",
@@ -59,8 +64,8 @@ def _clean_cv2_modules() -> None:
 
 def _find_conflicting_cv2_paths(cuda_dirs: list[str]) -> list[str]:
     """
-    Find sys.path entries that contain a cv2 package but are NOT our
-    CUDA dirs.  These come from pip (opencv-python / opencv-python-headless).
+    Find sys.path entries containing a ``cv2`` package that do NOT belong
+    to our CUDA dirs (pip opencv-python / opencv-python-headless).
     """
     cuda_set = set(cuda_dirs)
     conflicts: list[str] = []
@@ -75,39 +80,57 @@ def _find_conflicting_cv2_paths(cuda_dirs: list[str]) -> list[str]:
 def _cuda_binding_matches_runtime(py_dir: Path) -> bool:
     """
     Return True only when ``py_dir/cv2/config-{PY_VER}.py`` exists,
-    proving the CUDA binding was built for the running Python version.
+    proving the CUDA binding was compiled for the running Python version.
     """
     config_file = py_dir / "cv2" / f"config-{PY_VER}.py"
     return config_file.is_file()
 
 
+def verify_gpu_ready() -> None:
+    """
+    Verify GPU memory operations actually work.
+
+    Uploads a small test matrix to GPU via ``cv2.cuda_GpuMat``.
+    Raises ``RuntimeError`` if the upload fails.
+    """
+    import cv2  # noqa: PLC0415
+
+    try:
+        test = cv2.cuda_GpuMat()
+        test.upload(np.zeros((16, 16, 3), dtype=np.uint8))
+    except Exception as exc:
+        raise RuntimeError(
+            f"[cv2_loader] GPU memory upload FAILED — "
+            f"CUDA device unusable: {exc}"
+        ) from exc
+
+    logger.info(
+        "[cv2_loader] GPU memory upload OK — "
+        "cv2.cuda_GpuMat verified on device"
+    )
+
+
 # ── Main entry point ─────────────────────────────────────────────────────────
 
-def inject() -> bool:
+def inject() -> None:
     """
-    Load OpenCV with CUDA support **only when ABI-safe**.
+    Load OpenCV CUDA build and **enforce** GPU availability.
 
-    Flow
-    ────
-    1. Set LD_LIBRARY_PATH for child processes.
-    2. Pre-load core .so via ctypes.
-    3. Check candidate binding directories for ABI compatibility:
-       - directory must exist
-       - ``cv2/config-{PY_VER}.py`` must be present
-    4. If at least one ABI-safe dir is found, temporarily remove
-       conflicting pip cv2 paths, then ``import cv2``.
-    5. Verify CUDA is actually usable (``cv2.cuda.getCudaEnabledDeviceCount``).
-    6. On any failure, restore original sys.path and fall back to pip cv2.
+    This function will raise ``RuntimeError`` and crash the process if:
+    • No ABI-compatible CUDA binding exists for this Python version
+    • cv2 fails to import
+    • ``cv2.cuda`` module is missing
+    • No CUDA devices detected
+    • GPU memory test (upload) fails
 
-    Safe to call multiple times — no-ops after the first successful run.
+    Contract: NO GPU → NO SERVICE.
     """
     global _injected
     if _injected:
-        return True
+        return
     _injected = True
 
-    # Snapshot original sys.path so we can restore it on fallback.
-    original_sys_path = list(sys.path)
+    t0 = time.monotonic()
 
     # ── 1. LD_LIBRARY_PATH (for child processes / FFmpeg) ────────────────────
     if _OPENCV_LIB_DIR.is_dir():
@@ -136,22 +159,21 @@ def inject() -> bool:
             logger.debug("[cv2_loader] Candidate dir does not exist: %s", py_dir)
             continue
         if not _cuda_binding_matches_runtime(py_dir):
-            logger.info(
-                "[cv2_loader] ABI mismatch — CUDA binding not built for "
-                "Python %s (missing cv2/config-%s.py in %s)",
-                PY_VER, PY_VER, py_dir,
+            raise RuntimeError(
+                f"[cv2_loader] ABI mismatch — CUDA binding not built for "
+                f"Python {PY_VER} (missing cv2/config-{PY_VER}.py in {py_dir}). "
+                f"Rebuild OpenCV with -DPYTHON3_EXECUTABLE matching Python {PY_VER}."
             )
-            continue
         abi_safe_dirs.append(str(py_dir))
-        logger.debug("[cv2_loader] ABI-safe CUDA binding found: %s", py_dir)
+        logger.debug("[cv2_loader] ABI-safe CUDA binding: %s", py_dir)
 
     if not abi_safe_dirs:
-        logger.info(
-            "[cv2_loader] No ABI-compatible CUDA cv2 binding for Python %s. "
-            "Falling back to pip OpenCV (CUDA disabled).",
-            PY_VER,
+        raise RuntimeError(
+            f"[cv2_loader] FATAL — No CUDA OpenCV binding directory found for "
+            f"Python {PY_VER} under {_OPENCV_PREFIX}. "
+            f"Expected one of: {[str(d) for d in _OPENCV_PY_DIRS]}. "
+            f"NO GPU → NO SERVICE."
         )
-        return _fallback_to_pip_cv2(original_sys_path)
 
     # ── 4. Insert ABI-safe dirs, remove conflicting pip cv2 paths ────────────
     for d in abi_safe_dirs:
@@ -161,76 +183,43 @@ def inject() -> bool:
     conflicts = _find_conflicting_cv2_paths(abi_safe_dirs)
     for p in conflicts:
         sys.path.remove(p)
-        logger.debug("[cv2_loader] Temporarily removed conflicting path: %s", p)
+        logger.debug("[cv2_loader] Removed conflicting pip cv2 path: %s", p)
 
     _clean_cv2_modules()
 
-    # ── 5. Try CUDA cv2 import ───────────────────────────────────────────────
-    cuda_err = None
-    try:
-        import cv2  # noqa: PLC0415
+    # ── 5. Import & enforce CUDA ─────────────────────────────────────────────
+    import cv2  # noqa: PLC0415
 
-        cuda_count = 0
-        if hasattr(cv2, "cuda"):
-            try:
-                cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
-            except Exception:
-                pass
-
-        if cuda_count > 0:
-            logger.info(
-                "[cv2_loader] cv2 %s loaded — CUDA devices=%d — %s",
-                cv2.__version__, cuda_count, cv2.__file__,
-            )
-        else:
-            logger.warning(
-                "[cv2_loader] cv2 %s loaded from CUDA build but "
-                "no CUDA devices detected — %s",
-                cv2.__version__, cv2.__file__,
-            )
-
-        # Restore pip paths (cv2 is already loaded — won't re-import)
-        for p in conflicts:
-            if p not in sys.path:
-                sys.path.append(p)
-        return True
-
-    except (ImportError, Exception) as exc:
-        cuda_err = exc
-        logger.warning("[cv2_loader] CUDA cv2 import failed: %s", exc)
-
-    # ── 6. Fallback: pip-installed cv2 (no CUDA) ────────────────────────────
-    return _fallback_to_pip_cv2(original_sys_path, cuda_err)
-
-
-def _fallback_to_pip_cv2(
-    original_sys_path: list[str],
-    cuda_err: Exception | None = None,
-) -> bool:
-    """Restore sys.path and load pip cv2 without CUDA."""
-    _clean_cv2_modules()
-
-    # Restore the original sys.path exactly.
-    sys.path[:] = original_sys_path
-
-    try:
-        import cv2  # noqa: PLC0415
-
-        logger.warning(
-            "[cv2_loader] Falling back to pip OpenCV (CUDA disabled) — "
-            "cv2 %s — %s",
-            cv2.__version__, cv2.__file__,
+    if not hasattr(cv2, "cuda"):
+        raise RuntimeError(
+            "[cv2_loader] OpenCV loaded but cv2.cuda MODULE MISSING. "
+            "The build at %s was not compiled with -DWITH_CUDA=ON. "
+            "NO GPU → NO SERVICE." % cv2.__file__
         )
-        return True
-    except ImportError as pip_err:
-        logger.error(
-            "[cv2_loader] ALL cv2 imports failed!\n"
-            "  CUDA error : %s\n"
-            "  Pip error  : %s\n"
-            "  sys.path   : %s",
-            cuda_err, pip_err, sys.path[:8],
+
+    cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+    if cuda_count <= 0:
+        raise RuntimeError(
+            "[cv2_loader] CUDA OpenCV loaded but NO GPU detected "
+            "(getCudaEnabledDeviceCount() == 0). "
+            "Check NVIDIA driver / CUDA toolkit. "
+            "NO GPU → NO SERVICE."
         )
-        return False
+
+    # ── 6. GPU memory readiness test ─────────────────────────────────────────
+    verify_gpu_ready()
+
+    # Restore pip paths AFTER cv2 is loaded (won't re-import)
+    for p in conflicts:
+        if p not in sys.path:
+            sys.path.append(p)
+
+    elapsed = (time.monotonic() - t0) * 1000
+    logger.info(
+        "[cv2_loader] cv2 %s loaded — CUDA devices=%d — "
+        "GPU overlay ENABLED — init %.0fms — %s",
+        cv2.__version__, cuda_count, elapsed, cv2.__file__,
+    )
 
 
 # ── Auto-inject on import ─────────────────────────────────────────────────────

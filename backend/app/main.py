@@ -78,7 +78,24 @@ async def lifespan(app: FastAPI):
     
     # V2: No job service - GPU workers are separate processes
     logger.info("✓ Backend initialized (GPU workers run separately)")
-    
+
+    # GPU readiness check — crash if CUDA not available
+    try:
+        logger.info("Verifying GPU / CUDA readiness...")
+        import backend.core.cv2_loader  # noqa: F401 — triggers strict CUDA enforcement
+        from backend.core.cv2_loader import verify_gpu_ready
+        verify_gpu_ready()
+        import cv2
+        cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+        logger.info(
+            f"✓ GPU ready — cv2 {cv2.__version__}, "
+            f"CUDA devices={cuda_count}"
+        )
+    except Exception as e:
+        logger.error(f"✗ GPU readiness check FAILED: {e}")
+        logger.error("NO GPU → NO SERVICE.  Fix CUDA/OpenCV and restart.")
+        raise
+
     logger.info("Perception modules ready")
     logger.info("Storage directories configured")
     logger.info(f"API Documentation: http://{settings.HOST}:{settings.PORT}/docs")

@@ -432,37 +432,55 @@ class UFLDLaneDetector:
             self._model_format = 'pytorch'
     
     # ------------------------------------------------------------------
-    # Preprocessing
+    # Preprocessing — GPU-accelerated (cv2.cuda)
     # ------------------------------------------------------------------
-    
+
     def _preprocess(self, frame: np.ndarray) -> torch.Tensor:
         """
-        Preprocess frame for UFLD input.
-        
+        Preprocess frame for UFLD input — GPU-accelerated.
+
         Steps:
             1. Crop bottom 60% of image (lanes are in lower part)
-            2. Resize to (input_h, input_w)
-            3. Normalize: ImageNet mean/std
-            4. Convert to NCHW tensor
+            2. GPU resize to (input_h, input_w)
+            3. GPU colour conversion BGR → RGB
+            4. Normalize: ImageNet mean/std
+            5. Convert to NCHW tensor on CUDA
         """
         h, w = frame.shape[:2]
-        
+
         # Crop top 40% (sky/horizon) — keep bottom 60% where lanes are
         crop_y = int(h * 0.40)
         cropped = frame[crop_y:, :, :]
-        
-        # Resize to network input
-        resized = cv2.resize(cropped, (self.input_w, self.input_h), interpolation=cv2.INTER_LINEAR)
-        
-        # BGR → RGB, normalize
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-        
-        # ImageNet normalization
+
+        # --- GPU path: resize + BGR→RGB on GPU, one upload ------------------
+        if self.device == "cuda" and hasattr(cv2, "cuda"):
+            try:
+                gpu_crop = cv2.cuda_GpuMat()
+                gpu_crop.upload(cropped)
+                gpu_resized = cv2.cuda.resize(
+                    gpu_crop,
+                    (self.input_w, self.input_h),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+                gpu_rgb = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB)
+                resized_rgb = gpu_rgb.download()   # pull back once
+            except Exception:
+                # Shouldn't happen; strict loader ensures cv2.cuda works
+                resized = cv2.resize(cropped, (self.input_w, self.input_h),
+                                     interpolation=cv2.INTER_LINEAR)
+                resized_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        else:
+            resized = cv2.resize(cropped, (self.input_w, self.input_h),
+                                 interpolation=cv2.INTER_LINEAR)
+            resized_rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+
+        # float32 [0,1] + ImageNet normalization
+        rgb = resized_rgb.astype(np.float32) / 255.0
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         std  = np.array([0.229, 0.224, 0.225], dtype=np.float32)
         rgb = (rgb - mean) / std
-        
-        # HWC → CHW → NCHW
+
+        # HWC → CHW → NCHW  (direct to CUDA tensor)
         tensor = torch.from_numpy(rgb.transpose(2, 0, 1)).unsqueeze(0).to(self.device)
         return tensor
     
@@ -675,40 +693,56 @@ class UFLDLaneDetector:
         right_lane: Optional[np.ndarray],
     ) -> np.ndarray:
         """
-        Draw lane lines and corridor on frame.
+        Draw lane lines and corridor on frame — GPU blending when available.
         Returns annotated frame (copy).
         """
         annotated = frame.copy()
-        
+
         # 1. Draw all detected lane lines
         for i, lane_pts in enumerate(lanes):
             if lane_pts is None or len(lane_pts) < 2:
                 continue
             color = self.LANE_COLORS[i % len(self.LANE_COLORS)]
             pts = lane_pts.astype(np.int32)
-            
-            # Draw lane line (polyline)
             cv2.polylines(annotated, [pts], isClosed=False, color=color, thickness=3)
-            
-            # Draw points
             for pt in pts:
                 cv2.circle(annotated, tuple(pt), 4, color, -1)
-        
-        # 2. Fill corridor between ego lanes
-        if left_lane is not None and right_lane is not None and len(left_lane) >= 2 and len(right_lane) >= 2:
-            # Create corridor polygon: left lane (top→bottom) + right lane (bottom→top)
+
+        # 2. Fill corridor between ego lanes — GPU blend
+        if (left_lane is not None and right_lane is not None
+                and len(left_lane) >= 2 and len(right_lane) >= 2):
             left_sorted = left_lane[np.argsort(left_lane[:, 1])]
             right_sorted = right_lane[np.argsort(right_lane[:, 1])]
-            
+
             corridor_pts = np.vstack([
                 left_sorted,
                 right_sorted[::-1],
             ]).astype(np.int32)
-            
+
             overlay = frame.copy()
             cv2.fillPoly(overlay, [corridor_pts], self.CORRIDOR_COLOR_BGR)
-            annotated = cv2.addWeighted(annotated, 1.0 - self.CORRIDOR_ALPHA, overlay, self.CORRIDOR_ALPHA, 0)
-        
+
+            # GPU-accelerated addWeighted for corridor blending
+            if self.device == "cuda" and hasattr(cv2, "cuda"):
+                try:
+                    gpu_ann = cv2.cuda_GpuMat()
+                    gpu_ann.upload(annotated)
+                    gpu_ov = cv2.cuda_GpuMat()
+                    gpu_ov.upload(overlay)
+                    alpha = self.CORRIDOR_ALPHA
+                    gpu_blend = cv2.cuda.addWeighted(gpu_ann, 1.0 - alpha, gpu_ov, alpha, 0)
+                    annotated = gpu_blend.download()
+                except Exception:
+                    annotated = cv2.addWeighted(
+                        annotated, 1.0 - self.CORRIDOR_ALPHA,
+                        overlay, self.CORRIDOR_ALPHA, 0,
+                    )
+            else:
+                annotated = cv2.addWeighted(
+                    annotated, 1.0 - self.CORRIDOR_ALPHA,
+                    overlay, self.CORRIDOR_ALPHA, 0,
+                )
+
         return annotated
     
     # ------------------------------------------------------------------
