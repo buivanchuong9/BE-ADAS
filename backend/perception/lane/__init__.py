@@ -1,9 +1,15 @@
-"""Lane detection module for ADAS system — V4 BEV classical pipeline."""
+"""Lane detection module for ADAS system.
+
+Detectors:
+  - LaneDetectorV4:    Classical BEV + sliding window (no ML model)
+  - UFLDLaneDetector:  Ultra Fast Lane Detection v2 (deep learning, ~300 FPS)
+  - LaneDetectorV11:   YOLOv11x-seg segmentation (legacy)
+"""
 
 from .lane_detector_v4 import LaneDetectorV4
+from .lane_detector_ufld import UFLDLaneDetector
 
-# Legacy alias so any code that still does `from ...lane import LaneDetectorV11`
-# gets the V4 class transparently and doesn't crash during transition.
+# Legacy alias
 LaneDetectorV11 = LaneDetectorV4
 
-__all__ = ["LaneDetectorV4", "LaneDetectorV11"]
+__all__ = ["LaneDetectorV4", "UFLDLaneDetector", "LaneDetectorV11"]

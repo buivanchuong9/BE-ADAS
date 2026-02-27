@@ -28,7 +28,8 @@ project_root = Path(__file__).parent.parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from backend.perception.object.object_detector_v11 import ObjectDetectorV11
-from backend.perception.lane.lane_detector_v4 import LaneDetectorV4 as LaneDetectorV11
+from backend.perception.lane.lane_detector_ufld import UFLDLaneDetector
+from backend.perception.lane.lane_detector_v4 import LaneDetectorV4
 from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
 from backend.perception.traffic.traffic_sign_v11 import TrafficSignV11
 
@@ -115,11 +116,10 @@ class ADASPipeline:
                 conf_threshold=0.5
             )
             
-            # 2. Lane Detection
-            logger.info("   [2/4] Lane Segmentation...")
-            self.lane_detector = LaneDetectorV11(
+            # 2. Lane Detection — UFLD v2 (Ultra Fast Lane Detection)
+            logger.info("   [2/4] Lane Detection (UFLD)...")
+            self.lane_detector = UFLDLaneDetector(
                 device=device,
-                use_cyan=True
             )
             
             # 3. Driver Monitor

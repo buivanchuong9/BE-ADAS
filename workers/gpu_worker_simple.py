@@ -75,22 +75,25 @@ class SimpleGPUWorker:
     #   - obj_model:  Object detection (dashcam)
     #   - pose_model: Pose estimation (in_cabin driver monitor)
     #   - seg_model:  Segmentation (lane detection V11, optional)
+    #   - ufld_model: Ultra Fast Lane Detection model (dashcam lane)
     MODEL_PROFILES = {
         'cloud': {
             'obj_model':  'backend/models/yolo11x.pt',
             'pose_model': 'backend/models/yolo11x-pose.pt',
             'seg_model':  'backend/models/yolo11x-seg.pt',
+            'ufld_model': 'backend/models/ufld_tusimple.pth',
             'imgsz': 416,
             'conf': 0.5,
-            'description': 'YOLOv11x — high accuracy (server GPU)',
+            'description': 'YOLOv11x + UFLD — high accuracy (server GPU)',
         },
         'edge': {
             'obj_model':  'backend/models/yolov8n.pt',
             'pose_model': 'backend/models/yolov8n-pose.pt',
             'seg_model':  'backend/models/yolov8n-seg.pt',
+            'ufld_model': 'backend/models/ufld_tusimple.pth',
             'imgsz': 320,
             'conf': 0.45,
-            'description': 'YOLOv8n — real-time (edge deployment)',
+            'description': 'YOLOv8n + UFLD — real-time (edge deployment)',
         },
     }
 
@@ -207,7 +210,7 @@ class SimpleGPUWorker:
         if video_type == 'dashcam':
             from backend.perception.object.object_detector_v11  import ObjectDetectorV11
             from backend.perception.distance.distance_estimator import DistanceEstimator
-            from backend.perception.lane.lane_detector_v4        import LaneDetectorV4 as LaneDetectorV11
+            from backend.perception.lane.lane_detector_ufld     import UFLDLaneDetector
 
             # --- Model profile selection ---
             prof = self.MODEL_PROFILES.get(self.model_profile, self.MODEL_PROFILES['cloud'])
@@ -249,7 +252,17 @@ class SimpleGPUWorker:
                 conf_threshold=conf,
                 imgsz=imgsz,
             )
-            pipeline['lane']     = LaneDetectorV11(device=self.device)
+            # Lane detection: UFLD v2 (Ultra Fast Lane Detection)
+            ufld_path = prof.get('ufld_model')
+            if ufld_path and Path(ufld_path).exists():
+                logger.info(f"[GPU] Lane detection: UFLD ({Path(ufld_path).name})")
+            else:
+                logger.info("[GPU] Lane detection: UFLD (untrained — no model file, will use random weights)")
+                ufld_path = None
+            pipeline['lane']     = UFLDLaneDetector(
+                model_path=ufld_path,
+                device=self.device,
+            )
             pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
 
             if torch.cuda.is_available():
