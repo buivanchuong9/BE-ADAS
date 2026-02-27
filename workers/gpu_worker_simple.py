@@ -510,19 +510,21 @@ class SimpleGPUWorker:
             try:
                 if frame_idx % _LANE_STRIDE == 0:
                     lane_result = pipeline['lane'].process_frame(frame)
-                    # cache toàn bộ kế quả incl. colored layer (dùng cho frame tiếp theo)
-                    lane_result['_colored'] = getattr(pipeline['lane'], '_last_colored', None)
+                    # LaneDetectorV4 returns: annotated_frame (frame+corridor), bev_debug (binary mask)
+                    lane_result['_colored'] = lane_result.get('annotated_frame')
+                    lane_result['mask']     = lane_result.get('bev_debug')
                     pipeline['_cached_lane'] = lane_result
                 else:
                     lane_result = pipeline.get('_cached_lane', {})
                 results['lane_mask']       = lane_result.get('mask')
                 results['has_lane']        = lane_result.get('has_lane', False)
-                results['lane_confidence'] = lane_result.get('confidence', 0.0)
                 results['lane_colored']    = lane_result.get('_colored')
+                results['lane_offset']     = lane_result.get('lane_offset', 0.0)
+                results['offset_level']    = lane_result.get('offset_level', 'SAFE')
             except Exception as e:
                 logger.warning(f"[INFER] lane: {e}")
                 results['lane_mask'] = None; results['has_lane'] = False
-                results['lane_confidence'] = 0.0
+                results['lane_offset'] = 0.0; results['offset_level'] = 'SAFE'
 
             # 3. Lấy kết quả object (xong lúc lane đang chạy → song song thực sự)
             obj_result = fut_obj.result() if fut_obj else _run_objects()
@@ -543,9 +545,9 @@ class SimpleGPUWorker:
                         vehicle_type=obj.get('class_name', 'car'),
                         frame_height=frame.shape[0]
                     )
-                    velocity   = obj.get('velocity', 0)
-                    ttc        = (pipeline['distance'].calculate_ttc(dist_info, velocity)
-                                  if velocity > 0 else float('inf'))
+                    # Simple TTC: assume ego vehicle approaching at ~13 m/s (~50 km/h)
+                    # Negative velocity = approaching
+                    ttc = pipeline['distance'].compute_ttc(dist_info, -13.0) or float('inf')
                     risk_level = self._assess_risk(dist_info, ttc, obj.get('class_name', ''))
                     obj_d = {**obj, 'distance': dist_info, 'ttc': ttc, 'risk_level': risk_level}
                     distances.append(obj_d)
@@ -555,6 +557,21 @@ class SimpleGPUWorker:
             except Exception as e:
                 logger.warning(f"[INFER] distance: {e}")
                 results['objects_with_distance'] = []
+
+            # 5. Lane departure warning (LDW)
+            offset_level = results.get('offset_level', 'SAFE')
+            if offset_level == 'CRITICAL':
+                results['warnings'].append({
+                    'type': 'lane_departure',
+                    'message': 'LECH LAN! Xe dang ra khoi lan duong',
+                    'severity': 'critical',
+                })
+            elif offset_level == 'WARNING':
+                results['warnings'].append({
+                    'type': 'lane_departure',
+                    'message': 'Chu y: Xe dang lech lan duong',
+                    'severity': 'high',
+                })
 
             results['driver_state']  = 'n/a'
             results['traffic_signs'] = []
@@ -598,59 +615,31 @@ class SimpleGPUWorker:
     
     def _draw_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
         """
-        Draw ADAS overlay with full detection info (English).
+        Ve overlay ADAS — giao dien tieng Viet.
 
-        Displays:
-        - Lane detection (cyan Tesla-style)
-        - Object bounding boxes with class labels
-        - Distance & TTC per object
-        - Risk level colour coding
-        - HUD info panel
-        - Driver state & traffic signs
+        Hien thi:
+        - Lan duong (corridor xanh Tesla-style)
+        - Object bounding boxes + ten tieng Viet
+        - Khoang cach & TTC cho tung vat the
+        - Risk level (mau canh bao)
+        - HUD panel thong tin
+        - Canh bao va cham / lech lan
 
-        Lane blending uses GPU (cv2.cuda.addWeighted) when available,
-        with automatic CPU fallback.
+        lane_colored = annotated_frame tu LaneDetectorV4 (da ve corridor).
+        Dung truc tiep lam base, khong blend lai lan 2.
         """
-        overlay = frame.copy()
-        h, w, _ = overlay.shape
-
-        # === 1. LANE OVERLAY — GPU-accelerated addWeighted ===
         lane_colored = results.get('lane_colored')
-        lane_mask    = results.get('lane_mask')
+        h, w, _ = frame.shape
 
-        _blend_done = False
-        if self._cuda_overlay:
-            try:
-                if lane_colored is not None:
-                    if lane_colored.shape[:2] != (h, w):
-                        lane_colored = cv2.resize(lane_colored, (w, h))
-                    _gpu_bg = cv2.cuda_GpuMat()
-                    _gpu_lc = cv2.cuda_GpuMat()
-                    _gpu_bg.upload(overlay)
-                    _gpu_lc.upload(lane_colored)
-                    overlay = cv2.cuda.addWeighted(_gpu_bg, 0.65, _gpu_lc, 0.35, 0).download()
-                    _blend_done = True
-                elif lane_mask is not None:
-                    _lci = np.zeros_like(frame)
-                    _lci[lane_mask > 0] = [0, 200, 0]
-                    _gpu_bg = cv2.cuda_GpuMat()
-                    _gpu_lc = cv2.cuda_GpuMat()
-                    _gpu_bg.upload(overlay)
-                    _gpu_lc.upload(_lci)
-                    overlay = cv2.cuda.addWeighted(_gpu_bg, 0.70, _gpu_lc, 0.30, 0).download()
-                    _blend_done = True
-            except Exception as _ce:
-                self._cuda_overlay = False
-
-        if not _blend_done:
-            if lane_colored is not None:
-                if lane_colored.shape[:2] != (h, w):
-                    lane_colored = cv2.resize(lane_colored, (w, h))
-                overlay = cv2.addWeighted(overlay, 0.65, lane_colored, 0.35, 0)
-            elif lane_mask is not None:
-                lane_color_img = np.zeros_like(frame)
-                lane_color_img[lane_mask > 0] = [0, 200, 0]
-                overlay = cv2.addWeighted(overlay, 0.70, lane_color_img, 0.30, 0)
+        # === 1. LAN DUONG ===
+        # lane_colored IS the original frame with green corridor already drawn by LaneDetectorV4.
+        # Use it directly as base overlay; no need for double-blend.
+        if lane_colored is not None:
+            if lane_colored.shape[:2] != (h, w):
+                lane_colored = cv2.resize(lane_colored, (w, h))
+            overlay = lane_colored.copy()
+        else:
+            overlay = frame.copy()
 
         # === 2. VẼ OBJECTS VỚI KHOẢNG CÁCH ===
         for obj in results.get('objects_with_distance', []):

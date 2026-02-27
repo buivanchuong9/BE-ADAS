@@ -30,24 +30,24 @@ class ObjectDetectorV11:
     - Hiển thị tiếng Việt
     """
     
-    # Class COCO cần thiết cho ADAS
+    # COCO classes relevant for ADAS (English names for pipeline compatibility)
     VEHICLE_CLASSES = {
-        0: 'người',
-        2: 'ô tô',
-        3: 'xe máy',
-        5: 'xe buýt',
-        7: 'xe tải',
-        1: 'xe đạp',
+        0: 'person',
+        2: 'car',
+        3: 'motorcycle',
+        5: 'bus',
+        7: 'truck',
+        1: 'bicycle',
     }
     
-    # Màu sắc chuyên nghiệp (BGR)
+    # Colours per class (BGR)
     COLORS = {
-        'người': (0, 100, 255),      # Cam
-        'ô tô': (113, 204, 46),      # Xanh lá
-        'xe máy': (15, 196, 241),    # Vàng
-        'xe buýt': (219, 152, 52),   # Xanh dương
-        'xe tải': (182, 89, 155),    # Tím
-        'xe đạp': (0, 165, 255),     # Cam nhạt
+        'person': (0, 100, 255),       # Orange
+        'car': (113, 204, 46),         # Green
+        'motorcycle': (15, 196, 241),  # Yellow
+        'bus': (219, 152, 52),         # Blue
+        'truck': (182, 89, 155),       # Purple
+        'bicycle': (0, 165, 255),      # Light orange
     }
     
     def __init__(
@@ -319,12 +319,12 @@ class ObjectDetectorV11:
         # Vẽ
         annotated_frame = self.draw_detections(frame, detections)
         
-        # Thống kê
+        # Stats
         stats = {
             'total': len(detections),
-            'xe_cơ_giới': sum(1 for d in detections if d['class_name'] in ['ô tô', 'xe buýt', 'xe tải']),
-            'xe_máy': sum(1 for d in detections if d['class_name'] == 'xe máy'),
-            'người': sum(1 for d in detections if d['class_name'] == 'người'),
+            'vehicles': sum(1 for d in detections if d['class_name'] in ['car', 'bus', 'truck']),
+            'motorcycles': sum(1 for d in detections if d['class_name'] == 'motorcycle'),
+            'persons': sum(1 for d in detections if d['class_name'] == 'person'),
         }
         
         return {
