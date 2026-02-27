@@ -28,6 +28,7 @@ import queue
 from concurrent.futures import ThreadPoolExecutor
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from dotenv import load_dotenv
 
 # Load .env explicitly
@@ -97,6 +98,10 @@ class SimpleGPUWorker:
         # Graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
+
+        # PIL fonts for Vietnamese text rendering (có dấu)
+        self._font_path = Path(__file__).parent.parent / "backend" / "assets" / "fonts" / "Roboto-Bold.ttf"
+        self._pil_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
         
         logger.info(
             f"[WORKER] {worker_id} initialized: device={device}, Python-only mode"
@@ -558,18 +563,18 @@ class SimpleGPUWorker:
                 logger.warning(f"[INFER] distance: {e}")
                 results['objects_with_distance'] = []
 
-            # 5. Lane departure warning (LDW)
+            # 5. Lane departure warning (LDW) — Cảnh báo lệch làn
             offset_level = results.get('offset_level', 'SAFE')
             if offset_level == 'CRITICAL':
                 results['warnings'].append({
                     'type': 'lane_departure',
-                    'message': 'LECH LAN! Xe dang ra khoi lan duong',
+                    'message': '⚠ LỆCH LÀN! Xe đang ra khỏi làn đường',
                     'severity': 'critical',
                 })
             elif offset_level == 'WARNING':
                 results['warnings'].append({
                     'type': 'lane_departure',
-                    'message': 'Chu y: Xe dang lech lan duong',
+                    'message': 'Chú ý: Xe đang lệch làn đường',
                     'severity': 'high',
                 })
 
@@ -613,27 +618,127 @@ class SimpleGPUWorker:
             logger.info(f"[FRAME {frame_idx}] objects={obj_count} lane={'YES' if has_lane else 'NO'} warnings={len(results['warnings'])}")
         return results
     
+    # ===================================================================
+    # PIL FONT HELPER
+    # ===================================================================
+
+    def _get_font(self, size: int) -> ImageFont.FreeTypeFont:
+        """Lấy PIL font (cached) để render tiếng Việt có dấu."""
+        if size in self._pil_font_cache:
+            return self._pil_font_cache[size]
+        try:
+            if self._font_path.exists():
+                font = ImageFont.truetype(str(self._font_path), size)
+            else:
+                font = ImageFont.load_default()
+        except Exception:
+            font = ImageFont.load_default()
+        self._pil_font_cache[size] = font
+        return font
+
+    # ===================================================================
+    # VIETNAMESE TRANSLATIONS — CÓ DẤU, CHUYÊN NGHIỆP
+    # ===================================================================
+
+    def _translate_class_name(self, class_name: str) -> str:
+        """Dịch tên class YOLO sang tiếng Việt (có dấu, chuyên nghiệp)."""
+        translations = {
+            'person': 'Người đi bộ',
+            'car': 'Ô tô',
+            'truck': 'Xe tải',
+            'bus': 'Xe buýt',
+            'motorcycle': 'Xe máy',
+            'bicycle': 'Xe đạp',
+            'traffic light': 'Đèn giao thông',
+            'stop sign': 'Biển dừng',
+            'fire hydrant': 'Trụ cứu hoả',
+            'dog': 'Chó',
+            'cat': 'Mèo',
+            'bird': 'Chim',
+            'horse': 'Ngựa',
+            'cow': 'Bò',
+            'sheep': 'Cừu',
+            'train': 'Tàu hoả',
+            'airplane': 'Máy bay',
+            'boat': 'Thuyền',
+            'bench': 'Ghế dài',
+            'backpack': 'Ba lô',
+            'umbrella': 'Ô/Dù',
+            'suitcase': 'Va li',
+        }
+        return translations.get(class_name.lower(), class_name.title())
+
+    def _translate_driver_state(self, state: str) -> str:
+        """Dịch trạng thái tài xế sang tiếng Việt (có dấu)."""
+        states = {
+            'normal': 'Bình thường',
+            'drowsy': 'Buồn ngủ',
+            'distracted': 'Mất tập trung',
+            'looking_away': 'Nhìn ra ngoài',
+            'unknown': 'Không xác định',
+            'n/a': 'N/A',
+        }
+        return states.get(state, 'Không xác định')
+
+    def _translate_risk_level(self, risk_level: str) -> str:
+        """Dịch mức rủi ro sang tiếng Việt."""
+        levels = {
+            'SAFE': 'AN TOÀN',
+            'CAUTION': 'CHÚ Ý',
+            'DANGER': 'NGUY HIỂM',
+            'CRITICAL': 'RẤT NGUY HIỂM',
+        }
+        return levels.get(risk_level, risk_level)
+
+    # ===================================================================
+    # COLOUR HELPERS
+    # ===================================================================
+
+    def _get_risk_color(self, risk_level: str) -> tuple:
+        """Trả về màu BGR theo risk level (cho cv2)."""
+        colors = {
+            'SAFE': (0, 255, 0),
+            'CAUTION': (0, 255, 255),
+            'DANGER': (0, 165, 255),
+            'CRITICAL': (0, 0, 255),
+        }
+        return colors.get(risk_level, (255, 255, 255))
+
+    def _get_risk_color_rgba(self, risk_level: str) -> tuple:
+        """Trả về màu RGBA theo risk level (cho PIL)."""
+        colors = {
+            'SAFE':     (80, 255, 80, 230),
+            'CAUTION':  (255, 220, 0, 235),
+            'DANGER':   (255, 140, 0, 240),
+            'CRITICAL': (255, 40, 40, 245),
+        }
+        return colors.get(risk_level, (200, 200, 200, 200))
+
+    # ===================================================================
+    # OVERLAY CHÍNH — PIL-BASED, TIẾNG VIỆT CÓ DẤU
+    # Đề tài: "Phát triển ứng dụng cảnh báo thông minh cho ô tô"
+    # ===================================================================
+
     def _draw_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
         """
-        Ve overlay ADAS — giao dien tieng Viet.
+        Vẽ overlay ADAS chuyên nghiệp — tiếng Việt có dấu (PIL rendering).
 
-        Hien thi:
-        - Lan duong (corridor xanh Tesla-style)
-        - Object bounding boxes + ten tieng Viet
-        - Khoang cach & TTC cho tung vat the
-        - Risk level (mau canh bao)
-        - HUD panel thong tin
-        - Canh bao va cham / lech lan
+        Đề tài #138: "Phát triển ứng dụng cảnh báo thông minh cho ô tô
+        chạy trên điện thoại Android"
 
-        lane_colored = annotated_frame tu LaneDetectorV4 (da ve corridor).
-        Dung truc tiep lam base, khong blend lai lan 2.
+        Sử dụng Pillow để render Unicode tiếng Việt chính xác.
+
+        Hiển thị:
+        - Làn đường (corridor xanh Tesla-style từ LaneDetectorV4)
+        - Object bounding boxes + tên tiếng Việt có dấu
+        - Khoảng cách & TTC cho từng vật thể
+        - HUD panel thông tin chuyên nghiệp
+        - Cảnh báo va chạm / lệch làn (PIL rendering)
         """
         lane_colored = results.get('lane_colored')
         h, w, _ = frame.shape
 
-        # === 1. LAN DUONG ===
-        # lane_colored IS the original frame with green corridor already drawn by LaneDetectorV4.
-        # Use it directly as base overlay; no need for double-blend.
+        # === 1. LÀN ĐƯỜNG (corridor xanh từ LaneDetectorV4) ===
         if lane_colored is not None:
             if lane_colored.shape[:2] != (h, w):
                 lane_colored = cv2.resize(lane_colored, (w, h))
@@ -641,243 +746,313 @@ class SimpleGPUWorker:
         else:
             overlay = frame.copy()
 
-        # === 2. VẼ OBJECTS VỚI KHOẢNG CÁCH ===
+        # === 2. BOUNDING BOXES (cv2 — nhanh, không cần Unicode) ===
         for obj in results.get('objects_with_distance', []):
             bbox = obj.get('bbox')
             if not bbox:
                 continue
-
             x1, y1, x2, y2 = map(int, bbox)
-
             risk_level = obj.get('risk_level', 'SAFE')
             color = self._get_risk_color(risk_level)
             thickness = 3 if risk_level in ['DANGER', 'CRITICAL'] else 2
-
-            # Bounding box
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
 
-            # Tên tiếng Việt + confidence
-            class_name_vi = self._translate_class_name(obj.get('class_name', ''))
-            confidence = obj.get('confidence', 0)
-            distance   = obj.get('distance', 0)
-            ttc        = obj.get('ttc', float('inf'))
-
-            main_text = f"{class_name_vi} {confidence:.0%}"
-            cv2.putText(overlay, main_text, (x1, y1-35),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-
-            distance_text = f"KC: {distance:.1f}m"
-            cv2.putText(overlay, distance_text, (x1, y1-15),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-
-            if ttc < 10:
-                ttc_text = f"TTC: {ttc:.1f}s"
-                cv2.putText(overlay, ttc_text, (x1, y1-5),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
-
-        # === 3. VẼ BIỂN BÁO ===
+        # Biển báo (cv2 rectangle)
         for sign in results.get('traffic_signs', []):
             bbox = sign.get('bbox')
             if bbox:
                 x1, y1, x2, y2 = map(int, bbox)
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)
-                sign_name = sign.get('class_name', 'Bien bao')
-                cv2.putText(overlay, sign_name, (x1, y1-10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
-        # === 4. HUD PANEL (TOP-LEFT) ===
-        self._draw_hud_panel(overlay, results, w, h)
+        # === 3. CHUYỂN SANG PIL ĐỂ VẼ VĂN BẢN TIẾNG VIỆT ===
+        pil_base = Image.fromarray(
+            cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
+        ).convert('RGBA')
+        ui_layer = Image.new('RGBA', pil_base.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(ui_layer, 'RGBA')
 
-        # === 5. WARNINGS (CENTER-TOP) ===
-        self._draw_warnings(overlay, results, w)
+        # 3a. Object labels (tên tiếng Việt + khoảng cách + TTC)
+        self._draw_object_labels_pil(draw, results)
 
-        return overlay
-    
-    def _get_risk_color(self, risk_level: str) -> tuple:
-        """Trả về màu BGR theo risk level."""
-        colors = {
-            'SAFE': (0, 255, 0),       # Xanh lá
-            'CAUTION': (0, 255, 255),  # Vàng
-            'DANGER': (0, 165, 255),   # Cam
-            'CRITICAL': (0, 0, 255)    # Đỏ
-        }
-        return colors.get(risk_level, (255, 255, 255))
+        # 3b. Biển báo labels (tiếng Việt)
+        for sign in results.get('traffic_signs', []):
+            bbox = sign.get('bbox')
+            if bbox:
+                sx, sy = int(bbox[0]), int(bbox[1])
+                sign_vn = self._translate_class_name(sign.get('class_name', ''))
+                font_s = self._get_font(18)
+                draw.text((sx + 1, sy - 21), sign_vn, font=font_s, fill=(0, 0, 0, 160))
+                draw.text((sx, sy - 22), sign_vn, font=font_s, fill=(0, 255, 255, 240))
 
-    def _translate_class_name(self, class_name: str) -> str:
-        """Dịch tên class YOLO sang tiếng Việt (Việt hoá giao diện)."""
-        translations = {
-            'person': 'Nguoi',
-            'car': 'O to',
-            'truck': 'Xe tai',
-            'bus': 'Xe buyt',
-            'motorcycle': 'Xe may',
-            'bicycle': 'Xe dap',
-            'traffic light': 'Den giao thong',
-            'stop sign': 'Bien dung',
-            'fire hydrant': 'Tru nuoc',
-            'dog': 'Cho',
-            'cat': 'Meo',
-            'bird': 'Chim',
-            'horse': 'Ngua',
-            'cow': 'Bo',
-            'sheep': 'Cuu',
-            'train': 'Tau hoa',
-            'airplane': 'May bay',
-            'boat': 'Thuyen',
-            'bench': 'Ghe dai',
-            'backpack': 'Ba lo',
-            'umbrella': 'Du/O',
-            'suitcase': 'Vali',
-        }
-        return translations.get(class_name.lower(), class_name)
-    
-    def _draw_hud_panel(self, overlay: np.ndarray, results: Dict, w: int, h: int):
-        """Vẽ HUD panel ADAS (góc trên trái) — giao diện tiếng Việt."""
-        objects = results.get('objects_with_distance', [])
-        dangerous = [o for o in objects if o.get('risk_level') in ('CRITICAL', 'DANGER', 'CAUTION')]
+        # 3c. HUD Panel chuyên nghiệp (góc trên trái)
+        self._draw_hud_panel_pil(draw, results, w, h)
+
+        # 3d. Cảnh báo va chạm / lệch làn (top-center)
+        self._draw_warnings_pil(draw, results, w)
+
+        # === 4. COMPOSITE & TRẢ VỀ BGR ===
+        result = Image.alpha_composite(pil_base, ui_layer)
+        return cv2.cvtColor(np.array(result.convert('RGB')), cv2.COLOR_RGB2BGR)
+
+    # ===================================================================
+    # OBJECT LABELS (PIL)
+    # ===================================================================
+
+    def _draw_object_labels_pil(self, draw: ImageDraw.ImageDraw, results: Dict):
+        """Vẽ nhãn vật thể tiếng Việt — tên, khoảng cách, TTC."""
+        font_main = self._get_font(20)
+        font_sub  = self._get_font(16)
+
+        for obj in results.get('objects_with_distance', []):
+            bbox = obj.get('bbox')
+            if not bbox:
+                continue
+            x1, y1 = int(bbox[0]), int(bbox[1])
+
+            risk_level = obj.get('risk_level', 'SAFE')
+            color_rgba = self._get_risk_color_rgba(risk_level)
+
+            class_vn   = self._translate_class_name(obj.get('class_name', ''))
+            confidence = obj.get('confidence', 0)
+            distance   = obj.get('distance', 0)
+            ttc        = obj.get('ttc', float('inf'))
+
+            # Main: "Ô tô 87%"
+            main_text = f"{class_vn} {confidence:.0%}"
+            # Sub:  "KC: 5.2m" or "KC: 5.2m │ TTC: 3.1s"
+            sub_text = f"KC: {distance:.1f}m"
+            if ttc < 10:
+                sub_text += f"  ▸ TTC: {ttc:.1f}s"
+
+            # Measure for chip background
+            mb = draw.textbbox((0, 0), main_text, font=font_main)
+            sb = draw.textbbox((0, 0), sub_text,  font=font_sub)
+            mw, mh = mb[2] - mb[0], mb[3] - mb[1]
+            sw, sh = sb[2] - sb[0], sb[3] - sb[1]
+
+            chip_w = max(mw, sw) + 14
+            chip_h = mh + sh + 12
+            cx, cy = x1, max(0, y1 - chip_h - 4)
+
+            # Semi-transparent chip background
+            bg_alpha = 185 if risk_level in ('DANGER', 'CRITICAL') else 150
+            draw.rectangle([cx, cy, cx + chip_w, cy + chip_h],
+                           fill=(10, 10, 10, bg_alpha))
+            # Coloured left accent bar
+            draw.rectangle([cx, cy, cx + 3, cy + chip_h], fill=color_rgba)
+
+            # Text
+            draw.text((cx + 8, cy + 3), main_text,
+                      font=font_main, fill=(255, 255, 255, 245))
+            draw.text((cx + 8, cy + 3 + mh + 2), sub_text,
+                      font=font_sub, fill=color_rgba)
+
+    # ===================================================================
+    # HUD PANEL — "HỆ THỐNG CẢNH BÁO THÔNG MINH"
+    # ===================================================================
+
+    def _draw_hud_panel_pil(self, draw: ImageDraw.ImageDraw,
+                            results: Dict, w: int, h: int):
+        """
+        HUD Panel chuyên nghiệp (góc trên trái) — tiếng Việt có dấu.
+        Đúng đề tài: "Hệ thống cảnh báo thông minh cho ô tô"
+        """
+        objects   = results.get('objects_with_distance', [])
+        dangerous = [o for o in objects
+                     if o.get('risk_level') in ('CRITICAL', 'DANGER', 'CAUTION')]
         closest = None
         if dangerous:
             closest = min(dangerous, key=lambda o: o.get('distance', 9999))
         elif objects:
             closest = min(objects, key=lambda o: o.get('distance', 9999))
 
-        panel_w = 310
-        panel_h = 150 if closest else 130
-        pad = 10
+        font_header = self._get_font(18)
+        font_body   = self._get_font(16)
+
+        pad     = 10
+        panel_w = 340
+        line_h  = 23
+        header_h = 30
+
+        # Dynamic panel height
+        num_lines = 4   # objects, lane, driver, signs
+        if closest:
+            num_lines += 1
+            if closest.get('ttc', float('inf')) < 10:
+                num_lines += 1
+        panel_h = header_h + pad + num_lines * line_h + pad
+
         x0, y0 = pad, pad
 
-        # Nền bán trong suốt
-        sub = overlay[y0: y0 + panel_h, x0: x0 + panel_w]
-        black_bg = np.zeros_like(sub)
-        cv2.addWeighted(sub, 0.3, black_bg, 0.7, 0, sub)
-
-        # Viền theo mức rủi ro cao nhất
+        # Max risk → border colour
         max_risk = 'SAFE'
         if objects:
             risk_order = {'CRITICAL': 4, 'DANGER': 3, 'CAUTION': 2, 'SAFE': 1}
-            max_risk = max(objects, key=lambda o: risk_order.get(o.get('risk_level', 'SAFE'), 1)).get('risk_level', 'SAFE')
-        border_color = self._get_risk_color(max_risk)
-        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), border_color, 2)
+            max_risk = max(
+                objects,
+                key=lambda o: risk_order.get(o.get('risk_level', 'SAFE'), 1)
+            ).get('risk_level', 'SAFE')
+        border_rgba = self._get_risk_color_rgba(max_risk)
 
-        # Thanh header
-        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + 24), border_color, -1)
-        cv2.putText(overlay, "HE THONG ADAS", (x0 + 8, y0 + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+        # ── Panel background (semi-transparent) ──
+        draw.rectangle([x0, y0, x0 + panel_w, y0 + panel_h],
+                       fill=(10, 10, 15, 195))
+        draw.rectangle([x0, y0, x0 + panel_w, y0 + panel_h],
+                       outline=border_rgba, width=2)
 
-        y_pos = y0 + 42
-        sp    = 22
+        # ── Header bar ──
+        draw.rectangle([x0, y0, x0 + panel_w, y0 + header_h],
+                       fill=border_rgba)
+        header_text = "HỆ THỐNG CẢNH BÁO THÔNG MINH"
+        hb = draw.textbbox((0, 0), header_text, font=font_header)
+        hw = hb[2] - hb[0]
+        hx = x0 + (panel_w - hw) // 2
+        # Shadow
+        draw.text((hx + 1, y0 + 6 + 1), header_text,
+                  font=font_header, fill=(0, 0, 0, 180))
+        draw.text((hx, y0 + 6), header_text,
+                  font=font_header, fill=(255, 255, 255, 255))
 
-        # Số vật thể
+        # ── Body ──
+        y_pos  = y0 + header_h + pad
+        left_x = x0 + 12
+
+        # 1. Vật thể phát hiện
         obj_count = len(objects)
-        cv2.putText(overlay, f"Vat the: {obj_count}", (x0 + 8, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-        y_pos += sp
+        draw.text((left_x, y_pos),
+                  f"Phát hiện vật thể: {obj_count}",
+                  font=font_body, fill=(255, 255, 255, 225))
+        y_pos += line_h
 
-        # Vật thể gần nhất
+        # 2. Vật thể gần nhất
         if closest:
-            name  = self._translate_class_name(closest.get('class_name', ''))
-            dist  = closest.get('distance', 0)
-            ttc   = closest.get('ttc', float('inf'))
-            rlvl  = closest.get('risk_level', 'SAFE')
-            rc    = self._get_risk_color(rlvl)
-            dist_txt = f"Gan nhat: {name} - {dist:.1f}m"
-            cv2.putText(overlay, dist_txt, (x0 + 8, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
-            y_pos += sp
+            name = self._translate_class_name(closest.get('class_name', ''))
+            dist = closest.get('distance', 0)
+            ttc  = closest.get('ttc', float('inf'))
+            rlvl = closest.get('risk_level', 'SAFE')
+            rc   = self._get_risk_color_rgba(rlvl)
+
+            draw.text((left_x, y_pos),
+                      f"Gần nhất: {name} — {dist:.1f}m",
+                      font=font_body, fill=rc)
+            y_pos += line_h
+
             if ttc < 10:
-                ttc_txt = f"TTC: {ttc:.1f}s  [{rlvl}]"
-                cv2.putText(overlay, ttc_txt, (x0 + 8, y_pos),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
-                y_pos += sp
+                risk_vn = self._translate_risk_level(rlvl)
+                draw.text((left_x, y_pos),
+                          f"TTC: {ttc:.1f}s  [{risk_vn}]",
+                          font=font_body, fill=rc)
+                y_pos += line_h
 
-        # Trạng thái làn đường
-        has_lane   = results.get('has_lane', False)
-        lane_txt   = "Lan duong: CO" if has_lane else "Lan duong: KHONG RO"
-        lane_color = (0, 220, 0)     if has_lane else (0, 165, 255)
-        cv2.putText(overlay, lane_txt, (x0 + 8, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, lane_color, 1)
-        y_pos += sp
+        # 3. Làn đường
+        has_lane = results.get('has_lane', False)
+        if has_lane:
+            lane_text  = "Làn đường: Đã phát hiện ✓"
+            lane_color = (80, 255, 80, 235)
+        else:
+            lane_text  = "Làn đường: Không rõ"
+            lane_color = (255, 165, 0, 225)
+        draw.text((left_x, y_pos), lane_text,
+                  font=font_body, fill=lane_color)
+        y_pos += line_h
 
-        # Trạng thái tài xế
+        # 4. Tài xế
         driver_state = results.get('driver_state', 'unknown')
-        state_vn     = self._translate_driver_state(driver_state)
-        d_color      = (0, 255, 0) if driver_state == 'normal' else (0, 0, 255)
-        cv2.putText(overlay, f"Tai xe: {state_vn}", (x0 + 8, y_pos),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, d_color, 1)
-        y_pos += sp
+        state_vn = self._translate_driver_state(driver_state)
+        if driver_state == 'normal':
+            d_color = (80, 255, 80, 235)
+        elif driver_state in ('n/a', 'unknown'):
+            d_color = (180, 180, 180, 200)
+        else:
+            d_color = (255, 80, 80, 240)
+        draw.text((left_x, y_pos),
+                  f"Tài xế: {state_vn}",
+                  font=font_body, fill=d_color)
+        y_pos += line_h
 
-        # Biển báo giao thông
+        # 5. Biển báo
         sign_count = len(results.get('traffic_signs', []))
         if sign_count:
-            cv2.putText(overlay, f"Bien bao: {sign_count}", (x0 + 8, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
+            draw.text((left_x, y_pos),
+                      f"Biển báo: {sign_count}",
+                      font=font_body, fill=(0, 255, 255, 225))
 
-    def _translate_driver_state(self, state: str) -> str:
-        """Dịch trạng thái tài xế sang tiếng Việt (không dấu, tương thích cv2.putText)."""
-        states = {
-            'normal': 'Binh thuong',
-            'drowsy': 'Buon ngu',
-            'distracted': 'Mat tap trung',
-            'looking_away': 'Nhin ra ngoai',
-            'unknown': 'Khong ro',
-            'n/a': 'N/A'
-        }
-        return states.get(state, 'Khong ro')
-    
-    def _draw_warnings(self, overlay: np.ndarray, results: Dict, w: int):
-        """Draw prominent warnings at top-centre of frame."""
+    # ===================================================================
+    # WARNING BANNERS (PIL) — CẢNH BÁO CHUYÊN NGHIỆP
+    # ===================================================================
+
+    def _draw_warnings_pil(self, draw: ImageDraw.ImageDraw,
+                           results: Dict, w: int):
+        """Vẽ cảnh báo chuyên nghiệp (top-center) — tiếng Việt có dấu."""
         warnings = results.get('warnings', [])
         if not warnings:
             return
 
         severity_order = {'critical': 0, 'high': 1, 'medium': 2}
-        warnings = sorted(warnings, key=lambda x: severity_order.get(x.get('severity', 'medium'), 2))
+        warnings = sorted(
+            warnings,
+            key=lambda x: severity_order.get(x.get('severity', 'medium'), 2)
+        )
 
         frame_idx = results.get('frame_idx', 0)
-        flash_on = (frame_idx // 8) % 2 == 0
+        flash_on  = (frame_idx // 8) % 2 == 0
 
         y_start = 55
-        for i, warning in enumerate(warnings[:3]):
+        drawn   = 0
+        for warning in warnings[:3]:
             msg      = warning.get('message', '')
             severity = warning.get('severity', 'medium')
 
             if severity == 'critical':
-                color     = (0, 0, 255)
-                bg_color  = (0, 0, 120)
-                thickness = 3
-                scale     = 0.85
+                bg_color   = (200, 0, 0, 170)
+                border_col = (255, 40, 40, 240)
+                text_color = (255, 255, 255, 255)
+                font_size  = 28
                 if not flash_on:
                     continue
             elif severity == 'high':
-                color     = (0, 100, 255)
-                bg_color  = (0, 40, 100)
-                thickness = 2
-                scale     = 0.75
+                bg_color   = (180, 60, 0, 150)
+                border_col = (255, 140, 0, 230)
+                text_color = (255, 255, 255, 250)
+                font_size  = 24
             else:
-                color     = (0, 220, 220)
-                bg_color  = (0, 80, 80)
-                thickness = 2
-                scale     = 0.65
+                bg_color   = (0, 100, 100, 130)
+                border_col = (0, 220, 220, 210)
+                text_color = (220, 255, 255, 245)
+                font_size  = 22
 
-            (tw, th), _ = cv2.getTextSize(msg, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
-            x_c  = (w - tw) // 2
-            y_pos = y_start + i * 44
-            pad   = 6
+            font = self._get_font(font_size)
+            tb = draw.textbbox((0, 0), msg, font=font)
+            tw, th = tb[2] - tb[0], tb[3] - tb[1]
 
-            cv2.rectangle(overlay,
-                          (x_c - pad, y_pos - th - pad),
-                          (x_c + tw + pad, y_pos + pad),
-                          bg_color, -1)
-            cv2.rectangle(overlay,
-                          (x_c - pad, y_pos - th - pad),
-                          (x_c + tw + pad, y_pos + pad),
-                          color, thickness)
-            cv2.putText(overlay, msg, (x_c, y_pos),
-                        cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
-    
+            pad_x, pad_y = 24, 10
+            y_pos = y_start + drawn * (th + pad_y * 2 + 12)
+
+            bx1 = (w - tw) // 2 - pad_x
+            bx2 = (w + tw) // 2 + pad_x
+            by1 = y_pos - pad_y
+            by2 = y_pos + th + pad_y
+
+            # Semi-transparent background
+            draw.rectangle([bx1, by1, bx2, by2], fill=bg_color)
+            draw.rectangle([bx1, by1, bx2, by2],
+                           outline=border_col, width=2)
+
+            # Shadow + main text
+            tx = (w - tw) // 2
+            draw.text((tx + 1, y_pos + 1), msg,
+                      font=font, fill=(0, 0, 0, 170))
+            draw.text((tx, y_pos), msg,
+                      font=font, fill=text_color)
+            drawn += 1
+
+    # ===================================================================
+    # RISK ASSESSMENT
+    # ===================================================================
+
     def _assess_risk(self, distance: float, ttc: float, obj_type: str) -> str:
-        """Assess collision risk based on distance and TTC."""
-        if obj_type in ['motorcycle', 'bicycle']:
+        """Đánh giá mức rủi ro va chạm dựa trên khoảng cách và TTC."""
+        if obj_type in ['motorcycle', 'bicycle', 'person']:
             critical_dist = 2.0
             danger_dist   = 5.0
             caution_dist  = 10.0
@@ -901,22 +1076,27 @@ class SimpleGPUWorker:
             return 'CAUTION'
 
         return 'SAFE'
-    
+
+    # ===================================================================
+    # TẠO CẢNH BÁO VA CHẠM — TIẾNG VIỆT CÓ DẤU
+    # ===================================================================
+
     def _create_warning(self, obj_with_distance: Dict) -> Dict:
-        """Tạo cảnh báo va chạm tiếng Việt."""
-        class_name_vi = self._translate_class_name(obj_with_distance.get('class_name', ''))
-        distance      = obj_with_distance.get('distance', 0)
-        ttc           = obj_with_distance.get('ttc', float('inf'))
-        risk          = obj_with_distance.get('risk_level', 'SAFE')
+        """Tạo cảnh báo va chạm tiếng Việt chuyên nghiệp (có dấu)."""
+        class_name_vi = self._translate_class_name(
+            obj_with_distance.get('class_name', ''))
+        distance = obj_with_distance.get('distance', 0)
+        ttc      = obj_with_distance.get('ttc', float('inf'))
+        risk     = obj_with_distance.get('risk_level', 'SAFE')
 
         if risk == 'CRITICAL':
-            message  = f"NGUY HIEM! {class_name_vi} rat gan - {distance:.1f}m"
+            message  = f"⚠ NGUY HIỂM! {class_name_vi} rất gần — {distance:.1f}m"
             severity = 'critical'
         elif risk == 'DANGER':
-            message  = f"CANH BAO! {class_name_vi} o {distance:.1f}m"
+            message  = f"CẢNH BÁO! {class_name_vi} ở {distance:.1f}m"
             severity = 'high'
         else:
-            message  = f"Chu y {class_name_vi} o {distance:.1f}m"
+            message  = f"Chú ý: {class_name_vi} ở {distance:.1f}m"
             severity = 'medium'
 
         return {
@@ -925,7 +1105,7 @@ class SimpleGPUWorker:
             'severity': severity,
             'object_type': class_name_vi,
             'distance': distance,
-            'ttc': ttc
+            'ttc': ttc,
         }
     
     def _handle_voice_warnings(self, results: Dict):
