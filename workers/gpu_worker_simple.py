@@ -82,7 +82,10 @@ class SimpleGPUWorker:
         self._stream_driver: object = None   # torch.cuda.Stream (in_cabin)
         self._infer_pool: Optional[ThreadPoolExecutor] = None
 
-        # Vietnamese TTS for warnings
+        # Whether cv2.cuda.addWeighted is available for GPU-accelerated overlay blending
+        self._cuda_overlay: bool = False
+
+        # Voice warnings (TTS hook)
         self.voice_enabled = True
         self.last_warning_time = 0
         self.warning_cooldown = 3.0  # seconds between warnings
@@ -172,6 +175,21 @@ class SimpleGPUWorker:
                     pipeline['lane'].process_frame(dummy)
                 except Exception as e:
                     logger.warning(f"[GPU] Warmup (non-fatal): {e}")
+
+            # Probe cv2.cuda.addWeighted — available only with the CUDA-built OpenCV
+            try:
+                if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                    _t = cv2.cuda_GpuMat()
+                    _t.upload(dummy)
+                    _t2 = cv2.cuda_GpuMat()
+                    _t2.upload(dummy)
+                    cv2.cuda.addWeighted(_t, 0.5, _t2, 0.5, 0)
+                    self._cuda_overlay = True
+                    logger.info("[GPU] ✅ cv2.cuda.addWeighted available — overlay blending on GPU")
+            except Exception as _cv:
+                self._cuda_overlay = False
+                logger.info(f"[GPU] cv2.cuda.addWeighted not available, overlay on CPU ({_cv})")
+
             logger.info("[GPU] ✅ dashcam pipeline ready (1 YOLO + BEV lane)")
 
         elif video_type == 'in_cabin':
@@ -399,10 +417,10 @@ class SimpleGPUWorker:
                     # === INFERENCE ADAS HOÀN CHỈNH (GPU parallel) ===
                     results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline, video_type)
 
-                    # === VẼ OVERLAY TIẾNG VIỆT ===
-                    frame_with_overlay = self._draw_vietnamese_overlay(frame, results)
+                    # === DRAW OVERLAY ===
+                    frame_with_overlay = self._draw_overlay(frame, results)
 
-                    # === PHÁT CẢNH BÁO GIỌNG NÓI ===
+                    # === VOICE WARNINGS ===
                     self._handle_voice_warnings(results)
 
                     # === ENCODE FRAME — async (libx264 in bg thread) ===
@@ -532,7 +550,7 @@ class SimpleGPUWorker:
                     obj_d = {**obj, 'distance': dist_info, 'ttc': ttc, 'risk_level': risk_level}
                     distances.append(obj_d)
                     if risk_level in ('DANGER', 'CRITICAL'):
-                        results['warnings'].append(self._create_vietnamese_warning(obj_d))
+                        results['warnings'].append(self._create_warning(obj_d))
                 results['objects_with_distance'] = distances
             except Exception as e:
                 logger.warning(f"[INFER] distance: {e}")
@@ -578,119 +596,124 @@ class SimpleGPUWorker:
             logger.info(f"[FRAME {frame_idx}] objects={obj_count} lane={'YES' if has_lane else 'NO'} warnings={len(results['warnings'])}")
         return results
     
-    def _draw_vietnamese_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
+    def _draw_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
         """
-        Vẽ overlay tiếng Việt với thông tin ADAS hoàn chỉnh.
-        
-        Hiển thị:
-        - Lane detection (màu xanh cyan Tesla-style)
-        - Object bboxes với tên tiếng Việt
-        - Khoảng cách & TTC cho từng vật thể
-        - Risk level (màu sắc cảnh báo)
-        - HUD panel thông tin
-        - Driver state và biển báo
+        Draw ADAS overlay with full detection info (English).
+
+        Displays:
+        - Lane detection (cyan Tesla-style)
+        - Object bounding boxes with class labels
+        - Distance & TTC per object
+        - Risk level colour coding
+        - HUD info panel
+        - Driver state & traffic signs
+
+        Lane blending uses GPU (cv2.cuda.addWeighted) when available,
+        with automatic CPU fallback.
         """
         overlay = frame.copy()
         h, w, _ = overlay.shape
-        
-        # === 1. VẼ LÀN ĐƯỜNG (BACKGROUND LAYER) ===
+
+        # === 1. LANE OVERLAY — GPU-accelerated addWeighted ===
         lane_colored = results.get('lane_colored')
         lane_mask    = results.get('lane_mask')
-        if lane_colored is not None:
-            # Use the rich coloured BEV canvas from the new lane detector
-            h_o, w_o = overlay.shape[:2]
-            if lane_colored.shape[:2] != (h_o, w_o):
-                lane_colored = cv2.resize(lane_colored, (w_o, h_o))
-            overlay = cv2.addWeighted(overlay, 0.65, lane_colored, 0.35, 0)
-        elif lane_mask is not None:
-            # Fallback flat colour
-            lane_color_img = np.zeros_like(frame)
-            lane_color_img[lane_mask > 0] = [0, 200, 0]  # Green BGR
-            overlay = cv2.addWeighted(overlay, 0.70, lane_color_img, 0.30, 0)
-        
-        # === 2. VẼ OBJECTS VỚI KHOẢNG CÁCH ===
+
+        _blend_done = False
+        if self._cuda_overlay:
+            try:
+                if lane_colored is not None:
+                    if lane_colored.shape[:2] != (h, w):
+                        lane_colored = cv2.resize(lane_colored, (w, h))
+                    _gpu_bg = cv2.cuda_GpuMat()
+                    _gpu_lc = cv2.cuda_GpuMat()
+                    _gpu_bg.upload(overlay)
+                    _gpu_lc.upload(lane_colored)
+                    overlay = cv2.cuda.addWeighted(_gpu_bg, 0.65, _gpu_lc, 0.35, 0).download()
+                    _blend_done = True
+                elif lane_mask is not None:
+                    _lci = np.zeros_like(frame)
+                    _lci[lane_mask > 0] = [0, 200, 0]
+                    _gpu_bg = cv2.cuda_GpuMat()
+                    _gpu_lc = cv2.cuda_GpuMat()
+                    _gpu_bg.upload(overlay)
+                    _gpu_lc.upload(_lci)
+                    overlay = cv2.cuda.addWeighted(_gpu_bg, 0.70, _gpu_lc, 0.30, 0).download()
+                    _blend_done = True
+            except Exception as _ce:
+                self._cuda_overlay = False
+
+        if not _blend_done:
+            if lane_colored is not None:
+                if lane_colored.shape[:2] != (h, w):
+                    lane_colored = cv2.resize(lane_colored, (w, h))
+                overlay = cv2.addWeighted(overlay, 0.65, lane_colored, 0.35, 0)
+            elif lane_mask is not None:
+                lane_color_img = np.zeros_like(frame)
+                lane_color_img[lane_mask > 0] = [0, 200, 0]
+                overlay = cv2.addWeighted(overlay, 0.70, lane_color_img, 0.30, 0)
+
+        # === 2. OBJECT BOUNDING BOXES WITH DISTANCE ===
         for obj in results.get('objects_with_distance', []):
             bbox = obj.get('bbox')
             if not bbox:
                 continue
-                
+
             x1, y1, x2, y2 = map(int, bbox)
-            
-            # Màu theo risk level
+
             risk_level = obj.get('risk_level', 'SAFE')
             color = self._get_risk_color(risk_level)
             thickness = 3 if risk_level in ['DANGER', 'CRITICAL'] else 2
-            
-            # Vẽ bounding box
+
             cv2.rectangle(overlay, (x1, y1), (x2, y2), color, thickness)
-            
-            # Class name tiếng Việt
-            class_name = self._translate_class_name(obj.get('class_name', ''))
+
+            class_name = obj.get('class_name', '')
             confidence = obj.get('confidence', 0)
-            distance = obj.get('distance', 0)
-            ttc = obj.get('ttc', float('inf'))
-            
-            # Text chính (tên + confidence)
+            distance   = obj.get('distance', 0)
+            ttc        = obj.get('ttc', float('inf'))
+
             main_text = f"{class_name} {confidence:.0%}"
-            cv2.putText(overlay, main_text, (x1, y1-35), 
+            cv2.putText(overlay, main_text, (x1, y1-35),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-            
-            # Text khoảng cách
-            distance_text = f"KC: {distance:.1f}m"
-            cv2.putText(overlay, distance_text, (x1, y1-15), 
+
+            distance_text = f"Dist: {distance:.1f}m"
+            cv2.putText(overlay, distance_text, (x1, y1-15),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-            # Text TTC nếu < 10s
+
             if ttc < 10:
                 ttc_text = f"TTC: {ttc:.1f}s"
-                cv2.putText(overlay, ttc_text, (x1, y1-5), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)  # Cam
-        
-        # === 3. VẼ TRAFFIC SIGNS ===
+                cv2.putText(overlay, ttc_text, (x1, y1-5),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 2)
+
+        # === 3. TRAFFIC SIGNS ===
         for sign in results.get('traffic_signs', []):
             bbox = sign.get('bbox')
             if bbox:
                 x1, y1, x2, y2 = map(int, bbox)
-                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)  # Vàng
-                
-                sign_name = sign.get('class_name', 'Biển báo')
-                cv2.putText(overlay, sign_name, (x1, y1-10), 
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                sign_name = sign.get('class_name', 'Sign')
+                cv2.putText(overlay, sign_name, (x1, y1-10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
-        
-        # === 4. HUD PANEL (GÓC TRÊN TRÁI) ===
+
+        # === 4. HUD PANEL (TOP-LEFT) ===
         self._draw_hud_panel(overlay, results, w, h)
-        
-        # === 5. WARNINGS CENTER TOP ===
+
+        # === 5. WARNINGS (CENTER-TOP) ===
         self._draw_warnings(overlay, results, w)
-        
+
         return overlay
     
     def _get_risk_color(self, risk_level: str) -> tuple:
-        """Trả về màu BGR theo risk level."""
+        """Return BGR colour for a given risk level."""
         colors = {
-            'SAFE': (0, 255, 0),      # Xanh lá
-            'CAUTION': (0, 255, 255), # Vàng  
-            'DANGER': (0, 165, 255),  # Cam
-            'CRITICAL': (0, 0, 255)   # Đỏ
+            'SAFE': (0, 255, 0),       # Green
+            'CAUTION': (0, 255, 255),  # Yellow
+            'DANGER': (0, 165, 255),   # Orange
+            'CRITICAL': (0, 0, 255)    # Red
         }
         return colors.get(risk_level, (255, 255, 255))
     
-    def _translate_class_name(self, class_name: str) -> str:
-        """Dịch tên class sang tiếng Việt.""" 
-        translations = {
-            'person': 'Người',
-            'car': 'Ô tô', 
-            'truck': 'Xe tải',
-            'bus': 'Xe buýt',
-            'motorcycle': 'Xe máy',
-            'bicycle': 'Xe đạp',
-            'traffic light': 'Đèn giao thông'
-        }
-        return translations.get(class_name.lower(), class_name)
-    
     def _draw_hud_panel(self, overlay: np.ndarray, results: Dict, w: int, h: int):
-        """Vẽ HUD panel ADAS hoàn chỉnh (góc trên trái)."""
-        # ── Determine closest dangerous object ──────────────────────────
+        """Draw ADAS HUD panel (top-left corner)."""
         objects = results.get('objects_with_distance', [])
         dangerous = [o for o in objects if o.get('risk_level') in ('CRITICAL', 'DANGER', 'CAUTION')]
         closest = None
@@ -699,7 +722,6 @@ class SimpleGPUWorker:
         elif objects:
             closest = min(objects, key=lambda o: o.get('distance', 9999))
 
-        # ── Panel layout ────────────────────────────────────────────────
         panel_w = 310
         panel_h = 150 if closest else 130
         pad = 10
@@ -710,7 +732,7 @@ class SimpleGPUWorker:
         black_bg = np.zeros_like(sub)
         cv2.addWeighted(sub, 0.3, black_bg, 0.7, 0, sub)
 
-        # Border (colour by max risk)
+        # Border colour = max risk
         max_risk = 'SAFE'
         if objects:
             risk_order = {'CRITICAL': 4, 'DANGER': 3, 'CAUTION': 2, 'SAFE': 1}
@@ -718,28 +740,28 @@ class SimpleGPUWorker:
         border_color = self._get_risk_color(max_risk)
         cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), border_color, 2)
 
-        # ── Header bar ──────────────────────────────────────────────────
+        # Header bar
         cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + 24), border_color, -1)
-        cv2.putText(overlay, "HE THONG ADAS", (x0 + 8, y0 + 18),
+        cv2.putText(overlay, "ADAS SYSTEM", (x0 + 8, y0 + 18),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
 
         y_pos = y0 + 42
         sp    = 22
 
-        # ── Object count ────────────────────────────────────────────────
+        # Object count
         obj_count = len(objects)
-        cv2.putText(overlay, f"Vat the: {obj_count}", (x0 + 8, y_pos),
+        cv2.putText(overlay, f"Objects: {obj_count}", (x0 + 8, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
         y_pos += sp
 
-        # ── Closest vehicle ─────────────────────────────────────────────
+        # Closest object
         if closest:
-            name  = self._translate_class_name(closest.get('class_name', ''))
+            name  = closest.get('class_name', '')
             dist  = closest.get('distance', 0)
             ttc   = closest.get('ttc', float('inf'))
             rlvl  = closest.get('risk_level', 'SAFE')
             rc    = self._get_risk_color(rlvl)
-            dist_txt = f"Gan nhat: {name} - {dist:.1f}m"
+            dist_txt = f"Nearest: {name} - {dist:.1f}m"
             cv2.putText(overlay, dist_txt, (x0 + 8, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
             y_pos += sp
@@ -749,72 +771,71 @@ class SimpleGPUWorker:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, rc, 2)
                 y_pos += sp
 
-        # ── Lane status ─────────────────────────────────────────────────
+        # Lane status
         has_lane   = results.get('has_lane', False)
-        lane_txt   = "Lan duong: CO"   if has_lane else "Lan duong: KHONG RO"
+        lane_txt   = "Lane: DETECTED" if has_lane else "Lane: NOT CLEAR"
         lane_color = (0, 220, 0)       if has_lane else (0, 165, 255)
         cv2.putText(overlay, lane_txt, (x0 + 8, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, lane_color, 1)
         y_pos += sp
 
-        # ── Driver state ────────────────────────────────────────────────
+        # Driver state
         driver_state = results.get('driver_state', 'unknown')
-        state_vn     = self._translate_driver_state(driver_state)
+        state_label  = self._format_driver_state(driver_state)
         d_color      = (0, 255, 0) if driver_state == 'normal' else (0, 0, 255)
-        cv2.putText(overlay, f"Tai xe: {state_vn}", (x0 + 8, y_pos),
+        cv2.putText(overlay, f"Driver: {state_label}", (x0 + 8, y_pos),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, d_color, 1)
         y_pos += sp
 
-        # ── Traffic signs ───────────────────────────────────────────────
+        # Traffic signs
         sign_count = len(results.get('traffic_signs', []))
         if sign_count:
-            cv2.putText(overlay, f"Bien bao: {sign_count}", (x0 + 8, y_pos),
+            cv2.putText(overlay, f"Signs: {sign_count}", (x0 + 8, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1)
-    
-    def _translate_driver_state(self, state: str) -> str:
-        """Dịch trạng thái tài xế."""
+
+    def _format_driver_state(self, state: str) -> str:
+        """Human-readable driver state label."""
         states = {
-            'normal': 'Binh thuong',
-            'drowsy': 'Buon ngu', 
-            'distracted': 'Mat tap trung',
-            'looking_away': 'Nhin ra ngoai',
-            'unknown': 'Khong ro'
+            'normal': 'Normal',
+            'drowsy': 'Drowsy',
+            'distracted': 'Distracted',
+            'looking_away': 'Looking Away',
+            'unknown': 'N/A',
+            'n/a': 'N/A'
         }
-        return states.get(state, 'Khong ro')
+        return states.get(state, state.replace('_', ' ').title())
     
     def _draw_warnings(self, overlay: np.ndarray, results: Dict, w: int):
-        """Vẽ warnings nổi bật ở phần trên giữa màn hình."""
+        """Draw prominent warnings at top-centre of frame."""
         warnings = results.get('warnings', [])
         if not warnings:
             return
 
-        # Sort: critical first
         severity_order = {'critical': 0, 'high': 1, 'medium': 2}
         warnings = sorted(warnings, key=lambda x: severity_order.get(x.get('severity', 'medium'), 2))
 
         frame_idx = results.get('frame_idx', 0)
-        # Flashing: show on even-numbered 15-frame blocks
         flash_on = (frame_idx // 8) % 2 == 0
 
-        y_start = 55  # below the HUD panel header
-        for i, warning in enumerate(warnings[:3]):   # max 3 warnings
+        y_start = 55
+        for i, warning in enumerate(warnings[:3]):
             msg      = warning.get('message', '')
             severity = warning.get('severity', 'medium')
 
             if severity == 'critical':
-                color     = (0, 0, 255)     # Red
+                color     = (0, 0, 255)
                 bg_color  = (0, 0, 120)
                 thickness = 3
                 scale     = 0.85
                 if not flash_on:
-                    continue                # flash effect - skip on odd blocks
+                    continue
             elif severity == 'high':
-                color     = (0, 100, 255)   # Orange
+                color     = (0, 100, 255)
                 bg_color  = (0, 40, 100)
                 thickness = 2
                 scale     = 0.75
             else:
-                color     = (0, 220, 220)   # Yellow
+                color     = (0, 220, 220)
                 bg_color  = (0, 80, 80)
                 thickness = 2
                 scale     = 0.65
@@ -824,69 +845,61 @@ class SimpleGPUWorker:
             y_pos = y_start + i * 44
             pad   = 6
 
-            # Background rect
             cv2.rectangle(overlay,
                           (x_c - pad, y_pos - th - pad),
                           (x_c + tw + pad, y_pos + pad),
                           bg_color, -1)
-            # Coloured border
             cv2.rectangle(overlay,
                           (x_c - pad, y_pos - th - pad),
                           (x_c + tw + pad, y_pos + pad),
                           color, thickness)
-            # Text
             cv2.putText(overlay, msg, (x_c, y_pos),
                         cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness)
     
     def _assess_risk(self, distance: float, ttc: float, obj_type: str) -> str:
-        """Đánh giá mức độ rủi ro dựa trên khoảng cách và TTC."""
-        # Thresholds tùy chỉnh theo loại xe Việt Nam
+        """Assess collision risk based on distance and TTC."""
         if obj_type in ['motorcycle', 'bicycle']:
-            # Xe máy cần khoảng cách gần hơn
             critical_dist = 2.0
-            danger_dist = 5.0
-            caution_dist = 10.0
+            danger_dist   = 5.0
+            caution_dist  = 10.0
         else:
-            # Ô tô, xe tải
-            critical_dist = 3.0  
-            danger_dist = 7.0
-            caution_dist = 15.0
-        
-        # Risk theo distance
+            critical_dist = 3.0
+            danger_dist   = 7.0
+            caution_dist  = 15.0
+
         if distance <= critical_dist:
             return 'CRITICAL'
         elif distance <= danger_dist:
             return 'DANGER'
         elif distance <= caution_dist:
             return 'CAUTION'
-        
-        # Risk theo TTC
+
         if ttc <= 1.0:
             return 'CRITICAL'
         elif ttc <= 2.0:
             return 'DANGER'
         elif ttc <= 3.0:
             return 'CAUTION'
-        
+
         return 'SAFE'
     
-    def _create_vietnamese_warning(self, obj_with_distance: Dict) -> Dict:
-        """Tạo cảnh báo tiếng Việt cho vật thể nguy hiểm."""
-        class_name = self._translate_class_name(obj_with_distance.get('class_name', ''))
-        distance = obj_with_distance.get('distance', 0)
-        ttc = obj_with_distance.get('ttc', float('inf'))
-        risk = obj_with_distance.get('risk_level', 'SAFE')
-        
+    def _create_warning(self, obj_with_distance: Dict) -> Dict:
+        """Create collision warning for a dangerous object."""
+        class_name = obj_with_distance.get('class_name', '')
+        distance   = obj_with_distance.get('distance', 0)
+        ttc        = obj_with_distance.get('ttc', float('inf'))
+        risk       = obj_with_distance.get('risk_level', 'SAFE')
+
         if risk == 'CRITICAL':
-            message = f"NGUY HIỂM! {class_name} rất gần - {distance:.1f}m"
+            message  = f"DANGER! {class_name} very close - {distance:.1f}m"
             severity = 'critical'
         elif risk == 'DANGER':
-            message = f"CẢNH BÁO! {class_name} ở {distance:.1f}m"
+            message  = f"WARNING! {class_name} at {distance:.1f}m"
             severity = 'high'
         else:
-            message = f"Chú ý {class_name} ở {distance:.1f}m"
+            message  = f"Caution: {class_name} at {distance:.1f}m"
             severity = 'medium'
-        
+
         return {
             'type': 'collision_warning',
             'message': message,
@@ -897,25 +910,21 @@ class SimpleGPUWorker:
         }
     
     def _handle_voice_warnings(self, results: Dict):
-        """Xử lý cảnh báo giọng nói tiếng Việt."""
+        """Log critical voice warnings (TTS hook placeholder)."""
         if not self.voice_enabled:
             return
-            
+
         current_time = time.time()
         if current_time - self.last_warning_time < self.warning_cooldown:
-            return  # Cooldown chưa hết
-        
-        # Tìm warning nghiêm trọng nhất
+            return
+
         critical_warnings = [
-            w for w in results.get('warnings', []) 
+            w for w in results.get('warnings', [])
             if w.get('severity') == 'critical'
         ]
-        
+
         if critical_warnings:
-            warning = critical_warnings[0]  # Lấy warning đầu tiên
-            message = warning.get('message', '')
-            
-            # Log voice warning (implement TTS sau nếu cần)
+            message = critical_warnings[0].get('message', '')
             logger.warning(f"[VOICE] {message}")
             self.last_warning_time = current_time
     
