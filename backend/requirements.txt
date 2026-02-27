@@ -34,11 +34,9 @@ torchvision>=0.15.0,<0.19.0
 ultralytics>=8.0.0
 
 # ================================================
-# Async Job Queue - Celery + Redis
+# Job Queue: PostgreSQL-native (SELECT FOR UPDATE SKIP LOCKED + pg_notify)
+# No Celery/Redis needed — workers poll PostgreSQL directly
 # ================================================
-celery==5.3.4
-redis==5.0.1
-kombu==5.3.4
 
 # ================================================
 # Utilities

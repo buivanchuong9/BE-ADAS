@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     LOG_DIR: str = "./backend/logs"
     
     # AI Models - LINH HOẠT: Có thể override qua env hoặc auto-detect
-    YOLO_MODEL_PATH: str = "./backend/models/yolov11n.pt"  # Default fallback
+    YOLO_MODEL_PATH: str = "./backend/models/yolo11x.pt"  # Default fallback
     MEDIAPIPE_MODEL_PATH: str = "./backend/models"
     DEFAULT_DEVICE: str = "cpu"  # cpu or cuda
     
@@ -95,7 +95,7 @@ class Settings(BaseSettings):
            - MODEL_PRIORITY="best" → training/best_training.pt
            - MODEL_PRIORITY="last" → training/last.pt  
            - MODEL_PRIORITY="latest" → file .pt mới nhất theo thời gian
-        3. Fallback: models/yolov11n.pt (default)
+        3. Fallback: models/yolo11x.pt (default)
         
         Ví dụ sử dụng:
         - export AUTO_USE_LATEST_MODEL=true MODEL_PRIORITY=best

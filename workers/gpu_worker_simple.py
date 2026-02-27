@@ -50,30 +50,69 @@ logger = logging.getLogger(__name__)
 
 class SimpleGPUWorker:
     """
-    Simple, stable GPU worker with guaranteed cleanup.
-    
+    Production-ready GPU worker for ADAS video analysis.
+
+    Architecture:
+    - PostgreSQL job queue (SELECT FOR UPDATE SKIP LOCKED + pg_notify)
+    - NVDEC hardware decode → GPU inference → NVENC/libx264 encode
+    - TensorRT auto-optimization (FP16) with PyTorch fallback
+    - Parallel inference: Object detection + Lane detection concurrent
+    - PIL-based Vietnamese overlay rendering (có dấu)
+
+    Model Profiles:
+    - 'cloud':  YOLOv11x (imgsz=416) — high accuracy, server GPU
+    - 'edge':   YOLOv8n  (imgsz=320) — real-time, edge devices
+
     Key features:
-    - Python only (no C++ dependencies)
-    - Safe FFmpeg subprocess management
-    - Web-compatible video encoding
-    - PostgreSQL job queue
+    - TensorRT auto-export & caching (2-3x speedup)
+    - Non-blocking FFmpeg encode in background thread
+    - Guaranteed subprocess cleanup
+    - Vietnamese smart warnings with proper diacritics
     """
-    
+
+    # Model configurations per profile
+    # Mỗi profile chứa đầy đủ các model cho tất cả pipeline:
+    #   - obj_model:  Object detection (dashcam)
+    #   - pose_model: Pose estimation (in_cabin driver monitor)
+    #   - seg_model:  Segmentation (lane detection V11, optional)
+    MODEL_PROFILES = {
+        'cloud': {
+            'obj_model':  'backend/models/yolo11x.pt',
+            'pose_model': 'backend/models/yolo11x-pose.pt',
+            'seg_model':  'backend/models/yolo11x-seg.pt',
+            'imgsz': 416,
+            'conf': 0.5,
+            'description': 'YOLOv11x — high accuracy (server GPU)',
+        },
+        'edge': {
+            'obj_model':  'backend/models/yolov8n.pt',
+            'pose_model': 'backend/models/yolov8n-pose.pt',
+            'seg_model':  'backend/models/yolov8n-seg.pt',
+            'imgsz': 320,
+            'conf': 0.45,
+            'description': 'YOLOv8n — real-time (edge deployment)',
+        },
+    }
+
     def __init__(
         self,
         worker_id: str,
         database_url: str,
         device: str = "cuda",
+        model_profile: str = "cloud",
+        enable_tensorrt: bool = True,
     ):
         self.worker_id = worker_id
         self.database_url = database_url
         self.device = device
-        
+        self.model_profile = model_profile
+        self.enable_tensorrt = enable_tensorrt
+
         # State
         self.running = True
         self.current_job_id: Optional[UUID] = None
         self.pool: Optional[asyncpg.Pool] = None
-        
+
         # AI Pipelines (lazy-loaded per video_type, cached after first load)
         # Keys: 'dashcam' | 'in_cabin'
         self._pipelines: Dict[str, Dict] = {}
@@ -86,15 +125,18 @@ class SimpleGPUWorker:
         # Whether cv2.cuda.addWeighted is available for GPU-accelerated overlay blending
         self._cuda_overlay: bool = False
 
+        # TensorRT optimizer (lazy-init)
+        self._trt_optimizer = None
+
         # Voice warnings (TTS hook)
         self.voice_enabled = True
         self.last_warning_time = 0
         self.warning_cooldown = 3.0  # seconds between warnings
-        
+
         # Stats
         self.jobs_processed = 0
         self.total_processing_time = 0.0
-        
+
         # Graceful shutdown
         signal.signal(signal.SIGTERM, self._handle_shutdown)
         signal.signal(signal.SIGINT, self._handle_shutdown)
@@ -102,9 +144,12 @@ class SimpleGPUWorker:
         # PIL fonts for Vietnamese text rendering (có dấu)
         self._font_path = Path(__file__).parent.parent / "backend" / "assets" / "fonts" / "Roboto-Bold.ttf"
         self._pil_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
-        
+
+        prof = self.MODEL_PROFILES.get(model_profile, self.MODEL_PROFILES['cloud'])
         logger.info(
-            f"[WORKER] {worker_id} initialized: device={device}, Python-only mode"
+            f"[WORKER] {worker_id} initialized: device={device}, "
+            f"profile={model_profile} ({prof['description']}), "
+            f"tensorrt={'ON' if enable_tensorrt else 'OFF'}"
         )
     
     def _handle_shutdown(self, signum, frame):
@@ -164,8 +209,46 @@ class SimpleGPUWorker:
             from backend.perception.distance.distance_estimator import DistanceEstimator
             from backend.perception.lane.lane_detector_v4        import LaneDetectorV4 as LaneDetectorV11
 
-            logger.info("[GPU] Loading pipeline 'dashcam': ObjectDetector + Lane + Distance...")
-            pipeline['object']   = ObjectDetectorV11(device=self.device, conf_threshold=0.5, imgsz=416)
+            # --- Model profile selection ---
+            prof = self.MODEL_PROFILES.get(self.model_profile, self.MODEL_PROFILES['cloud'])
+            model_path = prof['obj_model']
+            imgsz      = prof['imgsz']
+            conf       = prof['conf']
+
+            # --- TensorRT optimization (auto-export & cache) ---
+            trt_model_path = model_path  # default: PyTorch .pt
+            if self.enable_tensorrt and self.device == 'cuda':
+                try:
+                    from backend.perception.engine.tensorrt_optimizer import TensorRTOptimizer
+                    if self._trt_optimizer is None:
+                        self._trt_optimizer = TensorRTOptimizer()
+                    engine_path = self._trt_optimizer.get_engine_path(model_path, imgsz)
+                    if engine_path.exists():
+                        trt_model_path = str(engine_path)
+                        logger.info(f"[TRT] Using cached TensorRT engine: {engine_path.name}")
+                    else:
+                        exported = self._trt_optimizer.export_to_tensorrt(
+                            model_path, imgsz=imgsz, half=True,
+                        )
+                        if exported:
+                            trt_model_path = str(exported)
+                            logger.info(f"[TRT] ✅ Auto-exported TensorRT engine")
+                        else:
+                            logger.info("[TRT] Export skipped — using PyTorch")
+                except Exception as e:
+                    logger.warning(f"[TRT] TensorRT init failed ({e}), using PyTorch")
+
+            logger.info(
+                f"[GPU] Loading pipeline 'dashcam': "
+                f"model={Path(trt_model_path).name}, imgsz={imgsz}, "
+                f"conf={conf}, profile={self.model_profile}"
+            )
+            pipeline['object']   = ObjectDetectorV11(
+                model_path=trt_model_path,
+                device=self.device,
+                conf_threshold=conf,
+                imgsz=imgsz,
+            )
             pipeline['lane']     = LaneDetectorV11(device=self.device)
             pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
 
@@ -200,8 +283,21 @@ class SimpleGPUWorker:
         elif video_type == 'in_cabin':
             from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
 
-            logger.info("[GPU] Loading pipeline 'in_cabin': DriverMonitor...")
-            pipeline['driver'] = DriverMonitorV11(device=self.device)
+            # --- Model profile selection (in_cabin) ---
+            prof = self.MODEL_PROFILES.get(self.model_profile, self.MODEL_PROFILES['cloud'])
+            obj_model_path  = prof['obj_model']
+            pose_model_path = prof['pose_model']
+
+            logger.info(
+                f"[GPU] Loading pipeline 'in_cabin': DriverMonitor "
+                f"(obj={Path(obj_model_path).name}, pose={Path(pose_model_path).name}, "
+                f"profile={self.model_profile})"
+            )
+            pipeline['driver'] = DriverMonitorV11(
+                object_model_path=obj_model_path,
+                pose_model_path=pose_model_path,
+                device=self.device,
+            )
 
             if torch.cuda.is_available():
                 self._stream_driver = torch.cuda.Stream()
@@ -1233,13 +1329,55 @@ def main():
         logger.warning("✗ .env file NOT found")
     
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Simple GPU Worker (Python Only)')
+    parser = argparse.ArgumentParser(
+        description='ADAS GPU Worker — Production Video Analysis',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Model Profiles:
+  cloud   YOLOv11x imgsz=416  — high accuracy, server GPU (A30/A100)
+  edge    YOLOv8n  imgsz=320  — real-time, edge devices (Jetson/mobile)
+
+Examples:
+  # Default cloud profile with TensorRT
+  python3 workers/gpu_worker_simple.py --worker-id w0 --device cuda
+
+  # Edge profile for lightweight inference
+  python3 workers/gpu_worker_simple.py --profile edge --device cuda
+
+  # Disable TensorRT (use PyTorch only)
+  python3 workers/gpu_worker_simple.py --no-tensorrt
+
+  # Benchmark TensorRT vs PyTorch
+  python3 workers/gpu_worker_simple.py --benchmark
+        """
+    )
     parser.add_argument('--worker-id', default=f"worker_{os.getpid()}")
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--database-url', default=os.getenv('DATABASE_URL'))
+    parser.add_argument(
+        '--profile', default='cloud', choices=['cloud', 'edge'],
+        help='Model profile: cloud (YOLOv11x) or edge (YOLOv8n)'
+    )
+    parser.add_argument(
+        '--no-tensorrt', action='store_true',
+        help='Disable TensorRT optimization (use PyTorch only)'
+    )
+    parser.add_argument(
+        '--benchmark', action='store_true',
+        help='Run TensorRT benchmark and exit'
+    )
     
     args = parser.parse_args()
     
+    # Benchmark mode
+    if args.benchmark:
+        from backend.perception.engine.tensorrt_optimizer import TensorRTOptimizer
+        opt = TensorRTOptimizer()
+        prof = SimpleGPUWorker.MODEL_PROFILES.get(args.profile, SimpleGPUWorker.MODEL_PROFILES['cloud'])
+        logger.info(f"[BENCH] Benchmarking profile '{args.profile}': {prof['description']}")
+        opt.benchmark(prof['obj_model'], prof['imgsz'])
+        return
+
     if not args.database_url:
         logger.error("ERROR: DATABASE_URL required. Check your .env file.")
         sys.exit(1)
@@ -1249,6 +1387,8 @@ def main():
         worker_id=args.worker_id,
         database_url=args.database_url,
         device=args.device,
+        model_profile=args.profile,
+        enable_tensorrt=not args.no_tensorrt,
     )
     
     try:

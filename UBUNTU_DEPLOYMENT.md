@@ -40,13 +40,21 @@ echo "🚀 Starting API Server..."
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
 
 # 8. Start GPU Workers (Python Only - STABLE)
-# Khuyến nghị: 1 worker cho mỗi GPU A30
-echo "🚀 Starting GPU Worker (Simple & Stable)..."
+# Khuần nghị: 1 worker cho mỗi GPU A30
+echo "🚀 Starting GPU Worker..."
 # Log worker vào api.log luôn để xem 1 chỗ
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" >> api.log 2>&1 &
+# Profile: cloud (YOLOv11x, độ chính xác cao) hoặc edge (YOLOv8n, nhẹ, nhanh)
+# TensorRT: tự động export FP16 engine nếu có TensorRT
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile cloud --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # Nếu có nhiều GPU, chạy thêm worker:
-# CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda > worker_1.log 2>&1 &
+# CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda --profile cloud --database-url "$DATABASE_URL" > worker_1.log 2>&1 &
+
+# Edge profile (YOLOv8n - cho thiết bị nhỏ như Jetson):
+# nohup python3 workers/gpu_worker_simple.py --worker-id worker_edge --device cuda --profile edge --database-url "$DATABASE_URL" >> api.log 2>&1 &
+
+# Tắt TensorRT (chỉ dùng PyTorch):
+# nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --no-tensorrt --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # 9. Xem log (API + Worker cùng 1 chỗ)
 tail -f api.log
@@ -215,7 +223,8 @@ nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >
 # Start GPU Worker (Python Only - STABLE)
 cd ~/BE-ADAS
 # Gộp worker log vào api.log để theo dõi 1 chỗ
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --database-url "$DATABASE_URL" >> api.log 2>&1 &
+# --profile cloud: YOLOv11x (server) | --profile edge: YOLOv8n (nhẹ)
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile cloud --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # Xem log tất cả (API + Worker trong 1 luồng)
 tail -f api.log
