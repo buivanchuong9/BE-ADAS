@@ -37,6 +37,12 @@ load_dotenv(PROJECT_ROOT / ".env")
 # Import FFmpeg utilities (SAFE)
 from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info, FFMPEG
 
+# Import FCW TTC-based warning system
+from backend.perception.risk.fcw_ttc import (
+    compute_fcw, FCWResult, FCW_SAFE, FCW_WARNING, FCW_COLLISION_RISK,
+    FCW_STATE_VI, get_fcw_color_rgba
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(process)d] - %(levelname)s - %(message)s',
@@ -653,7 +659,9 @@ class SimpleGPUWorker:
             results['objects']      = obj_result.get('detections', [])
             results['object_stats'] = obj_result.get('stats', {})
 
-            # 4. Distance + TTC + risk (CPU)
+            # 4. Distance + FCW (Forward Collision Warning) based on TTC
+            # Assume ego vehicle speed = 50 km/h for demo
+            EGO_SPEED_KMH = 50.0
             distances = []
             try:
                 for obj in results['objects']:
@@ -664,17 +672,29 @@ class SimpleGPUWorker:
                         vehicle_type=obj.get('class_name', 'car'),
                         frame_height=frame.shape[0]
                     )
-                    # Simple TTC: assume ego vehicle approaching at ~13 m/s (~50 km/h)
-                    # Negative velocity = approaching
-                    ttc = pipeline['distance'].compute_ttc(dist_info, -13.0) or float('inf')
-                    risk_level = self._assess_risk(dist_info, ttc, obj.get('class_name', ''))
-                    obj_d = {**obj, 'distance': dist_info, 'ttc': ttc, 'risk_level': risk_level}
+                    
+                    # FCW using TTC-based risk assessment
+                    fcw_result = self._assess_risk(dist_info, EGO_SPEED_KMH)
+                    
+                    obj_d = {
+                        **obj,
+                        'distance': dist_info,
+                        'ttc': fcw_result.ttc,
+                        'fcw_state': fcw_result.state,
+                        'fcw_state_vi': fcw_result.state_vi,
+                        'fcw_reason': fcw_result.reason,
+                        'risk_level': fcw_result.state,  # For compatibility
+                    }
                     distances.append(obj_d)
-                    if risk_level in ('DANGER', 'CRITICAL'):
+                    
+                    # Trigger warning for WARNING or COLLISION RISK
+                    if fcw_result.state in (FCW_WARNING, FCW_COLLISION_RISK):
                         results['warnings'].append(self._create_warning(obj_d))
+                        
                 results['objects_with_distance'] = distances
+                results['ego_speed_kmh'] = EGO_SPEED_KMH  # For overlay display
             except Exception as e:
-                logger.warning(f"[INFER] distance: {e}")
+                logger.warning(f"[INFER] distance/fcw: {e}")
                 results['objects_with_distance'] = []
 
             # 5. Lane departure warning (LDW) — Cảnh báo lệch làn
@@ -795,9 +815,11 @@ class SimpleGPUWorker:
         return states.get(state, 'Không xác định')
 
     def _translate_risk_level(self, risk_level: str) -> str:
-        """Dịch mức rủi ro sang tiếng Việt."""
+        """Dịch mức rủi ro (FCW state) sang tiếng Việt."""
         levels = {
             'SAFE': 'AN TOÀN',
+            'WARNING': 'CẢNH BÁO',
+            'COLLISION RISK': 'NGUY HIỂM',
             'CAUTION': 'CHÚ Ý',
             'DANGER': 'NGUY HIỂM',
             'CRITICAL': 'RẤT NGUY HIỂM',
@@ -819,9 +841,13 @@ class SimpleGPUWorker:
         return colors.get(risk_level, (255, 255, 255))
 
     def _get_risk_color_rgba(self, risk_level: str) -> tuple:
-        """Trả về màu RGBA theo risk level (cho PIL)."""
+        """Trả về màu RGBA theo FCW state (cho PIL)."""
         colors = {
-            'SAFE':     (80, 255, 80, 230),
+            # New FCW states
+            'SAFE':           (80, 255, 80, 230),    # Green
+            'WARNING':        (255, 165, 0, 240),    # Orange  
+            'COLLISION RISK': (255, 40, 40, 245),   # Red
+            # Legacy states (for compatibility)
             'CAUTION':  (255, 220, 0, 235),
             'DANGER':   (255, 140, 0, 240),
             'CRITICAL': (255, 40, 40, 245),
@@ -932,7 +958,7 @@ class SimpleGPUWorker:
     # ===================================================================
 
     def _draw_object_labels_pil(self, draw: ImageDraw.ImageDraw, results: Dict):
-        """Vẽ nhãn vật thể tiếng Việt — tên, khoảng cách, TTC."""
+        """Vẽ nhãn vật thể tiếng Việt — tên, khoảng cách, TTC, FCW state."""
         font_main = self._get_font(20)
         font_sub  = self._get_font(16)
 
@@ -942,20 +968,22 @@ class SimpleGPUWorker:
                 continue
             x1, y1 = int(bbox[0]), int(bbox[1])
 
-            risk_level = obj.get('risk_level', 'SAFE')
-            color_rgba = self._get_risk_color_rgba(risk_level)
+            fcw_state = obj.get('fcw_state', obj.get('risk_level', 'SAFE'))
+            color_rgba = self._get_risk_color_rgba(fcw_state)
 
             class_vn   = self._translate_class_name(obj.get('class_name', ''))
             confidence = obj.get('confidence', 0)
             distance   = obj.get('distance', 0)
             ttc        = obj.get('ttc', float('inf'))
+            fcw_state_vi = obj.get('fcw_state_vi', self._translate_risk_level(fcw_state))
 
             # Main: "Ô tô 87%"
             main_text = f"{class_vn} {confidence:.0%}"
-            # Sub:  "KC: 5.2m" or "KC: 5.2m │ TTC: 3.1s"
-            sub_text = f"KC: {distance:.1f}m"
-            if ttc < 10:
-                sub_text += f"  ▸ TTC: {ttc:.1f}s"
+            # Sub:  "KC: 5.2m │ TTC: 1.4s │ CẢNH BÁO"
+            if ttc < 100:
+                sub_text = f"KC: {distance:.1f}m │ TTC: {ttc:.1f}s │ {fcw_state_vi}"
+            else:
+                sub_text = f"KC: {distance:.1f}m │ {fcw_state_vi}"
 
             # Measure for chip background
             mb = draw.textbbox((0, 0), main_text, font=font_main)
@@ -968,7 +996,8 @@ class SimpleGPUWorker:
             cx, cy = x1, max(0, y1 - chip_h - 4)
 
             # Semi-transparent chip background
-            bg_alpha = 185 if risk_level in ('DANGER', 'CRITICAL') else 150
+            is_warning = fcw_state in ('WARNING', 'COLLISION RISK', 'DANGER', 'CRITICAL')
+            bg_alpha = 185 if is_warning else 150
             draw.rectangle([cx, cy, cx + chip_w, cy + chip_h],
                            fill=(10, 10, 10, bg_alpha))
             # Coloured left accent bar
@@ -991,8 +1020,10 @@ class SimpleGPUWorker:
         Đúng đề tài: "Hệ thống cảnh báo thông minh cho ô tô"
         """
         objects   = results.get('objects_with_distance', [])
+        # Filter warnings based on FCW state
         dangerous = [o for o in objects
-                     if o.get('risk_level') in ('CRITICAL', 'DANGER', 'CAUTION')]
+                     if o.get('fcw_state', o.get('risk_level')) in 
+                     ('WARNING', 'COLLISION RISK', 'CRITICAL', 'DANGER', 'CAUTION')]
         closest = None
         if dangerous:
             closest = min(dangerous, key=lambda o: o.get('distance', 9999))
@@ -1183,62 +1214,62 @@ class SimpleGPUWorker:
     # RISK ASSESSMENT
     # ===================================================================
 
-    def _assess_risk(self, distance: float, ttc: float, obj_type: str) -> str:
-        """Đánh giá mức rủi ro va chạm dựa trên khoảng cách và TTC."""
-        if obj_type in ['motorcycle', 'bicycle', 'person']:
-            critical_dist = 2.0
-            danger_dist   = 5.0
-            caution_dist  = 10.0
-        else:
-            critical_dist = 3.0
-            danger_dist   = 7.0
-            caution_dist  = 15.0
-
-        if distance <= critical_dist:
-            return 'CRITICAL'
-        elif distance <= danger_dist:
-            return 'DANGER'
-        elif distance <= caution_dist:
-            return 'CAUTION'
-
-        if ttc <= 1.0:
-            return 'CRITICAL'
-        elif ttc <= 2.0:
-            return 'DANGER'
-        elif ttc <= 3.0:
-            return 'CAUTION'
-
-        return 'SAFE'
+    def _assess_risk(self, distance: float, ego_speed_kmh: float = 50.0) -> FCWResult:
+        """
+        Đánh giá rủi ro va chạm dựa trên TTC (Time-To-Collision).
+        
+        FCW (Forward Collision Warning) principle:
+        - TTC = distance / relative_speed
+        - TTC < 1.0s → COLLISION RISK (NGUY HIỂM)
+        - 1.0 ≤ TTC < 2.0s → WARNING (CẢNH BÁO)  
+        - TTC ≥ 2.0s → SAFE (AN TOÀN)
+        
+        Args:
+            distance: Khoảng cách đến vật thể (meters)
+            ego_speed_kmh: Tốc độ xe đang chạy (km/h), default 50 km/h
+            
+        Returns:
+            FCWResult với TTC, state, và reason
+        """
+        return compute_fcw(distance, ego_speed_kmh)
 
     # ===================================================================
     # TẠO CẢNH BÁO VA CHẠM — TIẾNG VIỆT CÓ DẤU
     # ===================================================================
 
     def _create_warning(self, obj_with_distance: Dict) -> Dict:
-        """Tạo cảnh báo va chạm tiếng Việt chuyên nghiệp (có dấu)."""
+        """
+        Tạo cảnh báo FCW tiếng Việt chuyên nghiệp (có dấu).
+        Bao gồm lý do giải thích TẠI SAO cảnh báo được kích hoạt.
+        """
         class_name_vi = self._translate_class_name(
             obj_with_distance.get('class_name', ''))
         distance = obj_with_distance.get('distance', 0)
         ttc      = obj_with_distance.get('ttc', float('inf'))
-        risk     = obj_with_distance.get('risk_level', 'SAFE')
+        fcw_state = obj_with_distance.get('fcw_state', 'SAFE')
+        fcw_reason = obj_with_distance.get('fcw_reason', '')
 
-        if risk == 'CRITICAL':
-            message  = f"⚠ NGUY HIỂM! {class_name_vi} rất gần — {distance:.1f}m"
+        # Severity mapping based on FCW state
+        if fcw_state == FCW_COLLISION_RISK:
+            message  = f"⚠ NGUY HIỂM! {class_name_vi} — TTC={ttc:.1f}s"
             severity = 'critical'
-        elif risk == 'DANGER':
-            message  = f"CẢNH BÁO! {class_name_vi} ở {distance:.1f}m"
+        elif fcw_state == FCW_WARNING:
+            message  = f"CẢNH BÁO! {class_name_vi} — TTC={ttc:.1f}s"
             severity = 'high'
         else:
-            message  = f"Chú ý: {class_name_vi} ở {distance:.1f}m"
+            message  = f"Chú ý: {class_name_vi} — KC={distance:.1f}m"
             severity = 'medium'
 
         return {
-            'type': 'collision_warning',
+            'type': 'fcw_warning',  # Forward Collision Warning
             'message': message,
             'severity': severity,
             'object_type': class_name_vi,
             'distance': distance,
             'ttc': ttc,
+            'fcw_state': fcw_state,
+            'fcw_state_vi': FCW_STATE_VI.get(fcw_state, fcw_state),
+            'reason': fcw_reason,  # Explanation WHY this warning was triggered
         }
     
     def _handle_voice_warnings(self, results: Dict):
