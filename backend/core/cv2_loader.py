@@ -1,46 +1,45 @@
 """
 STRICT OpenCV CUDA Loader — NO CPU FALLBACK.
 
-This loader **requires** a CUDA-enabled OpenCV build that matches the
-running Python version.  If CUDA is unavailable or the binding ABI does
-not match, the process is terminated immediately.
+This loader **requires** a CUDA-enabled OpenCV build.
+If CUDA is unavailable the process is terminated immediately.
 
 Contract:  NO GPU → NO SERVICE.
 
-Safety rules
-────────────
-• Runtime Python version detected dynamically.
-• Binding directories auto-discovered under OPENCV_PREFIX.
-• ``cv2/config-{major}.{minor}.py`` must exist (ABI proof).
-• Mismatched bindings are NEVER loaded.
-• Falls back to system cv2 if custom build not found (still enforces CUDA).
-• After import, ``cv2.cuda.getCudaEnabledDeviceCount() > 0`` is enforced.
-• A real GPU memory upload test is performed to prove the device works.
+Loading strategy (in order):
+  1. Custom CUDA build under OPENCV_PREFIX (exact Python version match)
+  2. System cv2 (pip / conda) — still enforces CUDA
+  3. Crash with actionable error
+
+Safety rules:
+  • Runtime Python version detected dynamically.
+  • Both config file AND .so binary cpython tag are verified.
+  • Mismatched bindings (wrong Python version) are NEVER loaded.
+  • ``cv2.cuda.getCudaEnabledDeviceCount() > 0`` is enforced.
+  • A real GPU memory upload test proves the device works.
 """
 
 import os
 import sys
+import re
 import time
 import ctypes
 import logging
-import glob
 import numpy as np
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 # ── Runtime Python version (determined once) ─────────────────────────────────
-PY_VER = f"{sys.version_info.major}.{sys.version_info.minor}"
+PY_MAJOR = sys.version_info.major
+PY_MINOR = sys.version_info.minor
+PY_VER   = f"{PY_MAJOR}.{PY_MINOR}"
+# cpython tag that must appear in the .so filename, e.g. "cpython-312"
+_CPYTHON_TAG = f"cpython-{PY_MAJOR}{PY_MINOR}"
 
 # ── Configuration ────────────────────────────────────────────────────────────
 _OPENCV_PREFIX  = Path(os.environ.get("OPENCV_PREFIX", os.path.expanduser("~/opencv_cuda")))
 _OPENCV_LIB_DIR = Path(os.environ.get("OPENCV_LIB_DIR", str(_OPENCV_PREFIX / "lib")))
-
-# ONLY version-matched binding directories — no fallback to other Python versions.
-_OPENCV_PY_DIRS = [
-    _OPENCV_PREFIX / "lib" / f"python{PY_VER}" / "dist-packages",
-    _OPENCV_PREFIX / "lib" / f"python{PY_VER}" / "site-packages",
-]
 
 # Core .so to pre-load (newest first)
 _OPENCV_CORE_LIBS = [
@@ -64,56 +63,67 @@ def _clean_cv2_modules() -> None:
             del sys.modules[key]
 
 
-def _find_conflicting_cv2_paths(cuda_dirs: list[str]) -> list[str]:
+def _has_matching_so(cv2_dir: Path) -> bool:
     """
-    Find sys.path entries containing a ``cv2`` package that do NOT belong
-    to our CUDA dirs (pip opencv-python / opencv-python-headless).
+    Return True if cv2_dir contains a .so whose filename includes the
+    current Python's cpython tag (e.g. ``cv2.cpython-312-x86_64-linux-gnu.so``).
+
+    This is the REAL ABI check — config-*.py files can be generated for
+    multiple Python versions at build time and are NOT reliable alone.
     """
-    cuda_set = set(cuda_dirs)
-    conflicts: list[str] = []
+    for f in cv2_dir.iterdir():
+        if f.suffix == ".so" and _CPYTHON_TAG in f.name:
+            return True
+    # Also check python_loader directories (cv2/python-3.12/*.so)
+    loader_dir = cv2_dir / f"python-{PY_VER}"
+    if loader_dir.is_dir():
+        for f in loader_dir.iterdir():
+            if f.suffix == ".so" and _CPYTHON_TAG in f.name:
+                return True
+    return False
+
+
+def _binding_is_abi_safe(pkg_dir: Path) -> bool:
+    """
+    Full ABI check for a candidate site-packages / dist-packages dir.
+
+    Returns True only when:
+      1. pkg_dir/cv2/ exists
+      2. pkg_dir/cv2/config-{PY_VER}.py exists
+      3. A .so with the correct cpython tag is found
+    """
+    cv2_dir = pkg_dir / "cv2"
+    if not cv2_dir.is_dir():
+        return False
+    config = cv2_dir / f"config-{PY_VER}.py"
+    if not config.is_file():
+        logger.debug("[cv2_loader] No config-%s.py in %s", PY_VER, cv2_dir)
+        return False
+    if not _has_matching_so(cv2_dir):
+        logger.debug(
+            "[cv2_loader] config-%s.py exists but NO .so with tag '%s' in %s",
+            PY_VER, _CPYTHON_TAG, cv2_dir,
+        )
+        return False
+    return True
+
+
+def _find_all_opencv_paths() -> list[str]:
+    """
+    Find ALL sys.path entries that contain any cv2 package or opencv build
+    artifacts — including partial build trees like ``opencv/build/lib/python3``.
+    """
+    opencv_paths: list[str] = []
     for p in sys.path:
-        if p in cuda_set:
+        pp = Path(p)
+        # Standard cv2 package
+        if (pp / "cv2").is_dir():
+            opencv_paths.append(p)
             continue
-        if (Path(p) / "cv2").is_dir():
-            conflicts.append(p)
-    return conflicts
-
-
-def _cuda_binding_matches_runtime(py_dir: Path) -> bool:
-    """
-    Return True only when ``py_dir/cv2/config-{PY_VER}.py`` exists,
-    proving the CUDA binding was compiled for the running Python version.
-    """
-    config_file = py_dir / "cv2" / f"config-{PY_VER}.py"
-    return config_file.is_file()
-
-
-def _auto_discover_binding_dirs(prefix: Path) -> list[Path]:
-    """
-    Scan *prefix*/lib/python*/{{dist,site}}-packages for cv2 bindings
-    matching the current Python runtime version.
-
-    Returns a list of ABI-safe directories found.
-    """
-    discovered: list[Path] = []
-    lib_dir = prefix / "lib"
-    if not lib_dir.is_dir():
-        return discovered
-
-    # Look for any python* directories
-    for py_dir in sorted(lib_dir.glob("python*")):
-        for suffix in ("dist-packages", "site-packages"):
-            candidate = py_dir / suffix
-            if candidate.is_dir() and (candidate / "cv2").is_dir():
-                if _cuda_binding_matches_runtime(candidate):
-                    discovered.append(candidate)
-                else:
-                    logger.debug(
-                        "[cv2_loader] Found cv2 at %s but ABI mismatch "
-                        "(no config-%s.py)",
-                        candidate, PY_VER,
-                    )
-    return discovered
+        # opencv build tree (e.g. ~/opencv/build/lib/python3)
+        if "opencv" in p.lower() and pp.is_dir():
+            opencv_paths.append(p)
+    return opencv_paths
 
 
 def verify_gpu_ready() -> None:
@@ -147,11 +157,11 @@ def inject() -> None:
     Load OpenCV CUDA build and **enforce** GPU availability.
 
     Strategy:
-    1. Try OPENCV_PREFIX custom build (exact version match).
-    2. Auto-discover bindings under OPENCV_PREFIX/lib/python*/.
-    3. Fall back to system cv2 (pip / conda).
-    4. In ALL cases enforce: cv2.cuda present, device count > 0,
-       GPU memory upload succeeds.
+      1. Scan OPENCV_PREFIX for binding dirs with EXACT Python version match
+         (both config file AND .so binary cpython tag).
+      2. If no custom build matches, fall back to system cv2 (pip/conda).
+      3. In ALL cases enforce: cv2.cuda present, device count > 0,
+         GPU memory upload succeeds.
 
     Contract: NO GPU → NO SERVICE.
     """
@@ -163,6 +173,12 @@ def inject() -> None:
     t0 = time.monotonic()
 
     using_custom_build = False
+    removed_paths: list[str] = []
+
+    logger.info(
+        "[cv2_loader] Python %s (%s) — looking for CUDA OpenCV under %s",
+        PY_VER, _CPYTHON_TAG, _OPENCV_PREFIX,
+    )
 
     # ── 1. LD_LIBRARY_PATH (for child processes / FFmpeg) ────────────────────
     if _OPENCV_LIB_DIR.is_dir():
@@ -185,53 +201,85 @@ def inject() -> None:
             break  # only load the first available world/core lib
 
     # ── 3. ABI-safe binding discovery ────────────────────────────────────────
+    #     Scan OPENCV_PREFIX/lib/ for any python*/{{dist,site}}-packages
+    #     that pass the full ABI check (config + .so tag).
     abi_safe_dirs: list[str] = []
 
-    # 3a. Try explicit version-matched dirs first
-    for py_dir in _OPENCV_PY_DIRS:
-        if not py_dir.is_dir():
-            logger.debug("[cv2_loader] Candidate dir does not exist: %s", py_dir)
-            continue
-        if not _cuda_binding_matches_runtime(py_dir):
-            logger.warning(
-                "[cv2_loader] ABI mismatch — CUDA binding at %s not built for "
-                "Python %s (missing cv2/config-%s.py).",
-                py_dir, PY_VER, PY_VER,
-            )
-            continue
-        abi_safe_dirs.append(str(py_dir))
-        logger.debug("[cv2_loader] ABI-safe CUDA binding: %s", py_dir)
+    if _OPENCV_PREFIX.is_dir():
+        lib_dir = _OPENCV_PREFIX / "lib"
+        if lib_dir.is_dir():
+            # Gather ALL candidate dirs (both explicit and discovered)
+            candidates: list[Path] = []
 
-    # 3b. Auto-discover if explicit dirs not found
-    if not abi_safe_dirs and _OPENCV_PREFIX.is_dir():
-        logger.info(
-            "[cv2_loader] Exact binding dirs not found, auto-discovering under %s ...",
-            _OPENCV_PREFIX,
-        )
-        discovered = _auto_discover_binding_dirs(_OPENCV_PREFIX)
-        for d in discovered:
-            abi_safe_dirs.append(str(d))
-            logger.info("[cv2_loader] Auto-discovered ABI-safe binding: %s", d)
+            # Explicit version-matched dirs (highest priority)
+            for suffix in ("dist-packages", "site-packages"):
+                candidates.append(lib_dir / f"python{PY_VER}" / suffix)
 
-    # ── 4. Insert ABI-safe dirs, remove conflicting pip cv2 paths ────────────
+            # Also scan other python* dirs in case layout is non-standard
+            for py_dir in sorted(lib_dir.glob("python*")):
+                for suffix in ("dist-packages", "site-packages"):
+                    c = py_dir / suffix
+                    if c not in candidates:
+                        candidates.append(c)
+
+            for candidate in candidates:
+                if not candidate.is_dir():
+                    continue
+                if _binding_is_abi_safe(candidate):
+                    abi_safe_dirs.append(str(candidate))
+                    logger.info("[cv2_loader] ABI-safe CUDA binding: %s", candidate)
+                elif (candidate / "cv2").is_dir():
+                    logger.info(
+                        "[cv2_loader] SKIP %s — cv2 found but ABI mismatch "
+                        "(need %s .so)",
+                        candidate, _CPYTHON_TAG,
+                    )
+
+    # ── 4. Prepare sys.path ──────────────────────────────────────────────────
     if abi_safe_dirs:
         using_custom_build = True
-        for d in abi_safe_dirs:
-            if d not in sys.path:
-                sys.path.insert(0, d)
 
-        conflicts = _find_conflicting_cv2_paths(abi_safe_dirs)
-        for p in conflicts:
-            sys.path.remove(p)
-            logger.debug("[cv2_loader] Removed conflicting pip cv2 path: %s", p)
+        # Remove ALL other opencv-related paths to prevent recursion
+        all_opencv_paths = _find_all_opencv_paths()
+        abi_set = set(abi_safe_dirs)
+        for p in all_opencv_paths:
+            if p not in abi_set and p in sys.path:
+                sys.path.remove(p)
+                removed_paths.append(p)
+                logger.debug("[cv2_loader] Removed conflicting path: %s", p)
+
+        # Insert our ABI-safe dirs at front
+        for d in reversed(abi_safe_dirs):
+            if d in sys.path:
+                sys.path.remove(d)
+            sys.path.insert(0, d)
 
         _clean_cv2_modules()
+
+        logger.info("[cv2_loader] Using custom CUDA build from: %s", abi_safe_dirs)
     else:
-        conflicts = []
+        # No custom build found — clean up any partial/mismatched opencv paths
+        # that would cause recursion, then fall back to system cv2
+        all_opencv_paths = _find_all_opencv_paths()
+        for p in all_opencv_paths:
+            # Remove paths under OPENCV_PREFIX (wrong version) and opencv build trees
+            pp = Path(p)
+            is_custom_opencv = (
+                str(_OPENCV_PREFIX) in p
+                or ("opencv" in p.lower() and "build" in p.lower())
+            )
+            if is_custom_opencv:
+                sys.path.remove(p)
+                removed_paths.append(p)
+                logger.debug("[cv2_loader] Removed mismatched opencv path: %s", p)
+
+        _clean_cv2_modules()
+
         logger.warning(
-            "[cv2_loader] No custom CUDA OpenCV build found under %s for Python %s. "
-            "Falling back to system cv2 — CUDA will still be enforced.",
-            _OPENCV_PREFIX, PY_VER,
+            "[cv2_loader] No ABI-compatible CUDA OpenCV found under %s "
+            "for Python %s (need .so with %s tag). "
+            "Falling back to system cv2 — CUDA still enforced.",
+            _OPENCV_PREFIX, PY_VER, _CPYTHON_TAG,
         )
 
     # ── 5. Import & enforce CUDA ─────────────────────────────────────────────
@@ -239,9 +287,12 @@ def inject() -> None:
         import cv2  # noqa: PLC0415
     except ImportError as exc:
         raise RuntimeError(
-            f"[cv2_loader] Cannot import cv2 at all. "
-            f"Install opencv-python or build OpenCV with CUDA under {_OPENCV_PREFIX}. "
-            f"NO GPU → NO SERVICE. Error: {exc}"
+            f"[cv2_loader] Cannot import cv2. "
+            f"On this server (Python {PY_VER}), either:\n"
+            f"  1. Rebuild OpenCV CUDA for Python {PY_VER}:\n"
+            f"     cmake -DPYTHON3_EXECUTABLE=$(which python3) -DWITH_CUDA=ON ...\n"
+            f"  2. Or install system cv2 with CUDA: pip install opencv-contrib-python\n"
+            f"Error: {exc}"
         ) from exc
 
     if not hasattr(cv2, "cuda"):
@@ -263,11 +314,10 @@ def inject() -> None:
     # ── 6. GPU memory readiness test ─────────────────────────────────────────
     verify_gpu_ready()
 
-    # Restore pip paths AFTER cv2 is loaded (won't re-import)
-    if using_custom_build:
-        for p in conflicts:
-            if p not in sys.path:
-                sys.path.append(p)
+    # Restore removed paths AFTER cv2 is loaded (won't re-import)
+    for p in removed_paths:
+        if p not in sys.path:
+            sys.path.append(p)
 
     elapsed = (time.monotonic() - t0) * 1000
     source = "custom CUDA build" if using_custom_build else "system cv2"
