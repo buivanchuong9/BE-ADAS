@@ -195,7 +195,9 @@ class FFmpegEncoder:
         fps: float,
         use_nvenc: bool = True,
         crf: int = 23,
-        preset: str = "fast"
+        preset: str = "fast",
+        profile: str = "baseline",
+        level: str = "3.0"
     ):
         """
         Initialize FFmpeg encoder.
@@ -208,6 +210,8 @@ class FFmpegEncoder:
             use_nvenc: Use NVIDIA GPU encoder (h264_nvenc)
             crf: Quality (18-28, lower=better). Only for CPU encoding
             preset: Encoding speed preset
+            profile: H.264 profile (baseline/main/high) - baseline for max mobile compatibility
+            level: H.264 level (3.0/3.1/4.0) - 3.0 for older mobile devices
         """
         # DATA TYPE SAFETY - CRITICAL!
         self.width = int(width)
@@ -216,6 +220,8 @@ class FFmpegEncoder:
         self.output_path = Path(output_path)
         self.crf = int(crf)
         self.preset = preset
+        self.profile = profile  # baseline/main/high
+        self.level = level      # 3.0/3.1/4.0
 
         # Tự động fallback sang CPU nếu NVENC không khả dụng trên server này
         if use_nvenc and not NVENC_AVAILABLE:
@@ -231,7 +237,7 @@ class FFmpegEncoder:
         
         logger.info(
             f"[FFmpeg] Initializing encoder: {self.width}x{self.height}@{self.fps}fps "
-            f"→ {self.output_path.name} (NVENC={'ON' if use_nvenc else 'OFF'})"
+            f"→ {self.output_path.name} (NVENC={'ON' if use_nvenc else 'OFF'}, profile={self.profile}, level={self.level})"
         )
     
     def __enter__(self):
@@ -273,12 +279,14 @@ class FFmpegEncoder:
     
     def _build_command(self) -> List[str]:
         """
-        Build FFmpeg command with NVENC GPU encoding.
+        Build FFmpeg command with mobile-compatible encoding.
         
-        CRITICAL REQUIREMENTS:
+        CRITICAL REQUIREMENTS for mobile streaming:
         - yuv420p pixel format (Safari/Chrome compatible)
-        - H.264 Main profile (universal compatibility)
-        - faststart flag (progressive download)
+        - H.264 Baseline profile, Level 3.0 (universal mobile compatibility)
+        - faststart flag (progressive download - allows instant playback)
+        
+        Without these, mobile video players will buffer/download entire file before playing.
         """
         cmd = [
             FFMPEG,
@@ -296,9 +304,10 @@ class FFmpegEncoder:
             cmd.extend([
                 '-c:v', 'h264_nvenc',
                 '-preset', self.preset,  # p1-p7, or fast/medium/slow
-                '-profile:v', 'main',  # CRITICAL: Safari/Chrome compatible
-                '-pix_fmt', 'yuv420p',  # CRITICAL: Web compatible
-                '-movflags', '+faststart',  # CRITICAL: Progressive download
+                '-profile:v', self.profile,  # CRITICAL: baseline for max mobile compatibility
+                '-level', self.level,        # CRITICAL: 3.0 for older mobile devices
+                '-pix_fmt', 'yuv420p',       # CRITICAL: Web/mobile compatible
+                '-movflags', '+faststart',   # CRITICAL: Progressive download (instant streaming)
                 '-b:v', '5M',  # Target bitrate (adjust as needed)
                 '-maxrate', '8M',
                 '-bufsize', '10M',
@@ -309,9 +318,10 @@ class FFmpegEncoder:
                 '-c:v', 'libx264',
                 '-preset', self.preset,
                 '-crf', str(self.crf),
-                '-profile:v', 'main',
-                '-pix_fmt', 'yuv420p',
-                '-movflags', '+faststart',
+                '-profile:v', self.profile,  # baseline for mobile
+                '-level', self.level,         # 3.0 for mobile
+                '-pix_fmt', 'yuv420p',        # Web/mobile compatible
+                '-movflags', '+faststart',    # Progressive download
             ])
         
         cmd.append(str(self.output_path))
@@ -533,3 +543,100 @@ def get_video_info(video_path: str) -> Tuple[int, int, float, int]:
     except Exception as e:
         logger.error(f"Failed to get video info: {e}")
         raise RuntimeError(f"Cannot read video metadata: {e}")
+
+
+def convert_to_mobile_compatible(
+    input_path: str,
+    output_path: Optional[str] = None,
+    use_nvenc: bool = True
+) -> str:
+    """
+    Convert video to mobile-compatible format for instant streaming.
+    
+    Re-encodes with:
+    - H.264 Baseline profile, Level 3.0 (max mobile compatibility)
+    - yuv420p pixel format (iOS/Android compatible)
+    - AAC audio codec (universal support)
+    - faststart flag (progressive download - instant playback)
+    
+    Args:
+        input_path: Input video file
+        output_path: Output file (default: input_mobile.mp4)
+        use_nvenc: Use GPU encoding if available
+        
+    Returns:
+        Path to converted video
+        
+    Example:
+        # Convert result video for mobile streaming
+        mobile_path = convert_to_mobile_compatible("result.mp4")
+        # → result_mobile.mp4 (can stream instantly on iOS/Android)
+    """
+    input_path = Path(input_path)
+    
+    if not input_path.exists():
+        raise FileNotFoundError(f"Input video not found: {input_path}")
+    
+    # Default output: add _mobile suffix
+    if output_path is None:
+        output_path = input_path.parent / f"{input_path.stem}_mobile.mp4"
+    else:
+        output_path = Path(output_path)
+    
+    logger.info(f"[Mobile Convert] {input_path.name} → {output_path.name}")
+    
+    # Build FFmpeg command
+    cmd = [FFMPEG, '-y', '-i', str(input_path)]
+    
+    # Choose encoder
+    if use_nvenc and NVENC_AVAILABLE:
+        cmd.extend([
+            '-c:v', 'h264_nvenc',
+            '-preset', 'fast',
+            '-profile:v', 'baseline',     # Max mobile compatibility
+            '-level', '3.0',               # Older devices support
+        ])
+        logger.info("[Mobile Convert] Using NVENC GPU encoding")
+    else:
+        cmd.extend([
+            '-c:v', 'libx264',
+            '-preset', 'fast',
+            '-profile:v', 'baseline',
+            '-level', '3.0',
+        ])
+        logger.info("[Mobile Convert] Using CPU encoding (slower)")
+    
+    # Common mobile-compatible settings
+    cmd.extend([
+        '-pix_fmt', 'yuv420p',         # iOS/Android compatible
+        '-movflags', '+faststart',      # Progressive download (CRITICAL for streaming)
+        '-acodec', 'aac',               # Universal audio codec
+        '-b:a', '128k',                 # Audio bitrate
+        '-ar', '44100',                 # Audio sample rate
+        str(output_path)
+    ])
+    
+    logger.info(f"[Mobile Convert] Running: {' '.join(cmd[:10])}...")
+    
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=300  # 5 minutes max
+        )
+        
+        if result.returncode != 0:
+            stderr = result.stderr.decode('utf-8', errors='ignore')
+            logger.error(f"[Mobile Convert] Failed:\n{stderr}")
+            raise RuntimeError(f"FFmpeg conversion failed: {stderr[:500]}")
+        
+        logger.info(f"[Mobile Convert] ✓ Success: {output_path.name} ({output_path.stat().st_size / 1024 / 1024:.1f}MB)")
+        return str(output_path)
+        
+    except subprocess.TimeoutExpired:
+        logger.error("[Mobile Convert] Timeout after 5 minutes")
+        raise RuntimeError("Video conversion timed out")
+    except Exception as e:
+        logger.error(f"[Mobile Convert] Error: {e}")
+        raise
+
