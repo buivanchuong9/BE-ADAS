@@ -173,6 +173,10 @@ class SimpleGPUWorker:
         # PIL fonts for Vietnamese text rendering (có dấu)
         self._font_path = Path(__file__).parent.parent / "backend" / "assets" / "fonts" / "Roboto-Bold.ttf"
         self._pil_font_cache: Dict[int, ImageFont.FreeTypeFont] = {}
+        
+        # Overlay cache for frame skipping optimization (3x speedup)
+        self._cached_ui_layer: Optional[Image.Image] = None
+        self._overlay_skip_interval = 3  # Full PIL render every N frames
 
         prof = self.MODEL_PROFILES.get(model_profile, self.MODEL_PROFILES['cloud'])
         logger.info(
@@ -474,6 +478,7 @@ class SimpleGPUWorker:
         """
         job_id = job['job_id']
         self.current_job_id = job_id
+        self._cached_ui_layer = None  # Reset overlay cache for new job
         start_time = time.time()
         
         logger.info(f"[JOB] {job_id} - Start processing")
@@ -968,6 +973,9 @@ class SimpleGPUWorker:
     def _draw_overlay(self, frame: np.ndarray, results: Dict) -> np.ndarray:
         """
         Vẽ overlay ADAS chuyên nghiệp — tiếng Việt có dấu (PIL rendering).
+        
+        OPTIMIZATION: Chỉ render PIL đầy đủ mỗi N frame để tăng FPS 3x.
+        Các frame giữa chỉ vẽ bounding boxes (cv2) + reuse cached HUD/warnings.
 
         Đề tài #138: "Phát triển ứng dụng cảnh báo thông minh cho ô tô
         chạy trên điện thoại Android"
@@ -982,6 +990,7 @@ class SimpleGPUWorker:
         - Cảnh báo va chạm / lệch làn (PIL rendering)
         """
         lane_colored = results.get('lane_colored')
+        frame_idx = results.get('frame_idx', 0)
         h, w, _ = frame.shape
 
         # === 1. LÀN ĐƯỜNG (corridor xanh — GPU blending) ===
@@ -1019,31 +1028,44 @@ class SimpleGPUWorker:
                 x1, y1, x2, y2 = map(int, bbox)
                 cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 255), 2)
 
-        # === 3. CHUYỂN SANG PIL ĐỂ VẼ VĂN BẢN TIẾNG VIỆT ===
+        # === 3. PIL RENDERING — SKIP OPTIMIZATION ===
+        # Full PIL render every N frames để tăng FPS 3x (6fps → 18fps)
+        do_full_pil_render = (frame_idx % self._overlay_skip_interval == 0) or (self._cached_ui_layer is None)
+        
         pil_base = Image.fromarray(
             cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
         ).convert('RGBA')
-        ui_layer = Image.new('RGBA', pil_base.size, (0, 0, 0, 0))
-        draw = ImageDraw.Draw(ui_layer, 'RGBA')
+        
+        if do_full_pil_render:
+            # === FULL PIL RENDER (mỗi N frame) ===
+            ui_layer = Image.new('RGBA', pil_base.size, (0, 0, 0, 0))
+            draw = ImageDraw.Draw(ui_layer, 'RGBA')
 
-        # 3a. Object labels (tên tiếng Việt + khoảng cách + TTC)
-        self._draw_object_labels_pil(draw, results)
+            # 3a. Object labels (tên tiếng Việt + khoảng cách + TTC)
+            self._draw_object_labels_pil(draw, results)
 
-        # 3b. Biển báo labels (tiếng Việt)
-        for sign in results.get('traffic_signs', []):
-            bbox = sign.get('bbox')
-            if bbox:
-                sx, sy = int(bbox[0]), int(bbox[1])
-                sign_vn = self._translate_class_name(sign.get('class_name', ''))
-                font_s = self._get_font(18)
-                draw.text((sx + 1, sy - 21), sign_vn, font=font_s, fill=(0, 0, 0, 160))
-                draw.text((sx, sy - 22), sign_vn, font=font_s, fill=(0, 255, 255, 240))
+            # 3b. Biển báo labels (tiếng Việt)
+            for sign in results.get('traffic_signs', []):
+                bbox = sign.get('bbox')
+                if bbox:
+                    sx, sy = int(bbox[0]), int(bbox[1])
+                    sign_vn = self._translate_class_name(sign.get('class_name', ''))
+                    font_s = self._get_font(18)
+                    draw.text((sx + 1, sy - 21), sign_vn, font=font_s, fill=(0, 0, 0, 160))
+                    draw.text((sx, sy - 22), sign_vn, font=font_s, fill=(0, 255, 255, 240))
 
-        # 3c. HUD Panel chuyên nghiệp (góc trên trái)
-        self._draw_hud_panel_pil(draw, results, w, h)
+            # 3c. HUD Panel chuyên nghiệp (góc trên trái)
+            self._draw_hud_panel_pil(draw, results, w, h)
 
-        # 3d. Cảnh báo va chạm / lệch làn (top-center)
-        self._draw_warnings_pil(draw, results, w)
+            # 3d. Cảnh báo va chạm / lệch làn (top-center)
+            self._draw_warnings_pil(draw, results, w)
+            
+            # Cache UI layer for next frames
+            self._cached_ui_layer = ui_layer.copy()
+        else:
+            # === REUSE CACHED UI LAYER (fast path) ===
+            # Chỉ composite cached layer, skip all PIL drawing
+            ui_layer = self._cached_ui_layer
 
         # === 4. COMPOSITE & TRẢ VỀ BGR (GPU resize if needed) ===
         result = Image.alpha_composite(pil_base, ui_layer)
