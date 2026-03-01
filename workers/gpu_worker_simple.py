@@ -88,6 +88,20 @@ class SimpleGPUWorker:
             'half': True,  # FP16 inference
             'description': 'YOLOv11m + UFLD — balanced speed/accuracy',
         },
+        'turbo': {
+            # Turbo profile: INT8 quantized models for maximum throughput
+            # Use: python model_optimizer.py --quantize int8 backend/models/yolo11m.pt
+            'obj_model':  'backend/models/optimized/yolo11m_int8.engine',
+            'obj_model_fallback': 'backend/models/yolo11m.pt',  # Fallback if engine missing
+            'pose_model': 'backend/models/yolo11m-pose.pt',
+            'seg_model':  'backend/models/yolo11m-seg.pt',
+            'ufld_model': 'backend/models/ufld_tusimple.pth',
+            'imgsz': 384,
+            'conf': 0.45,
+            'half': True,  # Fallback uses FP16
+            'int8': True,  # Prefer INT8 TensorRT
+            'description': 'YOLOv11m INT8 — maximum throughput (3-4x faster)',
+        },
         'edge': {
             'obj_model':  'backend/models/yolov8n.pt',
             'pose_model': 'backend/models/yolov8n-pose.pt',
@@ -107,12 +121,14 @@ class SimpleGPUWorker:
         device: str = "cuda",
         model_profile: str = "cloud",
         enable_tensorrt: bool = True,
+        auto_optimize: bool = False,
     ):
         self.worker_id = worker_id
         self.database_url = database_url
         self.device = device
         self.model_profile = model_profile
         self.enable_tensorrt = enable_tensorrt
+        self._auto_optimize = auto_optimize
 
         # State
         self.running = True
@@ -228,9 +244,40 @@ class SimpleGPUWorker:
             imgsz      = prof['imgsz']
             conf       = prof['conf']
 
-            # --- TensorRT optimization (auto-export & cache) ---
-            trt_model_path = model_path  # default: PyTorch .pt
-            if self.enable_tensorrt and self.device == 'cuda':
+            # --- Check for pre-optimized INT8 engine (turbo profile) ---
+            use_int8 = prof.get('int8', False) and self.device == 'cuda'
+            if use_int8:
+                int8_engine = Path(model_path)
+                fallback_model = prof.get('obj_model_fallback', model_path.replace('_int8.engine', '.pt'))
+                
+                if int8_engine.exists() and int8_engine.suffix == '.engine':
+                    logger.info(f"[INT8] 🚀 Using pre-optimized INT8 engine: {int8_engine.name}")
+                    trt_model_path = str(int8_engine)
+                elif self._auto_optimize and Path(fallback_model).exists():
+                    # Auto-generate INT8 engine
+                    logger.info(f"[INT8] Auto-generating INT8 engine from {fallback_model}...")
+                    try:
+                        from backend.perception.engine.model_optimizer import ModelOptimizer
+                        optimizer = ModelOptimizer(
+                            model_path=fallback_model,
+                            output_dir='backend/models/optimized',
+                            input_size=(imgsz, imgsz)
+                        )
+                        trt_model_path = optimizer.quantize(precision='int8')
+                        logger.info(f"[INT8] ✅ Generated: {trt_model_path}")
+                    except Exception as e:
+                        logger.warning(f"[INT8] Auto-optimize failed ({e}), falling back to FP16")
+                        model_path = fallback_model
+                        use_int8 = False
+                else:
+                    logger.warning(f"[INT8] Engine not found: {int8_engine}, using fallback: {fallback_model}")
+                    model_path = fallback_model
+                    use_int8 = False
+
+            # --- TensorRT FP16 optimization (auto-export & cache) ---
+            if not use_int8:
+                trt_model_path = model_path  # default: PyTorch .pt
+            if self.enable_tensorrt and self.device == 'cuda' and not use_int8:
                 try:
                     from backend.perception.engine.tensorrt_optimizer import TensorRTOptimizer
                     if self._trt_optimizer is None:
@@ -254,7 +301,7 @@ class SimpleGPUWorker:
             logger.info(
                 f"[GPU] Loading pipeline 'dashcam': "
                 f"model={Path(trt_model_path).name}, imgsz={imgsz}, "
-                f"conf={conf}, profile={self.model_profile}"
+                f"conf={conf}, profile={self.model_profile}, int8={use_int8}"
             )
             
             # Initialize CUDA preprocessor for zero-copy GpuMat reuse
@@ -1438,8 +1485,12 @@ Examples:
     parser.add_argument('--device', default='cuda', choices=['cuda', 'cpu'])
     parser.add_argument('--database-url', default=os.getenv('DATABASE_URL'))
     parser.add_argument(
-        '--profile', default='cloud', choices=['cloud', 'edge'],
-        help='Model profile: cloud (YOLOv11x) or edge (YOLOv8n)'
+        '--profile', default='cloud', choices=['cloud', 'fast', 'turbo', 'edge'],
+        help='Model profile: cloud (YOLOv11x), fast (YOLOv11m+FP16), turbo (INT8), edge (YOLOv8n)'
+    )
+    parser.add_argument(
+        '--auto-optimize', action='store_true',
+        help='Auto-optimize models to INT8/FP16 TensorRT on first run'
     )
     parser.add_argument(
         '--no-tensorrt', action='store_true',
@@ -1472,6 +1523,7 @@ Examples:
         device=args.device,
         model_profile=args.profile,
         enable_tensorrt=not args.no_tensorrt,
+        auto_optimize=args.auto_optimize,
     )
     
     try:
