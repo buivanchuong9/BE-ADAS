@@ -28,7 +28,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, String
 from sqlalchemy.orm import joinedload
 import uuid
 
@@ -75,6 +75,7 @@ class ErrorResponse(BaseModel):
 class AnalysisResult(BaseModel):
     """Analysis result from AI processing"""
     video_url: Optional[str] = None
+    download_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     cars_detected: int = 0
     pedestrians_detected: int = 0
@@ -83,6 +84,7 @@ class AnalysisResult(BaseModel):
     safety_score: int = 100
     duration_seconds: float = 0
     events: List[Dict[str, Any]] = []
+    video_type: Optional[str] = None
 
 
 class StatusResponse(BaseModel):
@@ -133,9 +135,15 @@ class HistoryResponse(BaseModel):
 # ============================================================
 
 def get_public_video_url(job_id: str) -> str:
-    """Generate public URL for result video"""
+    """Generate public URL for result video (ends with .mp4 for mobile player compatibility)"""
     base_url = settings.API_BASE_URL.rstrip('/')
-    return f"{base_url}/public/results/{job_id}_result.mp4"
+    return f"{base_url}/public/results/{job_id}/result.mp4"
+
+
+def get_download_url(job_id: str) -> str:
+    """Generate download URL that ends with .mp4 (required for mobile video players)"""
+    base_url = settings.API_BASE_URL.rstrip('/')
+    return f"{base_url}/api/mobile/video/download/{job_id}/result.mp4"
 
 
 def get_thumbnail_url(job_id: str) -> str:
@@ -185,23 +193,39 @@ def calculate_safety_score(events: List[Dict]) -> int:
     return max(0, min(100, score))
 
 
-def get_current_step(status: str, progress: int) -> str:
-    """Get human-readable current step based on status and progress"""
+def get_current_step(status: str, progress: int, video_type: str = 'dashcam') -> str:
+    """Get human-readable current step based on status, progress and video type"""
     if status == 'queued' or status == 'pending':
         return "Đang chờ trong hàng đợi..."
     elif status == 'processing':
-        if progress < 10:
-            return "Đang khởi tạo AI models..."
-        elif progress < 30:
-            return "Đang phát hiện làn đường..."
-        elif progress < 60:
-            return "Đang phát hiện phương tiện..."
-        elif progress < 80:
-            return "Đang phân tích khoảng cách..."
-        elif progress < 95:
-            return "Đang tạo video kết quả..."
+        if video_type == 'in_cabin':
+            # Driver monitoring steps
+            if progress < 10:
+                return "Đang khởi tạo Face Mesh + YOLO..."
+            elif progress < 30:
+                return "Đang phân tích khuôn mặt tài xế..."
+            elif progress < 50:
+                return "Đang phát hiện mắt nhắm, ngáp..."
+            elif progress < 70:
+                return "Đang kiểm tra dây an toàn, điện thoại..."
+            elif progress < 90:
+                return "Đang tạo video annotated..."
+            else:
+                return "Đang hoàn tất..."
         else:
-            return "Đang hoàn tất..."
+            # ADAS dashcam steps
+            if progress < 10:
+                return "Đang khởi tạo AI models..."
+            elif progress < 30:
+                return "Đang phát hiện làn đường..."
+            elif progress < 60:
+                return "Đang phát hiện phương tiện..."
+            elif progress < 80:
+                return "Đang phân tích khoảng cách..."
+            elif progress < 95:
+                return "Đang tạo video kết quả..."
+            else:
+                return "Đang hoàn tất..."
     elif status == 'completed':
         return "Hoàn thành!"
     elif status == 'failed':
@@ -229,7 +253,7 @@ async def mobile_upload_video(
     
     Args:
         file: Video file (MP4, MOV, AVI, max 500MB)
-        video_type: "dashcam" or "phone"
+        video_type: "dashcam" (camera hành trình - ADAS) hoặc "phone" (camera trong xe - giám sát tài xế)
         device: "cuda" or "cpu"
         
     Returns:
@@ -248,9 +272,11 @@ async def mobile_upload_video(
 
         logger.info(f"📱 [Mobile Upload] Starting: {file.filename} (type={video_type}, device={device})")
         
-        # Map video_type from mobile (phone -> dashcam)
+        # Map video_type from mobile
+        # "phone" = camera trong xe (in-cabin) → giám sát tài xế
+        # "dashcam" = camera hành trình → phát hiện ADAS
         if video_type == "phone":
-            video_type = "dashcam"
+            video_type = "in_cabin"
         
         # Create video service
         video_service = VideoService(db)
@@ -411,6 +437,7 @@ async def mobile_get_status(
         
         status = job.status
         progress = job.progress_percent or 0
+        job_video_type = job.video_type if hasattr(job, 'video_type') else 'dashcam'
         
         # Build response based on status
         response = StatusResponse(
@@ -418,7 +445,7 @@ async def mobile_get_status(
             job_id=str(job.job_id),
             status=status,
             progress_percent=progress,
-            current_step=get_current_step(status, progress),
+            current_step=get_current_step(status, progress, job_video_type),
             started_at=job.started_at
         )
         
@@ -474,17 +501,21 @@ async def mobile_get_status(
             # Count event types
             lane_departures = len([e for e in events_list if 'lane' in e.get('type', '').lower()])
             warnings = len([e for e in events_list if e.get('severity') in ('warning', 'critical', 'danger')])
+            cars = len([e for e in events_list if e.get('type', '') in ('collision_warning', 'forward_collision', 'unsafe_distance')])
+            pedestrians = len([e for e in events_list if e.get('type', '') == 'pedestrian_detected'])
             
             response.result = AnalysisResult(
                 video_url=get_public_video_url(str(job.job_id)),
+                download_url=get_download_url(str(job.job_id)),
                 thumbnail_url=get_thumbnail_url(str(job.job_id)),
-                cars_detected=0,  # TODO: Get from processing result
-                pedestrians_detected=0,
+                cars_detected=cars,
+                pedestrians_detected=pedestrians,
                 lane_departures=lane_departures,
                 warnings_count=warnings,
                 safety_score=calculate_safety_score(events_list),
                 duration_seconds=job.video.duration_seconds if job.video else 0,
-                events=events_list
+                events=events_list,
+                video_type=job_video_type
             )
             
         elif status == 'failed':
@@ -512,19 +543,40 @@ async def mobile_get_status(
         )
 
 
+@router.get("/video/download/{job_id}/result.mp4")
+async def mobile_download_video_mp4(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Download processed video (URL ends with .mp4 for mobile player compatibility)."""
+    return await _mobile_download_video(job_id, request, db)
+
+
 @router.get("/video/download/{job_id}")
 async def mobile_download_video(
     job_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db)
 ):
+    """Download processed video (legacy endpoint without .mp4 suffix)."""
+    return await _mobile_download_video(job_id, request, db)
+
+
+async def _mobile_download_video(
+    job_id: str,
+    request: Request,
+    db: AsyncSession
+):
     """
-    Download processed video file.
+    Internal: Download processed video with Range request support for streaming.
     
     Args:
         job_id: Job ID
+        request: HTTP request (for Range header)
         
     Returns:
-        Video file (binary stream)
+        Video file (binary stream with Range support)
     """
     try:
         # Get job from database
@@ -566,12 +618,58 @@ async def mobile_download_video(
                 }
             )
         
+        file_size = output_path.stat().st_size
+        result_filename = f"adas_result_{job_id[:8]}.mp4"
+        
+        # Support Range requests (required for mobile video streaming)
+        range_header = request.headers.get("range")
+        if range_header:
+            from fastapi.responses import StreamingResponse
+            try:
+                range_spec = range_header.replace("bytes=", "")
+                start_end = range_spec.split("-")
+                start = int(start_end[0]) if start_end[0] else 0
+                end = int(start_end[1]) if len(start_end) > 1 and start_end[1] else file_size - 1
+                start = max(0, start)
+                end = min(end, file_size - 1)
+                chunk_size = end - start + 1
+                
+                def iter_range():
+                    with open(output_path, "rb") as f:
+                        f.seek(start)
+                        remaining = chunk_size
+                        while remaining > 0:
+                            data = f.read(min(65536, remaining))
+                            if not data:
+                                break
+                            remaining -= len(data)
+                            yield data
+                
+                return StreamingResponse(
+                    iter_range(),
+                    status_code=206,
+                    media_type="video/mp4",
+                    headers={
+                        "Content-Range": f"bytes {start}-{end}/{file_size}",
+                        "Content-Length": str(chunk_size),
+                        "Accept-Ranges": "bytes",
+                        "Access-Control-Allow-Origin": "*",
+                        "Content-Disposition": f'inline; filename="{result_filename}"'
+                    }
+                )
+            except Exception as e:
+                logger.warning(f"Invalid Range header: {range_header} - {e}")
+        
+        # Full file response
         return FileResponse(
             path=str(output_path),
             media_type="video/mp4",
-            filename=f"adas_result_{job_id[:8]}.mp4",
+            filename=result_filename,
             headers={
-                "Content-Disposition": f'attachment; filename="adas_result_{job_id[:8]}.mp4"'
+                "Content-Disposition": f'inline; filename="{result_filename}"',
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+                "Access-Control-Allow-Origin": "*"
             }
         )
         

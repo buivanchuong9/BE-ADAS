@@ -118,8 +118,8 @@ async def upload_video(
             "updated_at": job.updated_at,
             "started_at": job.started_at,
             "completed_at": job.completed_at,
-            "video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None,
-            "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None
+            "video_url": f"{settings.API_BASE_URL}/public/results/{'/'.join(job.result_path.replace(chr(92), '/').split('/')[-2:])}" if job.result_path else None,
+            "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{'/'.join(job.result_path.replace(chr(92), '/').split('/')[-2:])}" if job.result_path else None
         }
         
         # Job is now in database with status='pending'
@@ -349,8 +349,8 @@ async def get_result(
             "updated_at": job.updated_at,
             "started_at": job.started_at,
             "completed_at": job.completed_at,
-            "video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None,
-            "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{job.result_path.split('/')[-1]}" if job.result_path else None
+            "video_url": f"{settings.API_BASE_URL}/public/results/{'/'.join(job.result_path.replace(chr(92), '/').split('/')[-2:])}" if job.result_path else None,
+            "full_result_video_url": f"{settings.API_BASE_URL}/public/results/{'/'.join(job.result_path.replace(chr(92), '/').split('/')[-2:])}" if job.result_path else None
         }
     
     except HTTPException:

@@ -328,9 +328,9 @@ app.include_router(analytics_router)  # Analytics Dashboard Charts (/api/analyti
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 
-@app.get("/public/results/{filename}")
+@app.get("/public/results/{file_path:path}")
 async def serve_public_result(
-    filename: str,
+    file_path: str,
     request: Request
 ):
     """
@@ -341,32 +341,34 @@ async def serve_public_result(
     - Range request support (HTTP 206)
     - CORS headers for cross-origin access
     - Proper caching headers
+    - Supports subdirectory paths: /public/results/{job_id}/result.mp4
     """
     from pathlib import Path
     import os
     
     public_results_dir = Path(settings.PROCESSED_VIDEO_DIR)
-    file_path = public_results_dir / filename
+    resolved_path = public_results_dir / file_path
+    filename = Path(file_path).name
     
     # Security: prevent path traversal
-    if ".." in filename or not file_path.resolve().is_relative_to(public_results_dir.resolve()):
+    if ".." in file_path or not resolved_path.resolve().is_relative_to(public_results_dir.resolve()):
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=400,
-            content={"error": "Invalid filename"}
+            content={"error": "Invalid path"}
         )
     
-    if not file_path.exists():
+    if not resolved_path.exists():
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=404,
-            content={"error": "File not found"},
+            content={"error": f"File not found: {file_path}"},
             headers={
                 "Access-Control-Allow-Origin": "*"
             }
         )
     
-    file_size = file_path.stat().st_size
+    file_size = resolved_path.stat().st_size
     
     # Determine content type
     content_type = "video/mp4"
@@ -392,7 +394,7 @@ async def serve_public_result(
             chunk_size = end - start + 1
             
             def iter_file():
-                with open(file_path, "rb") as f:
+                with open(resolved_path, "rb") as f:
                     f.seek(start)
                     remaining = chunk_size
                     while remaining > 0:
@@ -422,7 +424,7 @@ async def serve_public_result(
     
     # Full file response (no Range)
     def iter_full_file():
-        with open(file_path, "rb") as f:
+        with open(resolved_path, "rb") as f:
             while chunk := f.read(65536):
                 yield chunk
     
@@ -459,12 +461,12 @@ async def root():
             "mobile": {
                 "upload": "POST /api/mobile/video/upload",
                 "status": "GET /api/mobile/video/status/{job_id}",
-                "download": "GET /api/mobile/video/download/{job_id}",
+                "download": "GET /api/mobile/video/download/{job_id}/result.mp4",
                 "history": "GET /api/mobile/video/history",
                 "health": "GET /api/mobile/health"
             },
             "public": {
-                "video": "GET /public/results/{job_id}_result.mp4"
+                "video": "GET /public/results/{job_id}/result.mp4"
             }
         },
         "documentation": "/docs"
