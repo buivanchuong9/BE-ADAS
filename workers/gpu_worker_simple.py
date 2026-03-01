@@ -524,6 +524,7 @@ class SimpleGPUWorker:
                 CPU chỉ read từ pipe, không decode bitstream.
                 """
                 codecs_to_try = ['h264_cuvid', 'hevc_cuvid', None]
+                frames_decoded = 0
                 for codec in codecs_to_try:
                     cmd = [FFMPEG, '-hide_banner', '-loglevel', 'error']
                     if codec:
@@ -536,11 +537,12 @@ class SimpleGPUWorker:
                         proc = subprocess.Popen(
                             cmd,
                             stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE,  # Capture stderr for debugging
                             bufsize=frame_size * 4,   # 4-frame read buffer
                         )
                         hw_label = codec if codec else 'software'
                         logger.info(f"[DECODE] FFmpeg decoder: {hw_label}")
+                        frames_decoded = 0
                         while True:
                             raw = proc.stdout.read(frame_size)
                             if len(raw) < frame_size:
@@ -548,15 +550,28 @@ class SimpleGPUWorker:
                             frame = np.frombuffer(raw, dtype=np.uint8
                                                   ).reshape(height, width, 3).copy()
                             fq.put(frame)       # blocks when queue is full (back-pressure)
+                            frames_decoded += 1
                         proc.stdout.close()
                         proc.wait()
-                        break                    # success → stop trying fallbacks
+                        
+                        # Check if we actually got frames - if not, try next codec
+                        if frames_decoded > 0:
+                            logger.info(f"[DECODE] ✅ {hw_label} decoded {frames_decoded} frames")
+                            break  # success → stop trying fallbacks
+                        else:
+                            stderr_output = proc.stderr.read().decode('utf-8', errors='ignore')[:500]
+                            logger.warning(f"[DECODE] {hw_label} returned 0 frames, trying next... stderr: {stderr_output}")
+                            continue  # try next codec
+                            
                     except Exception as e:
                         logger.warning(f"[DECODE] {codec} failed: {e}, trying next...")
                         try:
                             proc.kill()
                         except Exception:
                             pass
+                
+                if frames_decoded == 0:
+                    logger.error(f"[DECODE] ❌ All decoders failed! No frames decoded from {path}")
                 fq.put(None)  # sentinel: stream finished
 
             reader_thread = threading.Thread(
