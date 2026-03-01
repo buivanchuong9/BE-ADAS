@@ -74,17 +74,115 @@ class DriverMonitorV11Pro:
         39: 'chai',        # bottle
     }
     
+    # Detection confidence thresholds - NHẠY HƠN
+    OBJ_CONF_THRESHOLD = 0.25     # Lower = more sensitive (was implicit at model default)
+    POSE_CONF_THRESHOLD = 0.3    # Pose keypoint confidence
+    
     # Distance thresholds (pixels) - adaptive based on face size
-    PHONE_DISTANCE_THRESHOLD = 200
-    DRINK_DISTANCE_THRESHOLD = 180
-    SMOKE_DISTANCE_THRESHOLD = 100  # hand near mouth
+    PHONE_DISTANCE_THRESHOLD = 250   # Increased for better detection
+    DRINK_DISTANCE_THRESHOLD = 220   # Increased for better detection
+    SMOKE_DISTANCE_THRESHOLD = 120   # hand near mouth
     
     # Head Pose thresholds (degrees)
-    YAW_THRESHOLD = 30           # Looking left/right
-    YAW_SEVERE = 45              # Severely looking away
-    PITCH_THRESHOLD = 20         # Head tilt up/down
-    PITCH_SEVERE = 35            # Severely tilted
-    ROLL_THRESHOLD = 25          # Head roll (lateral tilt)
+    YAW_THRESHOLD = 25           # Looking left/right (was 30, now more sensitive)
+    YAW_SEVERE = 40              # Severely looking away
+    YAW_EXTREME = 60             # Looking at backseat
+    PITCH_THRESHOLD = 15         # Head tilt up/down (was 20, now more sensitive)
+    PITCH_SEVERE = 30            # Severely tilted
+    PITCH_EXTREME = 45           # Looking at floor/ceiling (ngủ gục)
+    ROLL_THRESHOLD = 20          # Head roll (lateral tilt)
+    
+    # ==================== PRIORITY MATRIX ====================
+    # P0: Nguy hiểm tức thời - Còi chói tai, ghi đè tất cả
+    # P1: Rủi ro cao - Giọng nói gắt
+    # P2: Cảnh báo sớm - Ping nhẹ + text
+    # P3: Vi phạm thụ động - Icon nhấp nháy
+    
+    PRIORITY_LEVELS = {
+        'P0_CRITICAL': {
+            'level': 0,
+            'name': 'NGUY HIỂM TỨC THỜI',
+            'color': (255, 0, 255),    # Magenta
+            'sound': 'alarm_critical', # Bíp bíp liên tục
+            'behaviors': ['drowsy_severe', 'pitch_extreme', 'sleeping'],
+        },
+        'P1_HIGH': {
+            'level': 1,
+            'name': 'RỦI RO CAO',
+            'color': (0, 0, 255),      # Red
+            'sound': 'voice_warning',  # "Yêu cầu tập trung lái xe!"
+            'behaviors': ['phone', 'yaw_extreme', 'texting'],
+        },
+        'P2_MEDIUM': {
+            'level': 2,
+            'name': 'CẢNH BÁO SỚM',
+            'color': (0, 165, 255),    # Orange
+            'sound': 'ping_soft',      # Ping nhẹ
+            'behaviors': ['yawning', 'drinking', 'eating', 'smoking'],
+        },
+        'P3_LOW': {
+            'level': 3,
+            'name': 'VI PHẠM THỤ ĐỘNG',
+            'color': (0, 255, 255),    # Yellow
+            'sound': 'none',           # Chỉ icon nhấp nháy
+            'behaviors': ['no_seatbelt'],
+        },
+    }
+    
+    # ==================== TIME BUFFER CONFIGURATION ====================
+    # Sliding Window để chống báo động giả
+    # FPS = 30, mỗi buffer chứa N frames
+    
+    TIME_BUFFER_CONFIG = {
+        # Ngủ gục - CỰC KỲ NGUY HIỂM, không cần đợi lâu
+        'drowsy': {
+            'window_size': 30,       # 1 giây @ 30fps
+            'trigger_ratio': 0.67,   # 20/30 frames (67%) mắt nhắm = ngủ gục
+            'cooldown_frames': 90,   # 3 giây cooldown
+        },
+        # Điện thoại - Ưu tiên cao
+        'phone': {
+            'window_size': 45,       # 1.5 giây
+            'trigger_ratio': 0.75,   # 34/45 frames = đang dùng điện thoại
+            'cooldown_frames': 60,
+        },
+        # Uống nước - Có thể bỏ qua nếu ngắn
+        'drinking': {
+            'window_size': 30,       # 1 giây
+            'trigger_ratio': 0.67,   # 20/30 frames
+            'cooldown_frames': 45,
+        },
+        # Hút thuốc - Cần xác nhận vì dễ nhầm
+        'smoking': {
+            'window_size': 60,       # 2 giây
+            'trigger_ratio': 0.6,    # 36/60 frames
+            'cooldown_frames': 90,
+        },
+        # Nhìn sang - Cho phép liếc gương chiếu hậu
+        'looking_away': {
+            'window_size': 45,       # 1.5 giây
+            'trigger_ratio': 0.8,    # 36/45 frames = không phải liếc gương
+            'cooldown_frames': 30,
+        },
+        # Ngáp - Báo hiệu mệt mỏi
+        'yawning': {
+            'window_size': 45,       # 1.5 giây
+            'trigger_ratio': 0.5,    # 22/45 frames
+            'cooldown_frames': 120,  # 4 giây (không cần cảnh báo liên tục)
+        },
+        # Dây an toàn - Chờ xe khởi hành
+        'seatbelt': {
+            'window_size': 90,       # 3 giây
+            'trigger_ratio': 0.9,    # 81/90 frames không có dây
+            'cooldown_frames': 300,  # 10 giây
+        },
+        # Chớp mắt (để phân biệt với ngủ gục)
+        'blink': {
+            'window_size': 10,       # 0.33 giây - chớp mắt bình thường
+            'trigger_ratio': 0.3,    # 3/10 frames
+            'cooldown_frames': 5,
+        },
+    }
     
     # ===== SEATBELT DETECTION Configuration =====
     # COCO Pose keypoints for seatbelt region
@@ -304,35 +402,134 @@ class DriverMonitorV11Pro:
             self.enable_face_mesh = False
     
     def _init_buffers(self):
-        """Initialize temporal smoothing buffers."""
-        # Behavior buffers (15-60 frames)
-        self.phone_buffer = deque(maxlen=30)
-        self.drink_buffer = deque(maxlen=30)
-        self.smoke_buffer = deque(maxlen=30)
+        """Initialize temporal smoothing buffers with proper sliding windows."""
+        # ===== BEHAVIOR BUFFERS - Sized by TIME_BUFFER_CONFIG =====
+        cfg = self.TIME_BUFFER_CONFIG
+        
+        # Phone detection buffer
+        self.phone_buffer = deque(maxlen=cfg['phone']['window_size'])
+        self.phone_cooldown = 0
+        
+        # Drinking detection buffer
+        self.drink_buffer = deque(maxlen=cfg['drinking']['window_size'])
+        self.drink_cooldown = 0
+        
+        # Smoking detection buffer
+        self.smoke_buffer = deque(maxlen=cfg['smoking']['window_size'])
+        self.smoke_cooldown = 0
+        
+        # Drowsy/eye closure buffer
+        self.eye_closure_buffer = deque(maxlen=cfg['drowsy']['window_size'])
+        self.drowsy_cooldown = 0
+        
+        # Looking away buffer
+        self.looking_away_buffer = deque(maxlen=cfg['looking_away']['window_size'])
+        self.looking_away_cooldown = 0
+        
+        # Yawning buffer
+        self.yawn_buffer = deque(maxlen=cfg['yawning']['window_size'])
+        self.yawn_cooldown = 0
         
         # Seatbelt buffer
-        self.seatbelt_buffer = deque(maxlen=60)  # 2 seconds @ 30fps
+        self.seatbelt_buffer = deque(maxlen=cfg['seatbelt']['window_size'])
+        self.seatbelt_cooldown = 0
         
-        # Head pose buffers
+        # Blink buffer (để phân biệt chớp mắt vs ngủ gục)
+        self.blink_buffer = deque(maxlen=cfg['blink']['window_size'])
+        
+        # ===== HEAD POSE BUFFERS =====
         self.yaw_buffer = deque(maxlen=30)
         self.pitch_buffer = deque(maxlen=30)
         self.roll_buffer = deque(maxlen=30)
         
-        # EAR buffers (Eye Aspect Ratio)
-        self.ear_buffer = deque(maxlen=30)
-        self.mar_buffer = deque(maxlen=30)  # Mouth Aspect Ratio
-        
-        # Drowsiness indicators
+        # Drowsiness head indicators (for check_drowsiness)
         self.head_nod_buffer = deque(maxlen=60)
         self.head_tilt_buffer = deque(maxlen=60)
-        self.eye_closure_buffer = deque(maxlen=90)  # 3 seconds
         
-        # Attention tracking
+        # ===== EAR/MAR BUFFERS =====
+        self.ear_buffer = deque(maxlen=30)
+        self.mar_buffer = deque(maxlen=30)
+        
+        # ===== ATTENTION & TRACKING =====
         self.attention_history = deque(maxlen=90)
         self.looking_away_counter = 0
         
         # Performance tracking
         self.fps_buffer = deque(maxlen=30)
+        
+        # ===== PRIORITY & WARNING STATE =====
+        self.active_warnings = []          # List of active warnings
+        self.warning_history = deque(maxlen=300)  # 10 seconds of warnings
+        self.last_warning_priority = 99    # 99 = no warning (lower = higher priority)
+        self.last_warning_time = 0
+        
+        # ===== DETECTION BOUNDING BOXES =====
+        self.detection_boxes = {}          # Store bounding boxes for current frame
+    
+    def _check_buffer_trigger(self, buffer: deque, behavior: str) -> Tuple[bool, float]:
+        """
+        Check if buffer exceeds trigger threshold (sliding window logic).
+        
+        Args:
+            buffer: The deque buffer to check
+            behavior: Behavior type from TIME_BUFFER_CONFIG
+            
+        Returns:
+            (triggered, ratio) - Whether triggered and the actual ratio
+        """
+        cfg = self.TIME_BUFFER_CONFIG.get(behavior)
+        if not cfg:
+            return False, 0.0
+        
+        if len(buffer) < cfg['window_size'] // 2:  # Need at least half window
+            return False, 0.0
+        
+        # Count positive detections
+        positive_count = sum(1 for x in buffer if x > 0)
+        ratio = positive_count / len(buffer)
+        
+        triggered = ratio >= cfg['trigger_ratio']
+        return triggered, ratio
+    
+    def _get_warning_priority(self, behavior: str) -> Tuple[int, str, Tuple[int, int, int]]:
+        """
+        Get priority level for a behavior.
+        
+        Returns:
+            (priority_level, priority_name, color)
+        """
+        for priority_key, priority_data in self.PRIORITY_LEVELS.items():
+            if behavior in priority_data['behaviors']:
+                return (
+                    priority_data['level'],
+                    priority_data['name'],
+                    priority_data['color']
+                )
+        return (99, 'UNKNOWN', (128, 128, 128))
+    
+    def _should_warn(self, behavior: str, cooldown_attr: str) -> bool:
+        """
+        Check if we should trigger a warning (considering cooldown).
+        
+        Args:
+            behavior: Behavior type
+            cooldown_attr: Attribute name for cooldown counter
+        
+        Returns:
+            True if warning should trigger
+        """
+        cfg = self.TIME_BUFFER_CONFIG.get(behavior)
+        if not cfg:
+            return True
+        
+        cooldown = getattr(self, cooldown_attr, 0)
+        if cooldown > 0:
+            setattr(self, cooldown_attr, cooldown - 1)
+            return False
+        
+        # Reset cooldown when triggered
+        setattr(self, cooldown_attr, cfg['cooldown_frames'])
+        return True
     
     # ==================== FACE MESH & EAR ====================
     
@@ -799,10 +996,24 @@ class DriverMonitorV11Pro:
     
     @torch.no_grad()
     def detect_objects(self, frame: np.ndarray) -> List[Dict]:
-        """Phát hiện điện thoại, cốc, chai."""
+        """
+        Phát hiện điện thoại, cốc, chai - NHẠY HƠN.
+        
+        Returns:
+            List of detected objects with bounding boxes
+        """
         try:
-            results = self.object_model(frame, device=self.device, verbose=False)
+            # Use lower confidence for more sensitive detection
+            results = self.object_model(
+                frame, 
+                device=self.device, 
+                verbose=False,
+                conf=self.OBJ_CONF_THRESHOLD  # Dùng threshold thấp hơn
+            )
             objects = []
+            
+            # Clear detection boxes for this frame
+            self.detection_boxes = {}
             
             for result in results:
                 if result.boxes is None:
@@ -818,14 +1029,21 @@ class DriverMonitorV11Pro:
                     xyxy = box.xyxy[0].cpu().numpy()
                     x1, y1, x2, y2 = map(int, xyxy)
                     
-                    objects.append({
+                    obj_data = {
                         'class_id': cls_id,
                         'class_name': self.OBJECT_CLASSES[cls_id],
                         'confidence': conf,
                         'bbox': [x1, y1, x2, y2],
                         'center': ((x1 + x2) // 2, (y1 + y2) // 2),
                         'area': (x2 - x1) * (y2 - y1)
-                    })
+                    }
+                    objects.append(obj_data)
+                    
+                    # Store for visualization
+                    class_name = self.OBJECT_CLASSES[cls_id]
+                    if class_name not in self.detection_boxes:
+                        self.detection_boxes[class_name] = []
+                    self.detection_boxes[class_name].append(obj_data)
             
             return objects
             
@@ -1485,6 +1703,214 @@ class DriverMonitorV11Pro:
         
         return frame
     
+    def draw_detection_boxes(
+        self, 
+        frame: np.ndarray, 
+        behaviors: Dict,
+        active_warnings: List[Dict]
+    ) -> np.ndarray:
+        """
+        Vẽ bounding boxes cho các hành vi nguy hiểm - KHOANH VÙNG TẤT CẢ.
+        
+        Args:
+            frame: Frame to draw on
+            behaviors: Detected behaviors dict
+            active_warnings: List of active warnings with priority
+            
+        Returns:
+            Annotated frame
+        """
+        frame = frame.copy()
+        h, w = frame.shape[:2]
+        
+        # Convert to PIL for Vietnamese text
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(frame_pil)
+        
+        # ===== Draw object bounding boxes =====
+        for class_name, detections in self.detection_boxes.items():
+            for det in detections:
+                x1, y1, x2, y2 = det['bbox']
+                conf = det['confidence']
+                
+                # Get priority color based on object type
+                if class_name == 'điện thoại':
+                    priority = 1  # P1 - High
+                    color = self.PRIORITY_LEVELS['P1_HIGH']['color']
+                    label = f"📱 {class_name.upper()} {conf*100:.0f}%"
+                elif class_name in ['cốc', 'chai']:
+                    priority = 2  # P2 - Medium  
+                    color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
+                    label = f"🥤 {class_name.upper()} {conf*100:.0f}%"
+                else:
+                    priority = 3
+                    color = (128, 128, 128)
+                    label = f"{class_name} {conf*100:.0f}%"
+                
+                # Draw thick rectangle
+                thickness = 3 if priority <= 1 else 2
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+                
+                # Draw label background
+                label_size = len(label) * 12
+                cv2.rectangle(frame, (x1, y1 - 25), (x1 + label_size, y1), color, -1)
+                
+                # Draw label with PIL for Vietnamese
+                if self.font_small:
+                    draw.text((x1 + 5, y1 - 22), label, fill=(255, 255, 255), font=self.font_small)
+        
+        # ===== Draw behavior indicators =====
+        indicator_y = 120
+        indicator_x = w - 250
+        
+        # Phone indicator
+        if behaviors.get('phone', {}).get('detected'):
+            color = self.PRIORITY_LEVELS['P1_HIGH']['color']
+            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
+            if self.font_small:
+                draw.text((indicator_x + 10, indicator_y + 5), "📱 ĐANG DÙNG ĐIỆN THOẠI", 
+                         fill=(255, 255, 255), font=self.font_small)
+            indicator_y += 45
+        
+        # Drinking indicator  
+        if behaviors.get('drinking', {}).get('detected'):
+            color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
+            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
+            if self.font_small:
+                draw.text((indicator_x + 10, indicator_y + 5), "🥤 ĐANG UỐNG NƯỚC", 
+                         fill=(255, 255, 255), font=self.font_small)
+            indicator_y += 45
+        
+        # Smoking indicator
+        if behaviors.get('smoking', {}).get('detected'):
+            color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
+            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
+            if self.font_small:
+                draw.text((indicator_x + 10, indicator_y + 5), "🚬 ĐANG HÚT THUỐC", 
+                         fill=(255, 255, 255), font=self.font_small)
+            indicator_y += 45
+        
+        # Drowsy indicator
+        if behaviors.get('drowsiness', {}).get('detected'):
+            severity = behaviors['drowsiness'].get('severity', 'MEDIUM')
+            if severity == 'HIGH':
+                color = self.PRIORITY_LEVELS['P0_CRITICAL']['color']
+                text = "😴 NGỦ GẬT NGUY HIỂM!"
+            else:
+                color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
+                text = "😴 DẤU HIỆU BUỒN NGỦ"
+            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
+            if self.font_small:
+                draw.text((indicator_x + 10, indicator_y + 5), text, 
+                         fill=(255, 255, 255), font=self.font_small)
+            indicator_y += 45
+        
+        # Looking away indicator
+        if behaviors.get('looking_away', {}).get('detected'):
+            color = self.PRIORITY_LEVELS['P1_HIGH']['color']
+            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
+            duration = behaviors['looking_away'].get('duration', 0)
+            if self.font_small:
+                draw.text((indicator_x + 10, indicator_y + 5), f"👀 KHÔNG NHÌN ĐƯỜNG ({duration:.1f}s)", 
+                         fill=(255, 255, 255), font=self.font_small)
+            indicator_y += 45
+        
+        # Seatbelt indicator (nhấp nháy)
+        if not behaviors.get('seatbelt', {}).get('detected', True):
+            # Blink effect
+            if self.frame_count % 30 < 15:
+                color = self.PRIORITY_LEVELS['P3_LOW']['color']
+                cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
+                if self.font_small:
+                    draw.text((indicator_x + 10, indicator_y + 5), "⚠️ KHÔNG THẮT DÂY AN TOÀN", 
+                             fill=(0, 0, 0), font=self.font_small)
+        
+        # Convert back to OpenCV format
+        frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+        
+        return frame
+    
+    def prioritize_warnings(self, warnings: List[str], behaviors: Dict) -> List[Dict]:
+        """
+        Sắp xếp warnings theo mức độ ưu tiên (Priority Matrix).
+        
+        Returns:
+            List of warnings sorted by priority with metadata
+        """
+        prioritized = []
+        
+        # Check P0 - Critical (ngủ gục, pitch extreme)
+        if behaviors.get('drowsiness', {}).get('severity') == 'HIGH':
+            prioritized.append({
+                'priority': 0,
+                'level': 'P0_CRITICAL',
+                'message': behaviors['drowsiness'].get('message', '😴 NGỦ GẬT NGUY HIỂM!'),
+                'sound': 'alarm_critical',
+                'behavior': 'drowsy_severe'
+            })
+        
+        # Check P1 - High (phone, extreme yaw)
+        if behaviors.get('phone', {}).get('detected'):
+            prioritized.append({
+                'priority': 1,
+                'level': 'P1_HIGH',
+                'message': '📱 YÊU CẦU TẬP TRUNG LÁI XE!',
+                'sound': 'voice_warning',
+                'behavior': 'phone'
+            })
+        
+        if behaviors.get('looking_away', {}).get('duration', 0) > 2.0:
+            prioritized.append({
+                'priority': 1,
+                'level': 'P1_HIGH', 
+                'message': '👀 YÊU CẦU NHÌN ĐƯỜNG!',
+                'sound': 'voice_warning',
+                'behavior': 'yaw_extreme'
+            })
+        
+        # Check P2 - Medium (yawning, drinking)
+        if behaviors.get('drowsiness', {}).get('yawning'):
+            prioritized.append({
+                'priority': 2,
+                'level': 'P2_MEDIUM',
+                'message': '😴 BẠN CÓ VẺ MỆT, HÃY NGHỈ NGƠI',
+                'sound': 'ping_soft',
+                'behavior': 'yawning'
+            })
+        
+        if behaviors.get('drinking', {}).get('detected'):
+            prioritized.append({
+                'priority': 2,
+                'level': 'P2_MEDIUM',
+                'message': '🥤 HÃY TẬP TRUNG LÁI XE',
+                'sound': 'ping_soft',
+                'behavior': 'drinking'
+            })
+        
+        if behaviors.get('smoking', {}).get('detected'):
+            prioritized.append({
+                'priority': 2,
+                'level': 'P2_MEDIUM',
+                'message': '🚬 KHÔNG NÊN HÚT THUỐC KHI LÁI XE',
+                'sound': 'ping_soft',
+                'behavior': 'smoking'
+            })
+        
+        # Check P3 - Low (no seatbelt)
+        if not behaviors.get('seatbelt', {}).get('detected', True):
+            prioritized.append({
+                'priority': 3,
+                'level': 'P3_LOW',
+                'message': '⚠️ VUI LÒNG THẮT DÂY AN TOÀN',
+                'sound': 'none',
+                'behavior': 'no_seatbelt'
+            })
+        
+        # Sort by priority (lower = more urgent)
+        prioritized.sort(key=lambda x: x['priority'])
+        
+        return prioritized
+    
     # ==================== MAIN PIPELINE ====================
     
     def process_frame(self, frame: np.ndarray) -> Dict:
@@ -1612,7 +2038,18 @@ class DriverMonitorV11Pro:
         )
         distraction_level = self.get_distraction_level(attention_score)
         
-        # ===== 8. Draw Overlays =====
+        # ===== 8. Priority-based Warnings =====
+        prioritized_warnings = self.prioritize_warnings(warnings, behaviors)
+        
+        # Get highest priority warning
+        highest_priority = None
+        if prioritized_warnings:
+            highest_priority = prioritized_warnings[0]
+            self.last_warning_priority = highest_priority['priority']
+        else:
+            self.last_warning_priority = 99
+        
+        # ===== 9. Draw Overlays =====
         annotated_frame = frame.copy()
         
         # Draw Face Mesh với EAR
@@ -1620,6 +2057,11 @@ class DriverMonitorV11Pro:
             annotated_frame = self.draw_face_mesh(
                 annotated_frame, face_landmarks, ear, eyes_open
             )
+        
+        # Draw Detection Bounding Boxes - KHOANH VÙNG TẤT CẢ
+        annotated_frame = self.draw_detection_boxes(
+            annotated_frame, behaviors, prioritized_warnings
+        )
         
         # Draw Seatbelt status
         if pose:
@@ -1636,7 +2078,7 @@ class DriverMonitorV11Pro:
             seatbelt_on
         )
         
-        # ===== 9. FPS & State =====
+        # ===== 10. FPS & State =====
         process_time = time.time() - start_time
         self.fps_buffer.append(1.0 / max(process_time, 0.001))
         avg_fps = np.mean(list(self.fps_buffer)[-10:])
@@ -1664,6 +2106,11 @@ class DriverMonitorV11Pro:
             'warnings': warnings,
             'is_safe': len(warnings) == 0,
             
+            # Priority Matrix results
+            'prioritized_warnings': prioritized_warnings,
+            'highest_priority': highest_priority,
+            'warning_sound': highest_priority['sound'] if highest_priority else 'none',
+            
             # Backward compatibility fields
             'state': driver_state,
             'confidence': driver_confidence,
@@ -1690,6 +2137,10 @@ class DriverMonitorV11Pro:
             'smoking': smoking,
             'drowsy': drowsy,
             'looking_away': looking_away,
+            
+            # Detected objects with bounding boxes
+            'detected_objects': objects,
+            'detection_boxes': self.detection_boxes,
             
             # Metadata
             'objects_detected': len(objects),
