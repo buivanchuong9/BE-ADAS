@@ -373,14 +373,42 @@ async def download_driver_monitoring_result(
                 detail=f"Job not completed yet. Status: {job.status}. Progress: {job.progress_percent}%"
             )
         
-        # Get output path
-        video_service = VideoService(db)
-        output_path = Path(video_service.get_output_path(job_id))
+        # Strategy 1: Use result_path stored by GPU worker in DB (most reliable)
+        output_path = None
+        if job.result_path:
+            candidate = Path(job.result_path)
+            if candidate.exists():
+                output_path = candidate
+                logger.info(f"[Download] Using DB result_path: {output_path}")
         
-        if not output_path.exists():
+        # Strategy 2: Construct path from VIDEOS_OUTPUT_DIR (fallback)
+        if output_path is None:
+            video_service = VideoService(db)
+            candidate = Path(video_service.get_output_path(job_id))
+            if candidate.exists():
+                output_path = candidate
+                logger.info(f"[Download] Using constructed path: {output_path}")
+        
+        # Strategy 3: Search common output patterns
+        if output_path is None:
+            import os
+            out_base = Path(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result'))
+            for pattern in [
+                out_base / str(job_id) / "result.mp4",
+                out_base / f"{job_id}_result.mp4",
+                out_base / f"{job_id}.mp4",
+            ]:
+                if pattern.exists():
+                    output_path = pattern
+                    logger.info(f"[Download] Found via search: {output_path}")
+                    break
+        
+        if output_path is None:
+            logger.error(f"[Download] Result not found for job {job_id}. "
+                        f"DB result_path={job.result_path}")
             raise HTTPException(
                 status_code=404, 
-                detail="Result video not found. Processing may have failed."
+                detail=f"Result video not found. DB path: {job.result_path}"
             )
         
         logger.info(f"Serving driver monitoring result: {output_path}")
@@ -395,6 +423,8 @@ async def download_driver_monitoring_result(
             }
         )
     
+    except HTTPException:
+        raise  # Re-raise HTTP exceptions (404, 400) as-is
     except Exception as e:
         logger.error(f"Download failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")

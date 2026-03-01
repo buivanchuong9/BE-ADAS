@@ -626,11 +626,18 @@ class SimpleGPUWorker:
                     if frame is None:
                         break                    # end of video
 
-                    # === INFERENCE ADAS HOÀN CHỈNH (GPU parallel) ===
-                    results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline, video_type)
-
-                    # === DRAW OVERLAY ===
-                    frame_with_overlay = self._draw_overlay(frame, results)
+                    # === INFERENCE + OVERLAY ===
+                    if video_type == 'in_cabin':
+                        # DriverMonitorV11Pro already draws full overlay internally
+                        # (dashboard, face mesh, bounding boxes, warnings)
+                        # → Skip _draw_overlay to avoid double rendering
+                        results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline, video_type)
+                        # Use annotated_frame from driver monitor (has overlay built-in)
+                        driver_annotated = results.get('_driver_annotated_frame')
+                        frame_with_overlay = driver_annotated if driver_annotated is not None else self._draw_overlay(frame, results)
+                    else:
+                        results = self._run_comprehensive_adas_inference(frame, frame_idx, pipeline, video_type)
+                        frame_with_overlay = self._draw_overlay(frame, results)
 
                     # === VOICE WARNINGS ===
                     self._handle_voice_warnings(results)
@@ -827,6 +834,10 @@ class SimpleGPUWorker:
             results['distraction_level']     = driver_result.get('distraction_level', 'LOW')
             results['head_pose']             = driver_result.get('head_pose', {})
             results['behaviors']             = driver_result.get('behaviors', {})
+            
+            # Pass annotated_frame from DriverMonitorV11Pro directly
+            # (already has face mesh, dashboard, warnings drawn)
+            results['_driver_annotated_frame'] = driver_result.get('annotated_frame')
             
             results['objects_with_distance'] = []
             results['traffic_signs']         = []

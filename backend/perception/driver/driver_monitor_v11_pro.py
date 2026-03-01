@@ -1,27 +1,3 @@
-"""
-DRIVER MONITOR V11 PRO - Giám sát hành vi tài xế NÂNG CAO
-=========================================================
-Phát hiện hành vi nguy hiểm của tài xế với độ chính xác cao:
-- Dùng điện thoại (phone near face/ear)
-- Uống nước/ăn khi lái (cup/bottle near mouth)
-- Hút thuốc (hand near mouth pattern)
-- Buồn ngủ/mệt mỏi (head pose + eye closure + EAR)
-- Mất tập trung (looking away, not watching road)
-
-Advanced Features:
-- MediaPipe Face Mesh (468 landmarks)
-- EAR (Eye Aspect Ratio) for drowsiness detection
-- Blink counting and PERCLOS
-- Head Pose Estimation (yaw, pitch, roll)
-- Attention Score (0-100)
-- Distraction Level Tracking
-- Vietnamese voice warnings support
-
-Tác giả: Lead AI Architect
-Version: 2.1 PRO + Face Mesh
-Ngày: 2026-03-01
-"""
-
 import cv2
 import numpy as np
 import torch
@@ -32,6 +8,7 @@ import logging
 from collections import deque
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -326,7 +303,37 @@ class DriverMonitorV11Pro:
         # Initialize temporal buffers
         self._init_buffers()
         
+        # ===== PERFORMANCE: Thread pool for parallel YOLO inference =====
+        self._infer_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='drv_yolo')
+        
+        # ===== PERFORMANCE: Inference stride — skip YOLO every N frames =====
+        self.INFER_STRIDE = 2  # Run YOLO every 2 frames (2x speed boost)
+        self._cached_objects = []
+        self._cached_pose = None
+        
+        # ===== PERFORMANCE: Overlay skip — full PIL render every N frames =====
+        self.OVERLAY_STRIDE = 3  # Full dashboard render every 3 frames
+        self._cached_dashboard_frame = None
+        self._cached_overlay_results = None
+        
+        # ===== PERFORMANCE: FP16 inference for YOLO models =====
+        if self.device == 'cuda' and torch.cuda.is_available():
+            try:
+                self.object_model.model.model.half()
+                self.object_model.overrides['half'] = True
+                self.pose_model.model.model.half()
+                self.pose_model.overrides['half'] = True
+                logger.info("🚀 FP16 enabled for both YOLO models")
+            except Exception as e:
+                logger.warning(f"FP16 failed (non-fatal): {e}")
+        
+        # ===== PERFORMANCE: Downscale for face mesh (CPU bound) =====
+        self.FACE_MESH_SCALE = 0.5  # Process face mesh at half resolution
+        
         logger.info("✅ Driver Monitor V11 PRO khởi tạo thành công!")
+        logger.info(f"   ├─ Inference Stride: {self.INFER_STRIDE}x")
+        logger.info(f"   ├─ Overlay Stride: {self.OVERLAY_STRIDE}x")
+        logger.info(f"   └─ Parallel YOLO: ✅ (2 threads)")
     
     def _load_models(self, object_path: str, pose_path: str):
         """Load YOLO models."""
@@ -2039,23 +2046,47 @@ class DriverMonitorV11Pro:
     
     def process_frame(self, frame: np.ndarray) -> Dict:
         """
-        Pipeline xử lý hoàn chỉnh.
+        Pipeline xử lý hoàn chỉnh — OPTIMIZED.
+        
+        Performance optimizations:
+        1. Parallel YOLO: Object + Pose chạy đồng thời trên GPU
+        2. Inference stride: YOLO chỉ chạy mỗi N frame, reuse kết quả
+        3. FP16: Cả 2 model YOLO chạy half-precision
+        4. Face mesh downscale: MediaPipe xử lý ở nửa resolution
+        5. Overlay stride: Dashboard PIL chỉ render mỗi N frame
         
         Returns:
             Dictionary chứa tất cả metrics và results
         """
         start_time = time.time()
         self.frame_count += 1
-        h, w = frame.shape[:2]  # Get frame dimensions for adaptive thresholds
+        h, w = frame.shape[:2]
         
-        # ===== 1. Object Detection (YOLO) =====
-        objects = self.detect_objects(frame)
+        # ===== STRIDE CHECK: Run YOLO every N frames =====
+        run_yolo = (self.frame_count % self.INFER_STRIDE == 1) or self._cached_pose is None
         
-        # ===== 2. Pose Detection (YOLO Pose) =====
-        pose = self.detect_pose(frame)
+        if run_yolo:
+            # ===== 1+2. PARALLEL: Object + Pose Detection (concurrent GPU) =====
+            fut_obj = self._infer_pool.submit(self.detect_objects, frame)
+            fut_pose = self._infer_pool.submit(self.detect_pose, frame)
+            objects = fut_obj.result()
+            pose = fut_pose.result()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            # Cache for stride-skipped frames
+            self._cached_objects = objects
+            self._cached_pose = pose
+        else:
+            # Reuse cached YOLO results
+            objects = self._cached_objects
+            pose = self._cached_pose
         
-        # ===== 3. Face Mesh + EAR (MediaPipe) =====
-        face_result = self.process_face_mesh(frame)
+        # ===== 3. Face Mesh + EAR (MediaPipe, downscaled) =====
+        if self.FACE_MESH_SCALE < 1.0 and self.enable_face_mesh:
+            small = cv2.resize(frame, (int(w * self.FACE_MESH_SCALE), int(h * self.FACE_MESH_SCALE)))
+            face_result = self.process_face_mesh(small)
+        else:
+            face_result = self.process_face_mesh(frame)
         ear = face_result['ear']
         eyes_open = face_result['eyes_open']
         yawning = face_result['yawning']
@@ -2173,34 +2204,64 @@ class DriverMonitorV11Pro:
         else:
             self.last_warning_priority = 99
         
-        # ===== 9. Draw Overlays =====
+        # ===== 9. Draw Overlays (with stride caching) =====
         annotated_frame = frame.copy()
         
-        # Draw Face Mesh với EAR
+        do_full_overlay = (
+            (self.frame_count % self.OVERLAY_STRIDE == 1)
+            or self._cached_dashboard_frame is None
+        )
+        
+        # Draw Face Mesh (lightweight — just lines on cv2)
         if face_result['face_detected'] and self.enable_face_mesh:
             annotated_frame = self.draw_face_mesh(
                 annotated_frame, face_landmarks, ear, eyes_open
             )
         
-        # Draw Detection Bounding Boxes - KHOANH VÙNG TẤT CẢ
+        # Draw Detection Bounding Boxes (cv2 — fast)
         annotated_frame = self.draw_detection_boxes(
             annotated_frame, behaviors, prioritized_warnings
         )
         
-        # Draw Seatbelt status
-        if pose:
-            annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, seatbelt_on)
-        
-        # Draw Pose overlay
-        if pose:
-            annotated_frame = self.draw_pose_overlay(annotated_frame, pose, head_pose)
-        
-        # Draw Dashboard
-        annotated_frame = self.draw_dashboard_v2(
-            annotated_frame, warnings, attention_score, head_pose,
-            distraction_level, ear, eyes_open, self.total_blinks, perclos,
-            seatbelt_on
-        )
+        if do_full_overlay:
+            # FULL RENDER: Seatbelt + Pose + Dashboard (heavy PIL ops)
+            if pose:
+                annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, seatbelt_on)
+            if pose:
+                annotated_frame = self.draw_pose_overlay(annotated_frame, pose, head_pose)
+            annotated_frame = self.draw_dashboard_v2(
+                annotated_frame, warnings, attention_score, head_pose,
+                distraction_level, ear, eyes_open, self.total_blinks, perclos,
+                seatbelt_on
+            )
+            # Cache the overlay portion for reuse
+            self._cached_overlay_results = {
+                'warnings': warnings,
+                'attention_score': attention_score,
+                'head_pose': head_pose,
+                'distraction_level': distraction_level,
+                'ear': ear,
+                'eyes_open': eyes_open,
+                'seatbelt_on': seatbelt_on,
+            }
+        else:
+            # FAST PATH: Reuse cached dashboard — only draw lightweight cv2 overlays
+            cr = self._cached_overlay_results
+            if cr and pose:
+                annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, cr.get('seatbelt_on', True))
+                annotated_frame = self.draw_pose_overlay(annotated_frame, pose, cr.get('head_pose', {}))
+            annotated_frame = self.draw_dashboard_v2(
+                annotated_frame, 
+                cr.get('warnings', []) if cr else warnings,
+                cr.get('attention_score', 100) if cr else attention_score,
+                cr.get('head_pose', head_pose) if cr else head_pose,
+                cr.get('distraction_level', 'LOW') if cr else distraction_level,
+                cr.get('ear', 0.3) if cr else ear,
+                cr.get('eyes_open', True) if cr else eyes_open,
+                self.total_blinks,
+                perclos,
+                cr.get('seatbelt_on', True) if cr else seatbelt_on
+            )
         
         # ===== 10. FPS & State =====
         process_time = time.time() - start_time

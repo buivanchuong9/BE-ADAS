@@ -235,10 +235,10 @@ class GPUWorkerV4(SimpleGPUWorker):
             logger.info("[V4] ✅ dashcam V4 pipeline ready")
 
         elif video_type == 'in_cabin':
-            # In-cabin unchanged from V3
-            from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
-            logger.info("[V4] Loading in_cabin pipeline …")
-            pipeline['driver'] = DriverMonitorV11(device=self.device)
+            # In-cabin: Use DriverMonitorV11Pro with FP16 + parallel inference
+            from backend.perception.driver.driver_monitor_v11_pro import DriverMonitorV11Pro
+            logger.info("[V4] Loading in_cabin PRO pipeline …")
+            pipeline['driver'] = DriverMonitorV11Pro(device=self.device)
             if torch.cuda.is_available():
                 self._stream_driver = torch.cuda.Stream()
             self._infer_pool = ThreadPoolExecutor(
@@ -249,7 +249,7 @@ class GPUWorkerV4(SimpleGPUWorker):
                     pipeline['driver'].process_frame(dummy)
                 except Exception as e:
                     logger.warning(f"[V4][warmup-incabin] {e}")
-            logger.info("[V4] ✅ in_cabin V4 pipeline ready")
+            logger.info("[V4] ✅ in_cabin V4 PRO pipeline ready (FP16 + parallel YOLO)")
 
         else:
             logger.warning(f"[V4] Unknown video_type '{video_type}', fallback → dashcam")
@@ -379,13 +379,24 @@ class GPUWorkerV4(SimpleGPUWorker):
                             frame, frame_idx, fps, pipeline
                         )
                     else:
-                        # in_cabin: reuse V3 overlay (driver only)
-                        from workers.gpu_worker_simple import SimpleGPUWorker as _sw
-                        results_v3 = self._run_comprehensive_adas_inference(
-                            frame, frame_idx, pipeline, video_type
-                        )
-                        final_frame = self._draw_vietnamese_overlay(frame, results_v3)
-                        events = results_v3.get('events', [])
+                        # in_cabin: Use DriverMonitorV11Pro directly
+                        # It already handles overlay + dashboard internally
+                        driver_result = pipeline['driver'].process_frame(frame)
+                        final_frame = driver_result.get('annotated_frame', frame)
+                        # Build events from driver warnings
+                        events = []
+                        for w_item in driver_result.get('warnings', []):
+                            msg = w_item if isinstance(w_item, str) else w_item.get('message', str(w_item))
+                            sev = 'high'
+                            if isinstance(w_item, dict):
+                                sev = w_item.get('severity', 'high')
+                            events.append({
+                                'type': 'driver_alert',
+                                'level': sev,
+                                'time': frame_idx / max(fps, 1.0),
+                                'frame': frame_idx,
+                                'data': {'message': msg},
+                            })
 
                     encoder.write(final_frame)
                     all_events.extend(events)
