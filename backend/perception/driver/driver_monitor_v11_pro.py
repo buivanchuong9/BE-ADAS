@@ -368,6 +368,55 @@ class DriverMonitorV11Pro:
             self.font_large = None
             self.font_medium = None
             self.font_small = None
+
+    def _put_text_pil(self, frame: np.ndarray, text: str, position: tuple,
+                      color: tuple = (255, 255, 255), font=None) -> np.ndarray:
+        """Draw Vietnamese/Unicode text on frame using PIL.
+        
+        cv2.putText cannot render Unicode (Vietnamese shows as ???).
+        This method converts to PIL, draws text, converts back.
+        
+        Args:
+            frame: BGR numpy array
+            text: Text to draw (supports Vietnamese/Unicode)
+            position: (x, y) top-left position
+            color: BGR color tuple
+            font: PIL ImageFont (default: self.font_medium)
+        """
+        if font is None:
+            font = self.font_medium
+        if font is None:
+            # Fallback to cv2 if no font loaded
+            cv2.putText(frame, text, position, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            return frame
+        
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(frame_rgb)
+        draw = ImageDraw.Draw(pil_img)
+        rgb_color = (color[2], color[1], color[0])
+        draw.text(position, text, fill=rgb_color, font=font)
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
+    def _draw_texts_pil_batch(self, frame: np.ndarray, texts: list) -> np.ndarray:
+        """Draw multiple Vietnamese texts on frame in ONE PIL conversion (efficient).
+        
+        Args:
+            frame: BGR numpy array
+            texts: list of (text, (x, y), bgr_color, font) tuples
+        """
+        if not texts:
+            return frame
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(frame_rgb)
+        draw = ImageDraw.Draw(pil_img)
+        for text, pos, bgr_color, font in texts:
+            if font is None:
+                font = self.font_medium
+            if font is None:
+                continue
+            rgb_color = (bgr_color[2], bgr_color[1], bgr_color[0])
+            draw.text(pos, text, fill=rgb_color, font=font)
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     
     def _init_face_mesh(self):
         """Initialize MediaPipe Face Mesh for EAR detection."""
@@ -473,6 +522,10 @@ class DriverMonitorV11Pro:
         self.warning_history = deque(maxlen=300)  # 10 seconds of warnings
         self.last_warning_priority = 99    # 99 = no warning (lower = higher priority)
         self.last_warning_time = 0
+        
+        # ===== WARNING STABILIZATION (anti-flicker) =====
+        self._stable_warnings = {}         # {key: {'message': str, 'last_seen': float}}
+        self.WARNING_PERSIST_TIME = 2.0    # Keep warning displayed for at least 2 seconds
         
         # ===== DETECTION BOUNDING BOXES =====
         self.detection_boxes = {}          # Store bounding boxes for current frame
@@ -778,14 +831,14 @@ class DriverMonitorV11Pro:
                 )
             )
         
-        # Vẽ text EAR và Blinks (góc trên trái)
+        # Vẽ text EAR và Blinks (góc trên trái) — PIL for Vietnamese
         eye_status = "MỞ" if eyes_open else "NHẮM"
         eye_color = (0, 255, 0) if eyes_open else (0, 0, 255)
         
-        cv2.putText(frame, f"MAT: {eye_status} ({ear:.2f})", (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, eye_color, 2)
-        cv2.putText(frame, f"CHOP MAT: {self.total_blinks}", (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        frame = self._draw_texts_pil_batch(frame, [
+            (f"MẮT: {eye_status} ({ear:.2f})", (10, 8), eye_color, self.font_medium),
+            (f"CHỚP MẮT: {self.total_blinks}", (10, 38), (255, 255, 0), self.font_medium),
+        ])
         
         return frame
     
@@ -1454,10 +1507,9 @@ class DriverMonitorV11Pro:
             # Draw bounding box
             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 2)
             
-            # Draw label
-            label_y = max(20, y_min - 10)
-            cv2.putText(frame, label, (x_min, label_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            # Draw label — PIL for Vietnamese Unicode
+            label_y = max(5, y_min - 28)
+            frame = self._put_text_pil(frame, label, (x_min, label_y), color, self.font_medium)
             
             # Draw diagonal line indicator if seatbelt detected
             if seatbelt_detected:
@@ -1861,7 +1913,7 @@ class DriverMonitorV11Pro:
         active_warnings: List[Dict]
     ) -> np.ndarray:
         """
-        Vẽ bounding boxes sạch sẽ, không emoji để tránh lỗi font.
+        Vẽ bounding boxes sạch sẽ, text tiếng Việt qua PIL.
         """
         frame = frame.copy()
         h, w = frame.shape[:2]
@@ -1874,19 +1926,22 @@ class DriverMonitorV11Pro:
             'default': (200, 200, 200),   # Gray
         }
         
+        # Collect all text draws for batch PIL rendering at the end
+        pending_texts = []
+        
         # ===== Draw object bounding boxes =====
         for class_name, detections in self.detection_boxes.items():
             for det in detections:
                 x1, y1, x2, y2 = det['bbox']
                 conf = det['confidence']
                 
-                # Determine color and label
+                # Determine color and label (proper Vietnamese)
                 if class_name == 'điện thoại':
                     color = COLORS['phone']
-                    label = f"DIEN THOAI {conf*100:.0f}%"
+                    label = f"ĐIỆN THOẠI {conf*100:.0f}%"
                 elif class_name in ['cốc', 'chai']:
                     color = COLORS['drink']
-                    label = f"DO UONG {conf*100:.0f}%"
+                    label = f"ĐỒ UỐNG {conf*100:.0f}%"
                 else:
                     color = COLORS['default']
                     label = f"{class_name.upper()} {conf*100:.0f}%"
@@ -1907,8 +1962,8 @@ class DriverMonitorV11Pro:
                 cv2.line(frame, (x2, y2), (x2, y2 - corner_len), color, t)
                 
                 # Draw label background
-                label_h = 22
-                label_w = len(label) * 10 + 10
+                label_h = 24
+                label_w = len(label) * 11 + 10
                 label_y = max(0, y1 - label_h - 2)
                 
                 # Semi-transparent background for label
@@ -1916,9 +1971,8 @@ class DriverMonitorV11Pro:
                 cv2.rectangle(overlay, (x1, label_y), (x1 + label_w, label_y + label_h), color, -1)
                 cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
                 
-                # Draw label text (cv2.putText for ASCII - no font issues)
-                cv2.putText(frame, label, (x1 + 5, label_y + 16), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                # Queue label text for PIL batch render
+                pending_texts.append((label, (x1 + 5, label_y + 2), (255, 255, 255), self.font_small))
         
         # ===== Draw seatbelt box if detected =====
         seatbelt_data = behaviors.get('seatbelt', {})
@@ -1926,38 +1980,36 @@ class DriverMonitorV11Pro:
             box = seatbelt_data['box']
             is_on = seatbelt_data.get('detected', False)
             color = (100, 255, 100) if is_on else (100, 100, 255)
-            label = "DAY AN TOAN: OK" if is_on else "DAY AN TOAN: CHUA THAT!"
+            label = "DÂY AN TOÀN: OK" if is_on else "DÂY AN TOÀN: CHƯA THẮT!"
             
             cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), color, 2)
-            cv2.putText(frame, label, (box[0], box[1] - 8),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2, cv2.LINE_AA)
+            pending_texts.append((label, (box[0], box[1] - 22), color, self.font_small))
         
         # ===== Draw status indicators (top-right) - CLEANER =====
-        # Only show active warnings as simple badges
         active_behaviors = []
         
         if behaviors.get('phone', {}).get('detected'):
-            active_behaviors.append(('DANG DUNG DIEN T', COLORS['phone']))
+            active_behaviors.append(('ĐANG DÙNG ĐIỆN THOẠI', COLORS['phone']))
         if behaviors.get('drinking', {}).get('detected'):
-            active_behaviors.append(('DANG UONG NUOC', COLORS['drink']))
+            active_behaviors.append(('ĐANG UỐNG NƯỚC', COLORS['drink']))
         if behaviors.get('drowsiness', {}).get('detected'):
             severity = behaviors['drowsiness'].get('severity', 'MEDIUM')
             if severity == 'HIGH':
-                active_behaviors.append(('NGU GAT NGUY HIEM', (0, 0, 255)))
+                active_behaviors.append(('NGỦ GẬT NGUY HIỂM', (0, 0, 255)))
             else:
-                active_behaviors.append(('DAU HIEU BUON NGU', (0, 180, 255)))
+                active_behaviors.append(('DẤU HIỆU BUỒN NGỦ', (0, 180, 255)))
         if behaviors.get('looking_away', {}).get('detected'):
-            active_behaviors.append(('KHONG NHIN DUONG', (0, 150, 255)))
+            active_behaviors.append(('KHÔNG NHÌN ĐƯỜNG', (0, 150, 255)))
         
         # Draw right-side status badges
-        badge_x = w - 220
+        badge_x = w - 260
         badge_y = 15
         badge_h = 32
         badge_spacing = 6
         
         for i, (text, color) in enumerate(active_behaviors):
             y = badge_y + i * (badge_h + badge_spacing)
-            badge_w = len(text) * 9 + 20
+            badge_w = len(text) * 12 + 20
             
             # Background with alpha
             overlay = frame.copy()
@@ -1965,11 +2017,60 @@ class DriverMonitorV11Pro:
             cv2.addWeighted(overlay, 0.8, frame, 0.2, 0, frame)
             cv2.rectangle(frame, (badge_x, y), (badge_x + badge_w, y + badge_h), (255, 255, 255), 1)
             
-            # Text
-            cv2.putText(frame, text, (badge_x + 10, y + 22),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            # Queue badge text for PIL batch render
+            pending_texts.append((text, (badge_x + 10, y + 5), (255, 255, 255), self.font_small))
+        
+        # ===== Batch render ALL text with PIL (one conversion round-trip) =====
+        frame = self._draw_texts_pil_batch(frame, pending_texts)
         
         return frame
+    
+    def _stabilize_warnings(self, warnings: List[str]) -> List[str]:
+        """Stabilize warnings to prevent rapid flickering between frames.
+        
+        Keeps a warning displayed for at least WARNING_PERSIST_TIME seconds
+        after it was last triggered, so it doesn't flash on/off every frame.
+        """
+        now = time.time()
+        
+        # Update timestamps for currently active warnings
+        for w in warnings:
+            key = self._get_warning_key(w)
+            self._stable_warnings[key] = {'message': w, 'last_seen': now}
+        
+        # Build stable list: include recent warnings even if not in current frame
+        stable = []
+        expired_keys = []
+        for key, data in self._stable_warnings.items():
+            if now - data['last_seen'] < self.WARNING_PERSIST_TIME:
+                stable.append(data['message'])
+            else:
+                expired_keys.append(key)
+        
+        # Clean expired
+        for key in expired_keys:
+            del self._stable_warnings[key]
+        
+        return stable
+    
+    def _get_warning_key(self, warning: str) -> str:
+        """Extract a stable key from warning message (ignore variable parts like durations)."""
+        w = warning.lower()
+        if 'điện thoại' in w or 'gọi điện' in w:
+            return 'phone'
+        elif 'ngủ gật' in w or 'mắt nhắm' in w or 'perclos' in w or 'buồn ngủ' in w:
+            return 'drowsy'
+        elif 'ngáp' in w or 'mệt mỏi' in w:
+            return 'yawn'
+        elif 'nhìn' in w or 'quay' in w or 'không nhìn đường' in w:
+            return 'looking_away'
+        elif 'dây an toàn' in w or 'seatbelt' in w:
+            return 'seatbelt'
+        elif 'uống' in w:
+            return 'drinking'
+        elif 'thuốc' in w or 'hút' in w:
+            return 'smoking'
+        return warning[:30]  # fallback: first 30 chars as key
     
     def prioritize_warnings(self, warnings: List[str], behaviors: Dict) -> List[Dict]:
         """
@@ -2202,6 +2303,11 @@ class DriverMonitorV11Pro:
             head_pose, using_phone, drinking, smoking, eyes_open, ear
         )
         distraction_level = self.get_distraction_level(attention_score)
+        
+        # ===== 7.5 Stabilize warnings (anti-flicker) =====
+        # Keep warnings displayed for at least WARNING_PERSIST_TIME seconds
+        # so they don't flash on/off rapidly between frames
+        warnings = self._stabilize_warnings(warnings)
         
         # ===== 8. Priority-based Warnings =====
         prioritized_warnings = self.prioritize_warnings(warnings, behaviors)
@@ -2493,7 +2599,7 @@ class DriverMonitorV11Pro:
         
         # Dashboard title + score
         if self.font_medium:
-            draw.text((panel_x + 15, panel_y + 12), "GIAM SAT TAI XE PRO",
+            draw.text((panel_x + 15, panel_y + 12), "GIÁM SÁT TÀI XẾ PRO",
                      fill=(255, 255, 255), font=self.font_medium)
         
         # Score number in gauge
@@ -2509,18 +2615,18 @@ class DriverMonitorV11Pro:
         start_y = panel_y + 48
         
         # Row 1: Status + Level
-        status_vn = {'LOW': 'AN TOAN', 'MEDIUM': 'CHU Y', 'HIGH': 'RUI RO', 'CRITICAL': 'NGUY HIEM'}
+        status_vn = {'LOW': 'AN TOÀN', 'MEDIUM': 'CHÚ Ý', 'HIGH': 'RỦI RO', 'CRITICAL': 'NGUY HIỂM'}
         if self.font_medium:
-            draw.text((left_x, start_y), f"Trang thai:", fill=(180, 180, 180), font=self.font_small)
+            draw.text((left_x, start_y), "Trạng thái:", fill=(180, 180, 180), font=self.font_small)
             draw.text((left_x + 75, start_y), status_vn.get(distraction_level, distraction_level),
                      fill=glow_color[::-1], font=self.font_medium)
         
         # Row 2: Eye status
         row2_y = start_y + row_h
-        eye_status = "MAT MO" if eyes_open else "MAT NHAM"
+        eye_status = "MẮT MỞ" if eyes_open else "MẮT NHẮM"
         eye_color = (150, 255, 150) if eyes_open else (255, 100, 100)
         if self.font_small:
-            draw.text((left_x, row2_y), f"Mat:", fill=(180, 180, 180), font=self.font_small)
+            draw.text((left_x, row2_y), "Mắt:", fill=(180, 180, 180), font=self.font_small)
             draw.text((left_x + 40, row2_y), eye_status, fill=eye_color, font=self.font_small)
             draw.text((right_x, row2_y), f"EAR: {ear:.2f}", fill=(200, 200, 200), font=self.font_small)
         
@@ -2528,29 +2634,29 @@ class DriverMonitorV11Pro:
         row3_y = start_y + row_h * 2
         perclos_color = (150, 255, 150) if perclos < 0.15 else (255, 150, 100)
         if self.font_small:
-            draw.text((left_x, row3_y), f"Chop mat: {blinks}", fill=(200, 200, 200), font=self.font_small)
+            draw.text((left_x, row3_y), f"Chớp mắt: {blinks}", fill=(200, 200, 200), font=self.font_small)
             draw.text((right_x, row3_y), f"PERCLOS: {perclos*100:.1f}%", fill=perclos_color, font=self.font_small)
         
         # Row 4: Seatbelt
         row4_y = start_y + row_h * 3
-        seatbelt_text = "DA THAT" if seatbelt_on else "CHUA THAT!"
+        seatbelt_text = "ĐÃ THẮT" if seatbelt_on else "CHƯA THẮT!"
         seatbelt_color = (150, 255, 150) if seatbelt_on else (255, 100, 100)
-        indicator = "[V]" if seatbelt_on else "[X]"
+        indicator = "✓" if seatbelt_on else "✗"
         if self.font_small:
-            draw.text((left_x, row4_y), f"Day an toan: {indicator} {seatbelt_text}",
+            draw.text((left_x, row4_y), f"Dây an toàn: {indicator} {seatbelt_text}",
                      fill=seatbelt_color, font=self.font_small)
         
         # Row 5: Head pose
         row5_y = start_y + row_h * 4
         if head_pose['is_valid'] and self.font_small:
-            yaw_dir = "<-" if head_pose['yaw'] < -15 else ("->" if head_pose['yaw'] > 15 else "^")
-            draw.text((left_x, row5_y), f"Dau: {yaw_dir} Y={head_pose['yaw']:+.0f} P={head_pose['pitch']:+.0f}",
+            yaw_dir = "←" if head_pose['yaw'] < -15 else ("→" if head_pose['yaw'] > 15 else "↑")
+            draw.text((left_x, row5_y), f"Đầu: {yaw_dir} Y={head_pose['yaw']:+.0f} P={head_pose['pitch']:+.0f}",
                      fill=(150, 150, 170), font=self.font_small)
         
         # Row 6: Attention score bar
         row6_y = start_y + row_h * 5
         if self.font_small:
-            draw.text((left_x, row6_y), f"Tap trung: {attention_score}%",
+            draw.text((left_x, row6_y), f"Tập trung: {attention_score}%",
                      fill=glow_color[::-1], font=self.font_small)
         
         # ===== Vertical Attention Bar (right side) =====
