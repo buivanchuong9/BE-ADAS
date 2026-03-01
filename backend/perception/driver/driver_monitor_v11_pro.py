@@ -1573,6 +1573,140 @@ class DriverMonitorV11Pro:
     
     # ==================== VISUALIZATION ====================
     
+    def _draw_rounded_rect(self, img: np.ndarray, pt1: Tuple[int, int], pt2: Tuple[int, int], 
+                           color: Tuple[int, int, int], radius: int = 15, 
+                           thickness: int = -1, alpha: float = 1.0) -> np.ndarray:
+        """
+        Vẽ hình chữ nhật bo góc với alpha blending.
+        
+        Args:
+            img: Image to draw on
+            pt1: Top-left corner (x1, y1)
+            pt2: Bottom-right corner (x2, y2)
+            color: BGR color
+            radius: Corner radius
+            thickness: -1 for filled, >0 for outline
+            alpha: Transparency (0.0 to 1.0)
+        """
+        x1, y1 = pt1
+        x2, y2 = pt2
+        
+        # Create overlay for alpha blending
+        overlay = img.copy()
+        
+        if thickness == -1:
+            # Filled rounded rectangle
+            # Draw the main rectangle body (without corners)
+            cv2.rectangle(overlay, (x1 + radius, y1), (x2 - radius, y2), color, -1)
+            cv2.rectangle(overlay, (x1, y1 + radius), (x2, y2 - radius), color, -1)
+            
+            # Draw the four corner circles
+            cv2.circle(overlay, (x1 + radius, y1 + radius), radius, color, -1)
+            cv2.circle(overlay, (x2 - radius, y1 + radius), radius, color, -1)
+            cv2.circle(overlay, (x1 + radius, y2 - radius), radius, color, -1)
+            cv2.circle(overlay, (x2 - radius, y2 - radius), radius, color, -1)
+        else:
+            # Outline only
+            cv2.line(overlay, (x1 + radius, y1), (x2 - radius, y1), color, thickness)
+            cv2.line(overlay, (x1 + radius, y2), (x2 - radius, y2), color, thickness)
+            cv2.line(overlay, (x1, y1 + radius), (x1, y2 - radius), color, thickness)
+            cv2.line(overlay, (x2, y1 + radius), (x2, y2 - radius), color, thickness)
+            
+            cv2.ellipse(overlay, (x1 + radius, y1 + radius), (radius, radius), 180, 0, 90, color, thickness)
+            cv2.ellipse(overlay, (x2 - radius, y1 + radius), (radius, radius), 270, 0, 90, color, thickness)
+            cv2.ellipse(overlay, (x1 + radius, y2 - radius), (radius, radius), 90, 0, 90, color, thickness)
+            cv2.ellipse(overlay, (x2 - radius, y2 - radius), (radius, radius), 0, 0, 90, color, thickness)
+        
+        # Apply alpha blending
+        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+        return img
+    
+    def _draw_gradient_rect(self, img: np.ndarray, pt1: Tuple[int, int], pt2: Tuple[int, int],
+                            color1: Tuple[int, int, int], color2: Tuple[int, int, int],
+                            direction: str = 'vertical', alpha: float = 0.8) -> np.ndarray:
+        """
+        Vẽ hình chữ nhật với gradient màu.
+        """
+        x1, y1 = pt1
+        x2, y2 = pt2
+        h = y2 - y1
+        w = x2 - x1
+        
+        overlay = img.copy()
+        
+        if direction == 'vertical':
+            for i in range(h):
+                ratio = i / h
+                color = tuple(int(c1 + (c2 - c1) * ratio) for c1, c2 in zip(color1, color2))
+                cv2.line(overlay, (x1, y1 + i), (x2, y1 + i), color, 1)
+        else:
+            for i in range(w):
+                ratio = i / w
+                color = tuple(int(c1 + (c2 - c1) * ratio) for c1, c2 in zip(color1, color2))
+                cv2.line(overlay, (x1 + i, y1), (x1 + i, y2), color, 1)
+        
+        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+        return img
+    
+    def _draw_glass_panel(self, img: np.ndarray, pt1: Tuple[int, int], pt2: Tuple[int, int],
+                          base_color: Tuple[int, int, int] = (30, 30, 40),
+                          alpha: float = 0.75, border_color: Tuple[int, int, int] = (100, 100, 120)) -> np.ndarray:
+        """
+        Vẽ panel kiểu glass-morphism (hiệu ứng kính mờ).
+        """
+        x1, y1 = pt1
+        x2, y2 = pt2
+        
+        # Main panel with rounded corners
+        img = self._draw_rounded_rect(img, pt1, pt2, base_color, radius=12, alpha=alpha)
+        
+        # Subtle top highlight (glass reflection effect)
+        highlight_color = tuple(min(255, c + 30) for c in base_color)
+        img = self._draw_rounded_rect(img, (x1, y1), (x2, y1 + 3), highlight_color, radius=12, alpha=0.3)
+        
+        # Border
+        img = self._draw_rounded_rect(img, pt1, pt2, border_color, radius=12, thickness=1, alpha=0.5)
+        
+        return img
+    
+    def _draw_progress_bar(self, img: np.ndarray, x: int, y: int, width: int, height: int,
+                           value: float, max_value: float = 100,
+                           bg_color: Tuple[int, int, int] = (50, 50, 60),
+                           fill_gradient: Tuple[Tuple, Tuple] = None) -> np.ndarray:
+        """
+        Vẽ progress bar với gradient fill.
+        
+        Args:
+            value: Current value
+            max_value: Maximum value
+            fill_gradient: ((color1), (color2)) for gradient, or single color
+        """
+        # Background
+        img = self._draw_rounded_rect(img, (x, y), (x + width, y + height), bg_color, radius=height//2, alpha=0.8)
+        
+        # Calculate fill width
+        ratio = min(1.0, value / max_value)
+        fill_width = int((width - 4) * ratio)
+        
+        if fill_width > 0:
+            # Determine color based on value
+            if fill_gradient is None:
+                if ratio >= 0.7:
+                    fill_color = (0, 200, 100)  # Green
+                elif ratio >= 0.4:
+                    fill_color = (0, 180, 255)  # Orange
+                else:
+                    fill_color = (0, 80, 255)   # Red
+            else:
+                fill_color = fill_gradient[0]
+            
+            img = self._draw_rounded_rect(
+                img, (x + 2, y + 2), (x + 2 + fill_width, y + height - 2),
+                fill_color, radius=max(1, height//2 - 2), alpha=0.9
+            )
+        
+        return img
+    
     def draw_dashboard(
         self,
         frame: np.ndarray,
@@ -1710,122 +1844,214 @@ class DriverMonitorV11Pro:
         active_warnings: List[Dict]
     ) -> np.ndarray:
         """
-        Vẽ bounding boxes cho các hành vi nguy hiểm - KHOANH VÙNG TẤT CẢ.
-        
-        Args:
-            frame: Frame to draw on
-            behaviors: Detected behaviors dict
-            active_warnings: List of active warnings with priority
-            
-        Returns:
-            Annotated frame
+        Vẽ bounding boxes đẹp mịn với hiệu ứng gradient và bo góc.
         """
         frame = frame.copy()
         h, w = frame.shape[:2]
         
-        # Convert to PIL for Vietnamese text
-        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-        draw = ImageDraw.Draw(frame_pil)
+        # Modern color palette
+        COLORS = {
+            'critical': ((200, 50, 100), (255, 100, 150)),    # Pink-Red gradient
+            'high': ((0, 100, 255), (0, 150, 255)),           # Orange gradient
+            'medium': ((0, 180, 255), (0, 220, 255)),         # Yellow-Orange gradient
+            'low': ((0, 200, 200), (0, 255, 255)),            # Cyan gradient
+            'safe': ((100, 200, 100), (150, 255, 150)),       # Green gradient
+        }
         
-        # ===== Draw object bounding boxes =====
+        # ===== Draw object bounding boxes with fancy styling =====
         for class_name, detections in self.detection_boxes.items():
             for det in detections:
                 x1, y1, x2, y2 = det['bbox']
                 conf = det['confidence']
                 
-                # Get priority color based on object type
+                # Determine style based on object type
                 if class_name == 'điện thoại':
-                    priority = 1  # P1 - High
-                    color = self.PRIORITY_LEVELS['P1_HIGH']['color']
-                    label = f"📱 {class_name.upper()} {conf*100:.0f}%"
+                    base_color = COLORS['high'][0]
+                    glow_color = COLORS['high'][1]
+                    icon = "📱"
+                    label = f"ĐIỆN THOẠI"
                 elif class_name in ['cốc', 'chai']:
-                    priority = 2  # P2 - Medium  
-                    color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
-                    label = f"🥤 {class_name.upper()} {conf*100:.0f}%"
+                    base_color = COLORS['medium'][0]
+                    glow_color = COLORS['medium'][1]
+                    icon = "🥤"
+                    label = "ĐỒ UỐNG" if class_name == 'cốc' else "CHAI NƯỚC"
                 else:
-                    priority = 3
-                    color = (128, 128, 128)
-                    label = f"{class_name} {conf*100:.0f}%"
+                    base_color = COLORS['low'][0]
+                    glow_color = COLORS['low'][1]
+                    icon = "📦"
+                    label = class_name.upper()
                 
-                # Draw thick rectangle
-                thickness = 3 if priority <= 1 else 2
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
+                # Draw outer glow effect (thicker, lighter)
+                cv2.rectangle(frame, (x1-2, y1-2), (x2+2, y2+2), glow_color, 3)
                 
-                # Draw label background
-                label_size = len(label) * 12
-                cv2.rectangle(frame, (x1, y1 - 25), (x1 + label_size, y1), color, -1)
+                # Draw main bounding box with rounded corners effect
+                frame = self._draw_rounded_rect(frame, (x1, y1), (x2, y2), base_color, radius=8, thickness=2, alpha=0.9)
                 
-                # Draw label with PIL for Vietnamese
+                # Draw corner accents (fancy corner brackets)
+                corner_len = min(25, (x2-x1)//4, (y2-y1)//4)
+                cv2.line(frame, (x1, y1), (x1 + corner_len, y1), glow_color, 3)
+                cv2.line(frame, (x1, y1), (x1, y1 + corner_len), glow_color, 3)
+                cv2.line(frame, (x2, y1), (x2 - corner_len, y1), glow_color, 3)
+                cv2.line(frame, (x2, y1), (x2, y1 + corner_len), glow_color, 3)
+                cv2.line(frame, (x1, y2), (x1 + corner_len, y2), glow_color, 3)
+                cv2.line(frame, (x1, y2), (x1, y2 - corner_len), glow_color, 3)
+                cv2.line(frame, (x2, y2), (x2 - corner_len, y2), glow_color, 3)
+                cv2.line(frame, (x2, y2), (x2, y2 - corner_len), glow_color, 3)
+                
+                # Draw label with glass effect
+                label_text = f"{icon} {label} {conf*100:.0f}%"
+                label_w = len(label_text) * 11 + 20
+                label_h = 28
+                label_x = x1
+                label_y = y1 - label_h - 5
+                
+                if label_y < 5:
+                    label_y = y2 + 5
+                
+                # Glass panel for label
+                frame = self._draw_glass_panel(
+                    frame, 
+                    (label_x, label_y), 
+                    (label_x + label_w, label_y + label_h),
+                    base_color=base_color,
+                    alpha=0.85,
+                    border_color=glow_color
+                )
+        
+        # Convert to PIL for Vietnamese text on labels
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(frame_pil)
+        
+        # Draw text on labels
+        for class_name, detections in self.detection_boxes.items():
+            for det in detections:
+                x1, y1, x2, y2 = det['bbox']
+                conf = det['confidence']
+                
+                if class_name == 'điện thoại':
+                    icon = "📱"
+                    label = "ĐIỆN THOẠI"
+                elif class_name in ['cốc', 'chai']:
+                    icon = "🥤"
+                    label = "ĐỒ UỐNG" if class_name == 'cốc' else "CHAI NƯỚC"
+                else:
+                    icon = "📦"
+                    label = class_name.upper()
+                
+                label_text = f"{icon} {label} {conf*100:.0f}%"
+                label_h = 28
+                label_y = y1 - label_h - 5
+                if label_y < 5:
+                    label_y = y2 + 5
+                
                 if self.font_small:
-                    draw.text((x1 + 5, y1 - 22), label, fill=(255, 255, 255), font=self.font_small)
+                    draw.text((x1 + 10, label_y + 4), label_text, fill=(255, 255, 255), font=self.font_small)
         
-        # ===== Draw behavior indicators =====
-        indicator_y = 120
-        indicator_x = w - 250
+        frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
         
-        # Phone indicator
+        # ===== Draw behavior status panel (right side) =====
+        panel_x = w - 280
+        panel_y = 15
+        panel_w = 265
+        panel_h = 50
+        spacing = 8
+        
+        active_behaviors = []
+        
+        # Collect active behaviors
         if behaviors.get('phone', {}).get('detected'):
-            color = self.PRIORITY_LEVELS['P1_HIGH']['color']
-            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
-            if self.font_small:
-                draw.text((indicator_x + 10, indicator_y + 5), "📱 ĐANG DÙNG ĐIỆN THOẠI", 
-                         fill=(255, 255, 255), font=self.font_small)
-            indicator_y += 45
+            active_behaviors.append({
+                'icon': '📱', 'text': 'ĐANG DÙNG ĐIỆN THOẠI',
+                'color': COLORS['high'][0], 'glow': COLORS['high'][1]
+            })
         
-        # Drinking indicator  
         if behaviors.get('drinking', {}).get('detected'):
-            color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
-            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
-            if self.font_small:
-                draw.text((indicator_x + 10, indicator_y + 5), "🥤 ĐANG UỐNG NƯỚC", 
-                         fill=(255, 255, 255), font=self.font_small)
-            indicator_y += 45
+            active_behaviors.append({
+                'icon': '🥤', 'text': 'ĐANG UỐNG NƯỚC',
+                'color': COLORS['medium'][0], 'glow': COLORS['medium'][1]
+            })
         
-        # Smoking indicator
         if behaviors.get('smoking', {}).get('detected'):
-            color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
-            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
-            if self.font_small:
-                draw.text((indicator_x + 10, indicator_y + 5), "🚬 ĐANG HÚT THUỐC", 
-                         fill=(255, 255, 255), font=self.font_small)
-            indicator_y += 45
+            active_behaviors.append({
+                'icon': '🚬', 'text': 'ĐANG HÚT THUỐC',
+                'color': COLORS['medium'][0], 'glow': COLORS['medium'][1]
+            })
         
-        # Drowsy indicator
-        if behaviors.get('drowsiness', {}).get('detected'):
-            severity = behaviors['drowsiness'].get('severity', 'MEDIUM')
+        drowsy_data = behaviors.get('drowsiness', {})
+        if drowsy_data.get('detected'):
+            severity = drowsy_data.get('severity', 'MEDIUM')
             if severity == 'HIGH':
-                color = self.PRIORITY_LEVELS['P0_CRITICAL']['color']
-                text = "😴 NGỦ GẬT NGUY HIỂM!"
+                active_behaviors.append({
+                    'icon': '😴', 'text': 'NGỦ GẬT NGUY HIỂM!',
+                    'color': COLORS['critical'][0], 'glow': COLORS['critical'][1]
+                })
             else:
-                color = self.PRIORITY_LEVELS['P2_MEDIUM']['color']
-                text = "😴 DẤU HIỆU BUỒN NGỦ"
-            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
-            if self.font_small:
-                draw.text((indicator_x + 10, indicator_y + 5), text, 
-                         fill=(255, 255, 255), font=self.font_small)
-            indicator_y += 45
+                active_behaviors.append({
+                    'icon': '😴', 'text': 'DẤU HIỆU BUỒN NGỦ',
+                    'color': COLORS['medium'][0], 'glow': COLORS['medium'][1]
+                })
         
-        # Looking away indicator
         if behaviors.get('looking_away', {}).get('detected'):
-            color = self.PRIORITY_LEVELS['P1_HIGH']['color']
-            cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
             duration = behaviors['looking_away'].get('duration', 0)
-            if self.font_small:
-                draw.text((indicator_x + 10, indicator_y + 5), f"👀 KHÔNG NHÌN ĐƯỜNG ({duration:.1f}s)", 
-                         fill=(255, 255, 255), font=self.font_small)
-            indicator_y += 45
+            active_behaviors.append({
+                'icon': '👀', 'text': f'KHÔNG NHÌN ĐƯỜNG ({duration:.1f}s)',
+                'color': COLORS['high'][0], 'glow': COLORS['high'][1]
+            })
         
-        # Seatbelt indicator (nhấp nháy)
         if not behaviors.get('seatbelt', {}).get('detected', True):
-            # Blink effect
-            if self.frame_count % 30 < 15:
-                color = self.PRIORITY_LEVELS['P3_LOW']['color']
-                cv2.rectangle(frame, (indicator_x, indicator_y), (w - 20, indicator_y + 35), color, -1)
-                if self.font_small:
-                    draw.text((indicator_x + 10, indicator_y + 5), "⚠️ KHÔNG THẮT DÂY AN TOÀN", 
-                             fill=(0, 0, 0), font=self.font_small)
+            # Blinking effect for seatbelt
+            if self.frame_count % 40 < 25:
+                active_behaviors.append({
+                    'icon': '⚠️', 'text': 'CHƯA THẮT DÂY AN TOÀN',
+                    'color': COLORS['low'][0], 'glow': COLORS['low'][1]
+                })
         
-        # Convert back to OpenCV format
+        # Draw behavior status cards
+        for i, behavior in enumerate(active_behaviors):
+            card_y = panel_y + i * (panel_h + spacing)
+            
+            # Animated pulse effect for critical warnings
+            pulse = 1.0
+            if 'NGUY HIỂM' in behavior['text']:
+                pulse = 0.85 + 0.15 * math.sin(self.frame_count * 0.3)
+            
+            # Draw status card with glow
+            glow_alpha = 0.3 * pulse
+            frame = self._draw_rounded_rect(
+                frame, 
+                (panel_x - 3, card_y - 3), 
+                (panel_x + panel_w + 3, card_y + panel_h + 3),
+                behavior['glow'], radius=14, alpha=glow_alpha
+            )
+            
+            # Main card
+            frame = self._draw_glass_panel(
+                frame,
+                (panel_x, card_y),
+                (panel_x + panel_w, card_y + panel_h),
+                base_color=behavior['color'],
+                alpha=0.85 * pulse,
+                border_color=behavior['glow']
+            )
+            
+            # Draw icon circle
+            icon_x = panel_x + 25
+            icon_y = card_y + panel_h // 2
+            cv2.circle(frame, (icon_x, icon_y), 18, behavior['glow'], -1)
+            cv2.circle(frame, (icon_x, icon_y), 18, (255, 255, 255), 2)
+        
+        # Draw text on cards
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(frame_pil)
+        
+        for i, behavior in enumerate(active_behaviors):
+            card_y = panel_y + i * (panel_h + spacing)
+            
+            if self.font_small:
+                draw.text((panel_x + 8, card_y + 14), behavior['icon'], fill=(255, 255, 255), font=self.font_small)
+            if self.font_medium:
+                draw.text((panel_x + 50, card_y + 12), behavior['text'], fill=(255, 255, 255), font=self.font_medium)
+        
         frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
         
         return frame
@@ -2226,97 +2452,202 @@ class DriverMonitorV11Pro:
         seatbelt_on: bool = True
     ) -> np.ndarray:
         """
-        Vẽ dashboard V2 với EAR, blinks, PERCLOS, seatbelt.
+        Vẽ dashboard V2 PRO với hiệu ứng đẹp mịn.
         """
         h, w = frame.shape[:2]
-        frame_pil = Image.fromarray(frame)
+        frame = frame.copy()
+        
+        # Modern color scheme
+        DASHBOARD_COLORS = {
+            'LOW': ((80, 200, 120), (120, 255, 150)),       # Green
+            'MEDIUM': ((0, 180, 255), (50, 220, 255)),      # Yellow-Orange
+            'HIGH': ((0, 100, 255), (50, 150, 255)),        # Orange
+            'CRITICAL': ((80, 50, 200), (150, 100, 255)),   # Red-Pink
+        }
+        
+        colors = DASHBOARD_COLORS.get(distraction_level, DASHBOARD_COLORS['LOW'])
+        main_color = colors[0]
+        glow_color = colors[1]
+        
+        # ===== Warning Banner (top) - Sleek Design =====
+        if warnings:
+            banner_height = 45 + 40 * len(warnings)
+            
+            # Gradient background for banner
+            frame = self._draw_gradient_rect(
+                frame, (0, 0), (w, banner_height),
+                (40, 20, 80), (80, 40, 120), 'vertical', alpha=0.85
+            )
+            
+            # Top border glow
+            cv2.line(frame, (0, banner_height), (w, banner_height), (150, 80, 200), 2)
+        
+        # ===== Main Dashboard Panel (bottom-left) =====
+        panel_w, panel_h = 420, 280
+        panel_x, panel_y = 15, h - panel_h - 15
+        
+        # Glass panel background
+        frame = self._draw_glass_panel(
+            frame,
+            (panel_x, panel_y),
+            (panel_x + panel_w, panel_y + panel_h),
+            base_color=(25, 25, 35),
+            alpha=0.85,
+            border_color=(80, 80, 100)
+        )
+        
+        # Header bar with accent color
+        frame = self._draw_rounded_rect(
+            frame,
+            (panel_x + 10, panel_y + 10),
+            (panel_x + panel_w - 10, panel_y + 45),
+            main_color, radius=8, alpha=0.7
+        )
+        
+        # ===== Attention Score Circular Gauge =====
+        gauge_cx = panel_x + panel_w - 70
+        gauge_cy = panel_y + 130
+        gauge_r = 50
+        
+        # Background arc
+        for i in range(360):
+            angle = math.radians(i - 90)
+            x1 = int(gauge_cx + (gauge_r - 8) * math.cos(angle))
+            y1 = int(gauge_cy + (gauge_r - 8) * math.sin(angle))
+            x2 = int(gauge_cx + gauge_r * math.cos(angle))
+            y2 = int(gauge_cy + gauge_r * math.sin(angle))
+            cv2.line(frame, (x1, y1), (x2, y2), (40, 40, 50), 1)
+        
+        # Value arc
+        arc_angle = int(attention_score * 3.6)  # 0-360 degrees
+        for i in range(arc_angle):
+            angle = math.radians(i - 90)
+            ratio = i / 360
+            # Gradient color along arc
+            arc_color = tuple(int(c * (0.5 + ratio * 0.5)) for c in glow_color)
+            x1 = int(gauge_cx + (gauge_r - 7) * math.cos(angle))
+            y1 = int(gauge_cy + (gauge_r - 7) * math.sin(angle))
+            x2 = int(gauge_cx + (gauge_r + 1) * math.cos(angle))
+            y2 = int(gauge_cy + (gauge_r + 1) * math.sin(angle))
+            cv2.line(frame, (x1, y1), (x2, y2), arc_color, 2)
+        
+        # Center circle
+        cv2.circle(frame, (gauge_cx, gauge_cy), gauge_r - 15, (30, 30, 40), -1)
+        cv2.circle(frame, (gauge_cx, gauge_cy), gauge_r - 15, main_color, 2)
+        
+        # ===== Eye Status Indicator =====
+        eye_y = panel_y + 190
+        eye_color = (100, 220, 100) if eyes_open else (100, 100, 220)
+        
+        # Eye icon background
+        frame = self._draw_rounded_rect(
+            frame, (panel_x + 15, eye_y), (panel_x + 180, eye_y + 35),
+            eye_color, radius=6, alpha=0.3
+        )
+        
+        # PERCLOS bar
+        perclos_y = panel_y + 235
+        frame = self._draw_progress_bar(
+            frame, panel_x + 15, perclos_y + 20, 180, 12,
+            perclos * 100, 100,
+            fill_gradient=((100, 200, 100), (100, 100, 200)) if perclos < 0.15 else ((100, 100, 200), (150, 100, 250))
+        )
+        
+        # ===== Convert to PIL for text =====
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(frame_pil)
         
-        # ===== Warning Banner (top) =====
+        # Warning text
         if warnings:
-            banner_height = 60 + 50 * len(warnings)
-            overlay = Image.new('RGBA', (w, banner_height), (200, 0, 0, 200))
-            frame_pil.paste(overlay, (0, 0), overlay)
-            
-            y = 20
+            y = 12
             for warning in warnings:
                 if self.font_large:
-                    draw.text((20, y), warning, fill=(255, 255, 255), font=self.font_large)
-                y += 50
+                    draw.text((25, y), warning, fill=(255, 255, 255), font=self.font_large)
+                y += 40
         
-        # ===== Dashboard Panel (bottom-left) =====
-        panel_w, panel_h = 380, 260  # Increased height for seatbelt
-        panel_x, panel_y = 10, h - panel_h - 10
-        
-        panel_overlay = Image.new('RGBA', (panel_w, panel_h), (0, 0, 0, 180))
-        frame_pil.paste(panel_overlay, (panel_x, panel_y), panel_overlay)
-        
-        level_colors = {
-            'LOW': (0, 255, 0),
-            'MEDIUM': (255, 200, 0),
-            'HIGH': (255, 100, 0),
-            'CRITICAL': (255, 0, 0)
-        }
-        color = level_colors.get(distraction_level, (255, 255, 255))
-        eye_color = (0, 255, 0) if eyes_open else (255, 0, 0)
-        seatbelt_color = (0, 255, 0) if seatbelt_on else (255, 0, 0)
-        
+        # Dashboard title
         if self.font_medium:
-            # Title
-            draw.text((panel_x + 10, panel_y + 10), "🚗 GIÁM SÁT TÀI XẾ", 
-                      fill=(255, 255, 255), font=self.font_medium)
-            
-            # Attention Score
-            draw.text((panel_x + 10, panel_y + 45), f"Tập trung: {attention_score}%",
-                      fill=color, font=self.font_medium)
-            
-            # Status
-            draw.text((panel_x + 10, panel_y + 75), f"Trạng thái: {distraction_level}",
-                      fill=color, font=self.font_medium)
-            
-            # Eye status (Vietnamese)
-            eye_status_vn = "MỞ" if eyes_open else "NHẮM"
-            draw.text((panel_x + 10, panel_y + 105), f"Mắt: {eye_status_vn} (EAR: {ear:.2f})",
-                      fill=eye_color, font=self.font_medium)
-            
-            # Blinks
-            draw.text((panel_x + 10, panel_y + 135), f"Chớp mắt: {blinks} lần",
-                      fill=(200, 200, 200), font=self.font_medium)
-            
-            # PERCLOS
-            perclos_color = (0, 255, 0) if perclos < self.PERCLOS_THRESHOLD else (255, 0, 0)
-            draw.text((panel_x + 10, panel_y + 165), f"PERCLOS: {perclos*100:.1f}%",
-                      fill=perclos_color, font=self.font_medium)
-            
-            # Seatbelt status (NEW)
-            seatbelt_text = "ĐÃ THẮT ✓" if seatbelt_on else "CHƯA THẮT ✗"
-            draw.text((panel_x + 10, panel_y + 195), f"Dây an toàn: {seatbelt_text}",
-                      fill=seatbelt_color, font=self.font_medium)
-            
-            # Head Pose
-            if head_pose['is_valid'] and self.font_small:
-                pose_text = f"Đầu: Y={head_pose['yaw']:+.0f}° P={head_pose['pitch']:+.0f}°"
-                draw.text((panel_x + 10, panel_y + 230), pose_text,
-                          fill=(180, 180, 180), font=self.font_small)
+            draw.text((panel_x + 20, panel_y + 18), "🚗 GIÁM SÁT TÀI XẾ PRO",
+                     fill=(255, 255, 255), font=self.font_medium)
         
-        # ===== Attention Bar (bottom-right) =====
-        bar_w, bar_h = 30, 150
-        bar_x = w - bar_w - 20
-        bar_y = h - bar_h - 30
+        # Attention score in gauge center
+        if self.font_large:
+            score_text = f"{attention_score}"
+            draw.text((gauge_cx - 18, gauge_cy - 15), score_text,
+                     fill=glow_color[::-1], font=self.font_large)
         
-        draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
-                       fill=(50, 50, 50), outline=(100, 100, 100))
+        if self.font_small:
+            draw.text((gauge_cx - 20, gauge_cy + 15), "ĐIỂM",
+                     fill=(180, 180, 180), font=self.font_small)
         
-        fill_h = int(bar_h * attention_score / 100)
-        fill_y = bar_y + bar_h - fill_h
-        draw.rectangle([bar_x + 2, fill_y, bar_x + bar_w - 2, bar_y + bar_h - 2],
-                       fill=color)
-        
+        # Status level
         if self.font_medium:
-            draw.text((bar_x - 5, bar_y - 25), f"{attention_score}",
-                      fill=color, font=self.font_medium)
+            status_vn = {
+                'LOW': 'AN TOÀN',
+                'MEDIUM': 'CHÚ Ý',
+                'HIGH': 'RỦI RO',
+                'CRITICAL': 'NGUY HIỂM'
+            }
+            draw.text((panel_x + 20, panel_y + 60), f"Trạng thái: {status_vn.get(distraction_level, distraction_level)}",
+                     fill=glow_color[::-1], font=self.font_medium)
         
-        return np.array(frame_pil)
+        # Eye metrics
+        if self.font_medium:
+            eye_status = "👁️ MẮT MỞ" if eyes_open else "👁️ MẮT NHẮM"
+            draw.text((panel_x + 20, eye_y + 7), eye_status,
+                     fill=(255, 255, 255), font=self.font_medium)
+            draw.text((panel_x + 120, eye_y + 7), f"EAR: {ear:.2f}",
+                     fill=(200, 200, 200), font=self.font_small)
+        
+        if self.font_small:
+            draw.text((panel_x + 20, perclos_y), f"PERCLOS: {perclos*100:.1f}%   Chớp mắt: {blinks}",
+                     fill=(180, 180, 180), font=self.font_small)
+        
+        # Seatbelt status
+        seatbelt_y = perclos_y + 40
+        seatbelt_icon = "🟢" if seatbelt_on else "🔴"
+        seatbelt_text = "Dây an toàn: ĐÃ THẮT" if seatbelt_on else "Dây an toàn: CHƯA THẮT!"
+        seatbelt_color = (150, 255, 150) if seatbelt_on else (255, 100, 100)
+        
+        if self.font_small:
+            draw.text((panel_x + 20, seatbelt_y), f"{seatbelt_icon} {seatbelt_text}",
+                     fill=seatbelt_color, font=self.font_small)
+        
+        # Head pose (compact)
+        if head_pose['is_valid'] and self.font_small:
+            pose_y = panel_y + panel_h - 30
+            yaw_icon = "⬅️" if head_pose['yaw'] < -15 else ("➡️" if head_pose['yaw'] > 15 else "⬆️")
+            draw.text((panel_x + 20, pose_y), f"{yaw_icon} Đầu: Y={head_pose['yaw']:+.0f}° P={head_pose['pitch']:+.0f}°",
+                     fill=(150, 150, 170), font=self.font_small)
+        
+        # ===== Vertical Attention Bar (right side) =====
+        frame = cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
+        
+        bar_w, bar_h = 25, 140
+        bar_x = w - bar_w - 25
+        bar_y = h - bar_h - 35
+        
+        # Bar background
+        frame = self._draw_rounded_rect(frame, (bar_x, bar_y), (bar_x + bar_w, bar_y + bar_h),
+                                        (40, 40, 50), radius=12, alpha=0.8)
+        
+        # Filled portion
+        fill_h = int((bar_h - 8) * attention_score / 100)
+        fill_y = bar_y + bar_h - fill_h - 4
+        
+        if fill_h > 0:
+            frame = self._draw_rounded_rect(
+                frame, (bar_x + 4, fill_y), (bar_x + bar_w - 4, bar_y + bar_h - 4),
+                main_color, radius=8, alpha=0.9
+            )
+        
+        # Score label on top
+        frame_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        draw = ImageDraw.Draw(frame_pil)
+        if self.font_medium:
+            draw.text((bar_x - 2, bar_y - 35), f"{attention_score}%", fill=glow_color[::-1], font=self.font_medium)
+        
+        return cv2.cvtColor(np.array(frame_pil), cv2.COLOR_RGB2BGR)
     
     def get_status(self) -> Dict:
         """Get current monitor status."""
