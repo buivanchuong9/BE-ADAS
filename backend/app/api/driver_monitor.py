@@ -358,7 +358,7 @@ async def download_driver_monitoring_result(
         from pathlib import Path
         from fastapi.responses import FileResponse
         from app.db.repositories.job_queue_repo import JobQueueRepository
-        from app.services.video_service import VideoService
+        from app.core.config import settings
         
         # Get job from database
         repo = JobQueueRepository(db)
@@ -373,45 +373,76 @@ async def download_driver_monitoring_result(
                 detail=f"Job not completed yet. Status: {job.status}. Progress: {job.progress_percent}%"
             )
         
-        # Strategy 1: Use result_path stored by GPU worker in DB (most reliable)
+        # ── Find result video — try ALL known paths ──────────────────────
+        import os
         output_path = None
+        tried_paths = []
+        
+        # Project root (same as worker's PROJECT_ROOT)
+        project_root = Path(__file__).resolve().parent.parent.parent.parent  # api/ → app/ → backend/ → project
+        
+        # Strategy 1: result_path from DB (GPU worker now stores absolute path)
         if job.result_path:
             candidate = Path(job.result_path)
+            tried_paths.append(str(candidate))
             if candidate.exists():
                 output_path = candidate
-                logger.info(f"[Download] Using DB result_path: {output_path}")
+                logger.info(f"[Download] ✅ DB result_path: {output_path}")
+            elif not candidate.is_absolute():
+                # Relative path — resolve against project root
+                candidate2 = project_root / job.result_path
+                tried_paths.append(str(candidate2))
+                if candidate2.exists():
+                    output_path = candidate2
+                    logger.info(f"[Download] ✅ DB path (resolved): {output_path}")
         
-        # Strategy 2: Construct path from VIDEOS_OUTPUT_DIR (fallback)
+        # Strategy 2: settings.VIDEOS_OUTPUT_DIR (/hdd3/adas/videos/output default)
         if output_path is None:
-            video_service = VideoService(db)
-            candidate = Path(video_service.get_output_path(job_id))
+            candidate = Path(settings.VIDEOS_OUTPUT_DIR) / str(job_id) / "result.mp4"
+            tried_paths.append(str(candidate))
             if candidate.exists():
                 output_path = candidate
-                logger.info(f"[Download] Using constructed path: {output_path}")
+                logger.info(f"[Download] ✅ settings path: {output_path}")
         
-        # Strategy 3: Search common output patterns
+        # Strategy 3: Worker default output (storage/result/{job_id}/result.mp4)
         if output_path is None:
-            import os
-            out_base = Path(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result'))
-            for pattern in [
-                out_base / str(job_id) / "result.mp4",
-                out_base / f"{job_id}_result.mp4",
-                out_base / f"{job_id}.mp4",
+            for base in [
+                project_root / 'storage' / 'result',
+                Path('./storage/result'),
+                Path('./backend/storage/result'),
+                project_root / 'backend' / 'storage' / 'result',
+                Path(settings.PROCESSED_VIDEO_DIR),
             ]:
-                if pattern.exists():
-                    output_path = pattern
-                    logger.info(f"[Download] Found via search: {output_path}")
+                candidate = base / str(job_id) / "result.mp4"
+                tried_paths.append(str(candidate))
+                if candidate.exists():
+                    output_path = candidate
+                    logger.info(f"[Download] ✅ search path: {output_path}")
                     break
         
+        # Strategy 4: os.getenv VIDEOS_OUTPUT_DIR (from .env)
         if output_path is None:
-            logger.error(f"[Download] Result not found for job {job_id}. "
-                        f"DB result_path={job.result_path}")
+            env_dir = os.getenv('VIDEOS_OUTPUT_DIR')
+            if env_dir:
+                candidate = Path(env_dir) / str(job_id) / "result.mp4"
+                tried_paths.append(str(candidate))
+                if candidate.exists():
+                    output_path = candidate
+                    logger.info(f"[Download] ✅ env path: {output_path}")
+        
+        if output_path is None:
+            logger.error(
+                f"[Download] ❌ Result not found for job {job_id}. "
+                f"DB result_path={job.result_path}. "
+                f"project_root={project_root}. "
+                f"Tried: {tried_paths}"
+            )
             raise HTTPException(
                 status_code=404, 
-                detail=f"Result video not found. DB path: {job.result_path}"
+                detail=f"Result video not found. DB path: {job.result_path}. Tried {len(tried_paths)} locations."
             )
         
-        logger.info(f"Serving driver monitoring result: {output_path}")
+        logger.info(f"Serving driver monitoring result: {output_path} ({output_path.stat().st_size / 1024 / 1024:.1f}MB)")
         
         # Return file
         return FileResponse(

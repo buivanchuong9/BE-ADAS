@@ -491,12 +491,15 @@ class SimpleGPUWorker:
             
             logger.info(f"[INPUT] {Path(input_path).name}")
             
-            # === SETUP OUTPUT ===
-            output_base = Path(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result'))
+            # === SETUP OUTPUT (always store ABSOLUTE path in DB) ===
+            output_base = Path(os.getenv('VIDEOS_OUTPUT_DIR', str(PROJECT_ROOT / 'storage' / 'result')))
+            if not output_base.is_absolute():
+                output_base = (PROJECT_ROOT / output_base).resolve()
             job_output_dir = output_base / str(job_id)
             job_output_dir.mkdir(parents=True, exist_ok=True)
             
             result_video_path = job_output_dir / "result.mp4"
+            logger.info(f"[OUTPUT] {result_video_path}")
             
             # === LOAD PIPELINE (chỉ load models cần thiết cho video_type) ===
             video_type = job.get('video_type', 'dashcam')

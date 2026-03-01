@@ -287,11 +287,14 @@ class GPUWorkerV4(SimpleGPUWorker):
             if not input_path or not Path(input_path).exists():
                 raise FileNotFoundError(f"Input video not found: {input_path}")
 
-            # ── Output path ───────────────────────────────────────────────
-            out_base = Path(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result'))
+            # ── Output path (always absolute for DB storage) ──────────
+            out_base = Path(os.getenv('VIDEOS_OUTPUT_DIR', str(PROJECT_ROOT / 'storage' / 'result')))
+            if not out_base.is_absolute():
+                out_base = (PROJECT_ROOT / out_base).resolve()
             out_dir  = out_base / str(job_id)
             out_dir.mkdir(parents=True, exist_ok=True)
             result_path = out_dir / "result.mp4"
+            logger.info(f"[V4OUTPUT] {result_path}")
 
             # ── Load V4 pipeline ──────────────────────────────────────────
             video_type = job.get('video_type', 'dashcam')
