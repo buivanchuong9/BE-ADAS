@@ -55,7 +55,8 @@ class ObjectDetectorV11:
         model_path: str = "backend/models/yolo11x.pt",
         device: str = "cuda",
         conf_threshold: float = 0.5,
-        imgsz: int = 640
+        imgsz: int = 640,
+        half: bool = True,  # FP16 inference for ~2x speed on GPU
     ):
         """
         Khởi tạo bộ nhận diện YOLOv11x.
@@ -65,9 +66,11 @@ class ObjectDetectorV11:
             device: Thiết bị ("cuda" cho GPU)
             conf_threshold: Ngưỡng confidence
             imgsz: Kích thước ảnh đầu vào cho YOLO (416 / 512 / 640). Nhỏ hơn = nhanh hơn.
+            half: Enable FP16 (half precision) inference. ~2x faster on modern GPUs.
         """
         self.device = device
         self.conf_threshold = conf_threshold
+        self.half = half and device == "cuda"  # Only enable half on CUDA
         self.imgsz = imgsz
         
         # Kiểm tra CUDA
@@ -102,6 +105,8 @@ class ObjectDetectorV11:
             
             logger.info(f"✅ YOLOv11x đã load trên {self.device.upper()}")
             logger.info(f"📊 Ngưỡng confidence: {conf_threshold}")
+            if self.half:
+                logger.info(f"⚡ FP16 (half precision) enabled — ~2x faster inference")
             
         except ImportError:
             raise ImportError("❌ Chưa cài ultralytics. Chạy: pip install ultralytics")
@@ -135,12 +140,13 @@ class ObjectDetectorV11:
                 - area: Diện tích bbox
         """
         try:
-            # Inference trên GPU
+            # Inference trên GPU (with FP16 if enabled)
             results = self.model(
                 frame,
                 conf=self.conf_threshold,
                 device=self.device,
                 imgsz=self.imgsz,
+                half=self.half,  # FP16 for ~2x speedup on GPU
                 verbose=False
             )
             

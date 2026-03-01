@@ -43,6 +43,9 @@ from backend.perception.risk.fcw_ttc import (
     FCW_STATE_VI, get_fcw_color_rgba
 )
 
+# Import CUDA preprocessing for zero-copy GpuMat reuse
+from backend.perception.cuda_preprocess import CUDAPreprocessor, get_preprocessor
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [%(process)d] - %(levelname)s - %(message)s',
@@ -55,26 +58,7 @@ logger = logging.getLogger(__name__)
 
 
 class SimpleGPUWorker:
-    """
-    Production-ready GPU worker for ADAS video analysis.
 
-    Architecture:
-    - PostgreSQL job queue (SELECT FOR UPDATE SKIP LOCKED + pg_notify)
-    - NVDEC hardware decode → GPU inference → NVENC/libx264 encode
-    - TensorRT auto-optimization (FP16) with PyTorch fallback
-    - Parallel inference: Object detection + Lane detection concurrent
-    - PIL-based Vietnamese overlay rendering (có dấu)
-
-    Model Profiles:
-    - 'cloud':  YOLOv11x (imgsz=416) — high accuracy, server GPU
-    - 'edge':   YOLOv8n  (imgsz=320) — real-time, edge devices
-
-    Key features:
-    - TensorRT auto-export & caching (2-3x speedup)
-    - Non-blocking FFmpeg encode in background thread
-    - Guaranteed subprocess cleanup
-    - Vietnamese smart warnings with proper diacritics
-    """
 
     # Model configurations per profile
     # Mỗi profile chứa đầy đủ các model cho tất cả pipeline:
@@ -90,7 +74,19 @@ class SimpleGPUWorker:
             'ufld_model': 'backend/models/ufld_tusimple.pth',
             'imgsz': 416,
             'conf': 0.5,
+            'half': True,  # FP16 inference for speed
             'description': 'YOLOv11x + UFLD — high accuracy (server GPU)',
+        },
+        'fast': {
+            # Fast profile: Smaller model + FP16 for ~2x speed when TensorRT unavailable
+            'obj_model':  'backend/models/yolo11m.pt',  # Medium model (faster)
+            'pose_model': 'backend/models/yolo11m-pose.pt',
+            'seg_model':  'backend/models/yolo11m-seg.pt',
+            'ufld_model': 'backend/models/ufld_tusimple.pth',
+            'imgsz': 384,  # Smaller input
+            'conf': 0.45,
+            'half': True,  # FP16 inference
+            'description': 'YOLOv11m + UFLD — balanced speed/accuracy',
         },
         'edge': {
             'obj_model':  'backend/models/yolov8n.pt',
@@ -99,6 +95,7 @@ class SimpleGPUWorker:
             'ufld_model': 'backend/models/ufld_tusimple.pth',
             'imgsz': 320,
             'conf': 0.45,
+            'half': True,
             'description': 'YOLOv8n + UFLD — real-time (edge deployment)',
         },
     }
@@ -133,6 +130,9 @@ class SimpleGPUWorker:
 
         # GPU overlay blending is REQUIRED (no CPU fallback)
         self._cuda_overlay: bool = True
+
+        # CUDA Preprocessor for zero-copy GpuMat reuse
+        self._cuda_preprocessor: Optional[CUDAPreprocessor] = None
 
         # GPU FPS measurement
         self._gpu_frame_times: list = []
@@ -256,11 +256,22 @@ class SimpleGPUWorker:
                 f"model={Path(trt_model_path).name}, imgsz={imgsz}, "
                 f"conf={conf}, profile={self.model_profile}"
             )
+            
+            # Initialize CUDA preprocessor for zero-copy GpuMat reuse
+            if self.device == 'cuda' and self._cuda_preprocessor is None:
+                self._cuda_preprocessor = CUDAPreprocessor(
+                    enable_cuda=True,
+                    use_streams=True,
+                    device=self.device,
+                )
+                logger.info("[GPU] CUDA Preprocessor initialized (zero-copy GpuMat pool)")
+            
             pipeline['object']   = ObjectDetectorV11(
                 model_path=trt_model_path,
                 device=self.device,
                 conf_threshold=conf,
                 imgsz=imgsz,
+                half=prof.get('half', True),  # FP16 for ~2x speedup when TensorRT unavailable
             )
             # Lane detection: UFLD v2 (Ultra Fast Lane Detection)
             ufld_path = prof.get('ufld_model')
@@ -272,8 +283,12 @@ class SimpleGPUWorker:
             pipeline['lane']     = UFLDLaneDetector(
                 model_path=ufld_path,
                 device=self.device,
+                cuda_preprocessor=self._cuda_preprocessor,  # Zero-copy preprocessing
             )
             pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
+            
+            # Store preprocessor in pipeline for frame processing
+            pipeline['cuda_preprocessor'] = self._cuda_preprocessor
 
             if torch.cuda.is_available():
                 self._stream_obj = torch.cuda.Stream()

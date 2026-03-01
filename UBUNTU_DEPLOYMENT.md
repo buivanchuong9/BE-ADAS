@@ -27,34 +27,22 @@ ffmpeg -version | head -1
 # 5. Kill tất cả services cũ
 pkill -u phonglv -f "gpu_worker"
 pkill -u phonglv -f "uvicorn backend.app.main"
-pkill -9 ffmpeg  
+pkill -9 ffmpeg
 
 # 6. Export env và path
 export $(grep -v '^#' .env | xargs)
-export PYTHONPATH=$PYTHONPATH:$(pwd)
+export PYTHONPATH=/home/phonglv/opencv_cuda/lib/python3.12/site-packages:$(pwd):$PYTHONPATH
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
 
 
 
 # 7. Start API (Backend)
 echo "🚀 Starting API Server..."
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
-
 # 8. Start GPU Workers (Python Only - STABLE)
 # Khuần nghị: 1 worker cho mỗi GPU A30
-echo "🚀 Starting GPU Worker..."
-# Log worker vào api.log luôn để xem 1 chỗ
-# Profile: cloud (YOLOv11x, độ chính xác cao) hoặc edge (YOLOv8n, nhẹ, nhanh)
-# TensorRT: tự động export FP16 engine nếu có TensorRT
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile cloud --database-url "$DATABASE_URL" >> api.log 2>&1 &
-
-# Nếu có nhiều GPU, chạy thêm worker:
-# CUDA_VISIBLE_DEVICES=1 nohup python3 workers/gpu_worker_simple.py --worker-id worker_1 --device cuda --profile cloud --database-url "$DATABASE_URL" > worker_1.log 2>&1 &
-
-# Edge profile (YOLOv8n - cho thiết bị nhỏ như Jetson):
-# nohup python3 workers/gpu_worker_simple.py --worker-id worker_edge --device cuda --profile edge --database-url "$DATABASE_URL" >> api.log 2>&1 &
-
-# Tắt TensorRT (chỉ dùng PyTorch):
-# nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --no-tensorrt --database-url "$DATABASE_URL" >> api.log 2>&1 &
+echo "🚀 Starting GPU Worker (FAST Profile - YOLOv11m + FP16)..."
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile fast --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # 9. Xem log (API + Worker cùng 1 chỗ)
 tail -f api.log

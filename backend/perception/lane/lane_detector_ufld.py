@@ -1,40 +1,17 @@
-"""
-Ultra Fast Lane Detection v2 (UFLD) — GPU-Optimized
-====================================================
-Row-based lane classification cho phát hiện làn đường cực nhanh.
 
-UFLD v2 chia ảnh thành N hàng ngang (rows), mỗi hàng predict vị trí (column)
-mà lane line đi qua. Approach này nhanh hơn 10-50x so với segmentation.
-
-Architecture:
-    Input (H×W) → Backbone (ResNet-18/34) → Row Classification Head → Lane Points
-
-Performance:
-    - ResNet-18:  ~300 FPS (A30 GPU), ~120 FPS (Jetson)
-    - ResNet-34:  ~200 FPS (A30 GPU), ~80 FPS (Jetson)
-    - TuSimple accuracy: ~96%+
-
-Supported formats:
-    - TorchScript (.pt / .torchscript)
-    - ONNX (.onnx) — for TensorRT / cross-platform
-    - PyTorch state_dict (.pth)
-
-Reference:
-    - Paper: "Ultra Fast Deep Lane Detection with Hybrid Anchor Driven Ordinal Classification"
-    - GitHub: https://github.com/cfzd/Ultra-Fast-Lane-Detection-v2
-
-Tác giả: AI Architect
-Ngày: 2026-02-27
-"""
 
 import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List, Tuple, TYPE_CHECKING
 from collections import deque
 import logging
+
+# Optional CUDA preprocessor import (for zero-copy mode)
+if TYPE_CHECKING:
+    from backend.perception.cuda_preprocess import CUDAPreprocessor
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +262,7 @@ class UFLDLaneDetector:
         input_w: int = DEFAULT_INPUT_W,
         conf_threshold: float = 0.5,
         smooth_alpha: float = 0.3,
+        cuda_preprocessor: Optional["CUDAPreprocessor"] = None,
     ):
         """
         Args:
@@ -297,6 +275,7 @@ class UFLDLaneDetector:
             input_w: Network input width
             conf_threshold: Minimum confidence to count a lane as detected
             smooth_alpha: EMA smoothing factor (lower = smoother)
+            cuda_preprocessor: Optional shared CUDAPreprocessor for zero-copy GpuMat reuse
         """
         self.device = device
         self.num_lanes = num_lanes
@@ -305,6 +284,9 @@ class UFLDLaneDetector:
         self.input_h = input_h
         self.input_w = input_w
         self.conf_threshold = conf_threshold
+        
+        # External CUDA preprocessor for zero-copy mode
+        self._cuda_preprocessor = cuda_preprocessor
         
         # Check CUDA
         if device == "cuda" and not torch.cuda.is_available():
@@ -439,6 +421,9 @@ class UFLDLaneDetector:
         """
         Preprocess frame for UFLD input — GPU-accelerated.
 
+        Uses external CUDAPreprocessor if provided (zero-copy GpuMat reuse),
+        otherwise falls back to internal GPU preprocessing.
+
         Steps:
             1. Crop bottom 60% of image (lanes are in lower part)
             2. GPU resize to (input_h, input_w)
@@ -446,6 +431,16 @@ class UFLDLaneDetector:
             4. Normalize: ImageNet mean/std
             5. Convert to NCHW tensor on CUDA
         """
+        # Use shared CUDA preprocessor if available (zero-copy mode)
+        if self._cuda_preprocessor is not None:
+            return self._cuda_preprocessor.preprocess_lane(
+                frame,
+                crop_ratio=0.40,
+                target_h=self.input_h,
+                target_w=self.input_w,
+            )
+        
+        # Fallback: internal preprocessing
         h, w = frame.shape[:2]
 
         # Crop top 40% (sky/horizon) — keep bottom 60% where lanes are
@@ -483,6 +478,32 @@ class UFLDLaneDetector:
         # HWC → CHW → NCHW  (direct to CUDA tensor)
         tensor = torch.from_numpy(rgb.transpose(2, 0, 1)).unsqueeze(0).to(self.device)
         return tensor
+    
+    def preprocess_from_gpu(self, gpu_frame: "cv2.cuda_GpuMat", frame_shape: Tuple[int, int, int]) -> torch.Tensor:
+        """
+        Preprocess from already-uploaded GpuMat (zero-copy entry point).
+        
+        Called by worker when frame is already on GPU.
+        Avoids redundant CPU-GPU transfer.
+        
+        Args:
+            gpu_frame: Frame already on GPU (from worker's frame_context)
+            frame_shape: Original frame shape (h, w, c)
+        
+        Returns:
+            Preprocessed tensor ready for inference
+        """
+        if self._cuda_preprocessor is not None:
+            return self._cuda_preprocessor.preprocess_lane_from_gpu(
+                gpu_frame, frame_shape,
+                crop_ratio=0.40,
+                target_h=self.input_h,
+                target_w=self.input_w,
+            )
+        else:
+            # No preprocessor, download and use regular path
+            frame = gpu_frame.download()
+            return self._preprocess(frame)
     
     # ------------------------------------------------------------------
     # Inference

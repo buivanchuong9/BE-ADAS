@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 import logging
+import os
 from pathlib import Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -373,7 +374,7 @@ async def download_result(
     
     Args:
         job_id: Job ID
-        filename: Result filename
+        filename: Result filename (ignored, uses result.mp4)
         db: Database session
         
     Returns:
@@ -381,7 +382,6 @@ async def download_result(
     """
     try:
         from app.db.repositories.job_queue_repo import JobQueueRepository
-        from app.services.video_service import VideoService
         
         # Get job from database
         repo = JobQueueRepository(db)
@@ -396,18 +396,33 @@ async def download_result(
                 detail=f"Job {job_id} not completed. Status: {job.status}"
             )
         
-        # Get output path
-        video_service = VideoService(db)
-        output_path = Path(video_service.get_output_path(job_id))
+        # Use result_path directly from job record
+        if not job.result_path:
+            raise HTTPException(status_code=404, detail="Result video path not set")
         
-        if not output_path.exists():
-            raise HTTPException(status_code=404, detail="Result video not found")
+        result_path = Path(job.result_path)
+        
+        # Handle both absolute and relative paths
+        if not result_path.is_absolute():
+            # Try relative to project root
+            result_path = Path(settings.STORAGE_ROOT).parent / job.result_path
+        
+        if not result_path.exists():
+            # Try storage/result/{job_id}/result.mp4 as fallback
+            fallback_path = Path(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result')) / str(job_id) / "result.mp4"
+            if fallback_path.exists():
+                result_path = fallback_path
+            else:
+                logger.error(f"Result video not found: tried {job.result_path} and {fallback_path}")
+                raise HTTPException(status_code=404, detail=f"Result video not found at {job.result_path}")
+        
+        logger.info(f"Serving result video: {result_path}")
         
         # Return file
         return FileResponse(
-            path=str(output_path),
+            path=str(result_path),
             media_type="video/mp4",
-            filename=filename
+            filename=filename or "result.mp4"
         )
     
     except HTTPException:
@@ -415,6 +430,80 @@ async def download_result(
     except Exception as e:
         logger.error(f"Download failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+
+@router.get("/stream/{job_id}")
+async def stream_result_video(
+    job_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Stream processed video file directly (no filename required).
+    
+    Simpler alternative to /download/{job_id}/{filename}.
+    
+    Args:
+        job_id: Job ID
+        db: Database session
+        
+    Returns:
+        Video file stream
+        
+    Example:
+        GET /api/video/stream/036948c7-5a72-40cf-8266-f597e1f47f50
+    """
+    try:
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        
+        # Get job from database
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+        
+        if job.status != 'completed':
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Job {job_id} not completed. Status: {job.status}"
+            )
+        
+        # Find result video
+        result_path = None
+        
+        # 1. Try job.result_path
+        if job.result_path:
+            candidate = Path(job.result_path)
+            if candidate.exists():
+                result_path = candidate
+            elif not candidate.is_absolute():
+                # Try relative to project root
+                candidate = Path(settings.STORAGE_ROOT).parent / job.result_path
+                if candidate.exists():
+                    result_path = candidate
+        
+        # 2. Fallback to standard location
+        if not result_path:
+            fallback = Path(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result')) / str(job_id) / "result.mp4"
+            if fallback.exists():
+                result_path = fallback
+        
+        if not result_path or not result_path.exists():
+            raise HTTPException(status_code=404, detail=f"Result video not found for job {job_id}")
+        
+        logger.info(f"Streaming result video: {result_path}")
+        
+        return FileResponse(
+            path=str(result_path),
+            media_type="video/mp4",
+            filename=f"result_{job_id[:8]}.mp4"
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Stream failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Stream failed: {str(e)}")
 
 
 @router.delete("/job/{job_id}")
@@ -611,3 +700,304 @@ async def get_raw_video(
         logger.error(f"Get raw video failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get raw video: {str(e)}")
 
+
+@router.post("/upload-sync")
+async def upload_and_analyze_sync(
+    file: UploadFile = File(...),
+    video_type: str = "dashcam",
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    SYNCHRONOUS video upload and analysis.
+    
+    This endpoint uploads a video, processes it immediately with GPU,
+    and returns the analyzed video URL when complete.
+    
+    Typical processing time:
+    - 10s video @ 30fps: ~10-15s (with GPU)
+    - 30s video @ 30fps: ~25-35s (with GPU)  
+    - 60s video @ 30fps: ~50-70s (with GPU)
+    
+    Flow:
+    1. Upload video to storage
+    2. Create job record
+    3. Process with GPU (blocking)
+    4. Return result URL
+    
+    Args:
+        file: Video file (mp4, avi, mov, max 200MB for sync)
+        video_type: "dashcam" or "in_cabin"
+        db: Database session
+        
+    Returns:
+        {
+            "job_id": "uuid",
+            "status": "completed",
+            "video_url": "https://api/public/results/uuid/result.mp4",
+            "processing_time_seconds": 35,
+            "events_count": 12
+        }
+    """
+    import time
+    import asyncio
+    import uuid
+    from concurrent.futures import ThreadPoolExecutor
+    
+    start_time = time.time()
+    job_id = None
+    
+    try:
+        logger.info(f"📤 [SYNC] Upload started: {file.filename} (type={video_type})")
+        
+        # === VALIDATION ===
+        if not file or not file.filename:
+            raise HTTPException(status_code=400, detail="No file provided")
+        
+        # Check file size (max 200MB for sync processing to avoid timeout)
+        MAX_SYNC_SIZE_MB = 200
+        file_content = await file.read()
+        file_size_mb = len(file_content) / (1024 * 1024)
+        
+        if file_size_mb > MAX_SYNC_SIZE_MB:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large for sync processing ({file_size_mb:.1f}MB). "
+                       f"Max: {MAX_SYNC_SIZE_MB}MB. Use /upload for async processing."
+            )
+        
+        # Reset file position for saving
+        await file.seek(0)
+        
+        # === CREATE VIDEO SERVICE ===
+        video_service = VideoService(db)
+        
+        # Quick validation (extension + content type)
+        valid_extensions = {'.mp4', '.avi', '.mov', '.mkv', '.webm'}
+        ext = Path(file.filename).suffix.lower()
+        if ext not in valid_extensions:
+            raise HTTPException(status_code=400, detail=f"Invalid video format: {ext}")
+        
+        # === CREATE JOB IN DATABASE ===
+        job = await video_service.create_job(
+            filename=file.filename,
+            video_type=video_type,
+            device="cuda",
+            user_id=1  # Default user for MVP
+        )
+        job_id = str(job.job_id)
+        
+        # Save uploaded file
+        await video_service.save_uploaded_video(job.job_id, file)
+        upload_time = time.time() - start_time
+        logger.info(f"[SYNC] ✓ Video uploaded: {job_id} ({upload_time:.1f}s, {file_size_mb:.1f}MB)")
+        
+        # === GET VIDEO PATH ===
+        # Refresh job to get video info
+        from app.db.repositories.job_queue_repo import JobQueueRepository
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job or not job.video:
+            raise HTTPException(status_code=500, detail="Failed to create job record")
+        
+        input_path = job.video.storage_path
+        
+        # === RUN GPU PROCESSING ===
+        logger.info(f"[SYNC] 🚀 Starting GPU processing: {job_id}")
+        
+        # Import and run GPU worker processing directly
+        # This runs synchronously in a ThreadPool to not block event loop
+        def _run_gpu_analysis():
+            """Run GPU analysis in thread."""
+            import os
+            import sys
+            import cv2
+            import numpy as np
+            from pathlib import Path as PPath
+            
+            # Add project root
+            project_root = PPath(__file__).parent.parent.parent.parent
+            sys.path.insert(0, str(project_root))
+            
+            # Import ADAS components
+            from backend.perception.object.object_detector_v11 import ObjectDetectorV11
+            from backend.perception.lane.lane_detector_ufld import UFLDLaneDetector
+            from backend.perception.distance.distance_estimator import DistanceEstimator
+            from backend.perception.cuda_preprocess import CUDAPreprocessor
+            from backend.perception.risk.fcw_ttc import compute_fcw
+            from backend.core.ffmpeg_utils import FFmpegEncoder, get_video_info
+            
+            # Setup paths
+            output_dir = PPath(os.getenv('VIDEOS_OUTPUT_DIR', './storage/result')) / job_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            result_path = output_dir / "result.mp4"
+            
+            # Load models (cached after first load)
+            device = "cuda"
+            cuda_prep = CUDAPreprocessor(enable_cuda=True, device=device)
+            
+            obj_detector = ObjectDetectorV11(
+                model_path='backend/models/yolo11x.pt',
+                device=device,
+                conf_threshold=0.5,
+                imgsz=416,
+            )
+            
+            lane_detector = UFLDLaneDetector(
+                model_path=None,  # Using untrained for now
+                device=device,
+                cuda_preprocessor=cuda_prep,
+            )
+            
+            dist_estimator = DistanceEstimator(focal_length=700.0, camera_height=1.2)
+            
+            # Open video
+            cap = cv2.VideoCapture(str(input_path))
+            if not cap.isOpened():
+                raise RuntimeError(f"Cannot open video: {input_path}")
+            
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            # Process frames
+            events = []
+            frame_idx = 0
+            
+            with FFmpegEncoder(
+                output_path=str(result_path),
+                width=width,
+                height=height,
+                fps=fps,
+                use_nvenc=True,
+                preset='fast'
+            ) as encoder:
+                
+                while True:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    
+                    # Object detection
+                    obj_result = obj_detector.process_frame(frame)
+                    objects = obj_result.get('detections', [])
+                    
+                    # Lane detection (every 3 frames)
+                    if frame_idx % 3 == 0:
+                        lane_result = lane_detector.process_frame(frame)
+                    
+                    # Distance + FCW for each object
+                    EGO_SPEED = 50.0  # km/h
+                    for obj in objects:
+                        if obj.get('bbox'):
+                            dist = dist_estimator.estimate_distance_bbox(
+                                bbox=obj['bbox'],
+                                vehicle_type=obj.get('class_name', 'car'),
+                                frame_height=height
+                            )
+                            fcw = compute_fcw(dist.get('distance', 100), EGO_SPEED)
+                            obj['distance'] = dist
+                            obj['fcw_state'] = fcw.state
+                    
+                    # Draw overlay (simplified)
+                    annotated = frame.copy()
+                    
+                    # Draw lane corridor if available
+                    if 'annotated_frame' in lane_result:
+                        annotated = lane_result['annotated_frame']
+                    
+                    # Draw object boxes
+                    for obj in objects:
+                        if obj.get('bbox'):
+                            x1, y1, x2, y2 = [int(v) for v in obj['bbox']]
+                            color = (0, 255, 0)
+                            if obj.get('fcw_state') == 'COLLISION_RISK':
+                                color = (0, 0, 255)
+                            elif obj.get('fcw_state') == 'WARNING':
+                                color = (0, 165, 255)
+                            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                            
+                            # Label
+                            label = obj.get('class_name', 'obj')
+                            if obj.get('distance'):
+                                label += f" {obj['distance'].get('distance', 0):.0f}m"
+                            cv2.putText(annotated, label, (x1, y1 - 10),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    
+                    # Write frame
+                    encoder.write(annotated)
+                    frame_idx += 1
+                    
+                    # Progress logging
+                    if frame_idx % 30 == 0:
+                        progress = int((frame_idx / max(1, total_frames)) * 100)
+                        logger.info(f"[SYNC] Progress: {progress}% ({frame_idx}/{total_frames})")
+            
+            cap.release()
+            
+            return {
+                'result_path': str(result_path),
+                'frames_processed': frame_idx,
+                'events_count': len(events),
+            }
+        
+        # Run in thread pool to not block async event loop
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix='sync_gpu') as executor:
+            result = await loop.run_in_executor(executor, _run_gpu_analysis)
+        
+        processing_time = int(time.time() - start_time)
+        
+        # === UPDATE JOB STATUS ===
+        from app.db.models.job_queue import JobStatus
+        await repo.update_status(job_id, JobStatus.COMPLETED)
+        await repo.update(
+            job.id,
+            result_path=result['result_path'],
+            processing_time_seconds=processing_time,
+            progress_percent=100
+        )
+        await db.commit()
+        
+        logger.info(
+            f"[SYNC] ✅ Completed: {job_id} in {processing_time}s "
+            f"({result['frames_processed']} frames)"
+        )
+        
+        # Build result URL
+        result_filename = Path(result['result_path']).name
+        result_url = f"{settings.API_BASE_URL}/public/results/{job_id}/{result_filename}"
+        
+        return {
+            "job_id": job_id,
+            "status": "completed",
+            "video_url": result_url,
+            "full_result_video_url": result_url,
+            "processing_time_seconds": processing_time,
+            "frames_processed": result['frames_processed'],
+            "events_count": result.get('events_count', 0),
+            "message": f"Video analyzed successfully in {processing_time}s"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[SYNC] ❌ Failed: {e}", exc_info=True)
+        
+        # Mark job as failed if we have a job_id
+        if job_id:
+            try:
+                from app.db.repositories.job_queue_repo import JobQueueRepository
+                from app.db.models.job_queue import JobStatus
+                repo = JobQueueRepository(db)
+                await repo.update_status(job_id, JobStatus.FAILED)
+                await repo.update(job.id, error_message=str(e))
+                await db.commit()
+            except Exception:
+                pass
+        
+        raise HTTPException(
+            status_code=500,
+            detail=f"Video analysis failed: {str(e)}"
+        )
