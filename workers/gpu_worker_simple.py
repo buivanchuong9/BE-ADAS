@@ -364,6 +364,11 @@ class SimpleGPUWorker:
             prof = self.MODEL_PROFILES.get(self.model_profile, self.MODEL_PROFILES['cloud'])
             obj_model_path  = prof['obj_model']
             pose_model_path = prof['pose_model']
+            
+            # Auto-fallback: if .engine not found, use .pt fallback
+            if not Path(obj_model_path).exists() and 'obj_model_fallback' in prof:
+                logger.warning(f"[GPU] TensorRT engine not found: {obj_model_path}, using fallback .pt model")
+                obj_model_path = prof['obj_model_fallback']
 
             logger.info(
                 f"[GPU] Loading pipeline 'in_cabin': DriverMonitor PRO "
