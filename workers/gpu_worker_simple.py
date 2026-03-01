@@ -830,13 +830,28 @@ class SimpleGPUWorker:
             results['objects_with_distance'] = []
             results['traffic_signs']         = []
 
-        # Events summary
-        results['events'] = [
-            {'type': w.get('type', 'warning'), 'level': w.get('severity', 'medium'),
-             'time': frame_idx / 30.0, 'frame': frame_idx,
-             'data': {'message': w.get('message', '')}}
-            for w in results['warnings']
-        ]
+        # Events summary - handle both dict and string warnings
+        events = []
+        for w in results['warnings']:
+            if isinstance(w, dict):
+                events.append({
+                    'type': w.get('type', 'warning'),
+                    'level': w.get('severity', 'medium'),
+                    'time': frame_idx / 30.0,
+                    'frame': frame_idx,
+                    'data': {'message': w.get('message', '')}
+                })
+            else:
+                # String warning (e.g., "Drowsy", "Phone detected")
+                events.append({
+                    'type': 'driver_alert',
+                    'level': 'high',
+                    'time': frame_idx / 30.0,
+                    'frame': frame_idx,
+                    'data': {'message': str(w)}
+                })
+        results['events'] = events
+        
         if frame_idx % 60 == 0:
             obj_count = len(results.get('objects_with_distance', []))
             has_lane  = results.get('has_lane', False)
