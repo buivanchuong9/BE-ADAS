@@ -41,8 +41,8 @@ echo "🚀 Starting API Server..."
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
 # 8. Start GPU Workers (Python Only - STABLE)
 # Khuần nghị: 1 worker cho mỗi GPU A30
-echo "🚀 Starting GPU Worker (FAST Profile - YOLOv11m + FP16)..."
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile fast --database-url "$DATABASE_URL" >> api.log 2>&1 &
+echo "🚀 Starting GPU Worker (TURBO Profile - TensorRT)..."
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile turbo --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # 9. Xem log (API + Worker cùng 1 chỗ)
 tail -f api.log
