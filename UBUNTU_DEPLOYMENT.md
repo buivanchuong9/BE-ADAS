@@ -24,24 +24,32 @@ which ffmpeg || sudo apt-get update && sudo apt-get install -y ffmpeg
 ffmpeg -version | head -1
 # Expected: ffmpeg version 4.x.x ...
 
-# 5. Kill tất cả services cũ
-pkill -u phonglv -f "gpu_worker"
-pkill -u phonglv -f "uvicorn backend.app.main"
-pkill -9 ffmpeg
+# 5. Kill TẤT CẢ services cũ (TRIỆT ĐỂ)
+pkill -u phonglv -f "gpu_worker" 2>/dev/null
+pkill -u phonglv -f "uvicorn" 2>/dev/null
+sleep 1
+# Force kill nếu vẫn còn sống
+fuser -k 52000/tcp 2>/dev/null   # Kill process đang giữ port 52000
+pkill -9 -u phonglv -f "uvicorn" 2>/dev/null
+pkill -9 ffmpeg 2>/dev/null
+sleep 2
+# Verify port đã free
+lsof -i:52000 && echo "❌ PORT 52000 VẪN BỊ CHIẾM!" || echo "✅ Port 52000 đã free"
 
 # 6. Export env và path
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=/home/phonglv/opencv_cuda/lib/python3.12/site-packages:$(pwd):$PYTHONPATH
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
 
-
-
 # 7. Start API (Backend)
 echo "🚀 Starting API Server..."
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
-# 8. Start GPU Workers (Python Only - STABLE)
-# Khuần nghị: 1 worker cho mỗi GPU A30
-echo "🚀 Starting GPU Worker (TURBO Profile - TensorRT)..."
+sleep 3  # Chờ uvicorn bind port xong
+curl -s http://localhost:52000/health > /dev/null && echo "✅ API started OK" || echo "⚠️ API chưa ready, check api.log"
+
+# 8. Start GPU Worker (TURBO Profile)
+# Khuyến nghị: 1 worker cho mỗi GPU A30
+echo "🚀 Starting GPU Worker (TURBO Profile)..."
 nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile turbo --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # 9. Xem log (API + Worker cùng 1 chỗ)
@@ -196,23 +204,27 @@ cd ~/BE-ADAS
 git pull origin main
 pip install -r requirements.txt
 
-# Kill tất cả services cũ
-pkill -u phonglv -f "gpu_worker"
-pkill -u phonglv -9 uvicorn
-pkill -9 ffmpeg  # Kill zombie FFmpeg (CRITICAL!)
+# Kill TẤT CẢ services cũ (TRIỆT ĐỂ)
+pkill -u phonglv -f "gpu_worker" 2>/dev/null
+pkill -u phonglv -f "uvicorn" 2>/dev/null
+sleep 1
+fuser -k 52000/tcp 2>/dev/null
+pkill -9 -u phonglv -f "uvicorn" 2>/dev/null
+pkill -9 ffmpeg 2>/dev/null
+sleep 2
 
-# Export env và path
+# Export env và path (PHẢI CÓ opencv_cuda)
 export $(grep -v '^#' .env | xargs)
-export PYTHONPATH=$PYTHONPATH:$(pwd)/backend
+export PYTHONPATH=/home/phonglv/opencv_cuda/lib/python3.12/site-packages:$(pwd):$PYTHONPATH
+export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
 
-# Start API (log vào api.log)
-nohup uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --proxy-headers >> api.log 2>&1 &
+# Start API
+nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
+sleep 3
+curl -s http://localhost:52000/health > /dev/null && echo "✅ API OK" || echo "❌ API FAILED"
 
-# Start GPU Worker (Python Only - STABLE)
-cd ~/BE-ADAS
-# Gộp worker log vào api.log để theo dõi 1 chỗ
-# --profile cloud: YOLOv11x (server) | --profile edge: YOLOv8n (nhẹ)
-nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile cloud --database-url "$DATABASE_URL" >> api.log 2>&1 &
+# Start GPU Worker (TURBO = YOLOv11m, nhanh nhất)
+nohup python3 workers/gpu_worker_simple.py --worker-id worker_0 --device cuda --profile turbo --database-url "$DATABASE_URL" >> api.log 2>&1 &
 
 # Xem log tất cả (API + Worker trong 1 luồng)
 tail -f api.log
