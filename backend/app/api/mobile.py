@@ -601,19 +601,53 @@ async def _mobile_download_video(
                 }
             )
         
-        # Get result path
-        video_service = VideoService(db)
-        output_path = Path(video_service.get_output_path(job_id))
+        # Try multiple paths to find the video file
+        import os
+        from app.core.config import settings
         
-        # Check if result file exists
-        if not output_path.exists():
+        search_paths = [
+            # 1. From VideoService (respects VIDEOS_OUTPUT_DIR env)
+            Path(VideoService(db).get_output_path(job_id)),
+            
+            # 2. Production path (explicit)
+            Path(os.getenv('VIDEOS_OUTPUT_DIR', '/hdd3/adas/videos/output')) / str(job_id) / "result.mp4",
+            
+            # 3. Development path
+            Path(settings.PROCESSED_VIDEO_DIR) / str(job_id) / "result.mp4",
+            
+            # 4. Relative fallback
+            Path("storage/result") / str(job_id) / "result.mp4",
+            
+            # 5. From job.result_path if available
+        ]
+        
+        if job.result_path:
+            search_paths.append(Path(job.result_path))
+        
+        output_path = None
+        for candidate in search_paths:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    output_path = candidate
+                    logger.info(f"[Mobile Download] Found video at: {output_path}")
+                    break
+            except Exception as e:
+                logger.debug(f"[Mobile Download] Path check failed for {candidate}: {e}")
+                continue
+        
+        if not output_path or not output_path.exists():
+            logger.error(
+                f"[Mobile Download] Video file not found for job {job_id}. "
+                f"Tried paths: {[str(p) for p in search_paths]}"
+            )
             raise HTTPException(
                 status_code=404,
                 detail={
                     "success": False,
                     "error": {
                         "code": "NOT_FOUND",
-                        "message": "Video kết quả không tìm thấy"
+                        "message": f"Video kết quả không tìm thấy. Job status: {job.status}",
+                        "searched_paths": [str(p) for p in search_paths]
                     }
                 }
             )
@@ -982,14 +1016,55 @@ async def _mobile_driver_download(
                 }
             )
         
-        # Find result file
-        video_service = VideoService(db)
-        output_path = Path(video_service.get_output_path(job_id))
+        # Try multiple paths to find the video file
+        import os
+        from app.core.config import settings
         
-        if not output_path.exists():
+        search_paths = [
+            # 1. From VideoService (respects VIDEOS_OUTPUT_DIR env)
+            Path(VideoService(db).get_output_path(job_id)),
+            
+            # 2. Production path (explicit)
+            Path(os.getenv('VIDEOS_OUTPUT_DIR', '/hdd3/adas/videos/output')) / str(job_id) / "result.mp4",
+            
+            # 3. Development path
+            Path(settings.PROCESSED_VIDEO_DIR) / str(job_id) / "result.mp4",
+            
+            # 4. Relative fallback
+            Path("storage/result") / str(job_id) / "result.mp4",
+            
+            # 5. From job.result_path if available
+        ]
+        
+        if job.result_path:
+            search_paths.append(Path(job.result_path))
+        
+        output_path = None
+        for candidate in search_paths:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    output_path = candidate
+                    logger.info(f"[Driver Download] Found video at: {output_path}")
+                    break
+            except Exception as e:
+                logger.debug(f"[Driver Download] Path check failed for {candidate}: {e}")
+                continue
+        
+        if not output_path or not output_path.exists():
+            logger.error(
+                f"[Driver Download] Video file not found for job {job_id}. "
+                f"Tried paths: {[str(p) for p in search_paths]}"
+            )
             raise HTTPException(
                 status_code=404,
-                detail={"success": False, "error": {"code": "NOT_FOUND", "message": "Video kết quả không tìm thấy"}}
+                detail={
+                    "success": False,
+                    "error": {
+                        "code": "NOT_FOUND",
+                        "message": f"Video kết quả không tìm thấy. Job status: {job.status}",
+                        "searched_paths": [str(p) for p in search_paths]
+                    }
+                }
             )
         
         file_size = output_path.stat().st_size

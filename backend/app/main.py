@@ -325,44 +325,64 @@ app.include_router(analytics_router)  # Analytics Dashboard Charts (/api/analyti
 # - CORS: Access-Control-Allow-Origin: *
 # - Range Request: HTTP 206 Partial Content (for streaming)
 # - Cache: public, max-age=86400
+# - Mobile-compatible format (yuv420p, baseline profile, faststart)
 from fastapi import Response
 from fastapi.responses import StreamingResponse
 
-@app.get("/public/results/{file_path:path}")
-async def serve_public_result(
-    file_path: str,
-    request: Request
-):
+async def _serve_result_video(file_path: str, request: Request):
     """
-    Serve processed video files with streaming support.
+    Internal function to serve video files with streaming support.
     
-    Features:
-    - Public access (no auth required)
-    - Range request support (HTTP 206)
-    - CORS headers for cross-origin access
-    - Proper caching headers
-    - Supports subdirectory paths: /public/results/{job_id}/result.mp4
+    CRITICAL for mobile streaming:
+    - Videos MUST be encoded with -movflags +faststart (metadata at start)
+    - Videos MUST have .mp4 extension in URL
+    - Range request support (HTTP 206) for progressive download
+    
+    Searches for files in multiple locations:
+    1. VIDEOS_OUTPUT_DIR (production - /hdd3/adas/videos/output)
+    2. PROCESSED_VIDEO_DIR (development - ./backend/storage/result)
     """
     from pathlib import Path
     import os
     
-    public_results_dir = Path(settings.PROCESSED_VIDEO_DIR)
-    resolved_path = public_results_dir / file_path
     filename = Path(file_path).name
     
     # Security: prevent path traversal
-    if ".." in file_path or not resolved_path.resolve().is_relative_to(public_results_dir.resolve()):
+    if ".." in file_path:
         from fastapi.responses import JSONResponse
         return JSONResponse(
             status_code=400,
             content={"error": "Invalid path"}
         )
     
-    if not resolved_path.exists():
+    # Try multiple locations (production → development)
+    search_paths = [
+        Path(settings.VIDEOS_OUTPUT_DIR) / file_path,        # Production: /hdd3/adas/videos/output/{job_id}/result.mp4
+        Path(settings.PROCESSED_VIDEO_DIR) / file_path,      # Development: ./backend/storage/result/{job_id}/result.mp4
+        Path("storage/result") / file_path,                   # Relative path fallback
+        Path("/hdd3/adas/videos/output") / file_path,        # Absolute fallback
+    ]
+    
+    resolved_path = None
+    for candidate in search_paths:
+        try:
+            if candidate.exists() and candidate.is_file():
+                resolved_path = candidate
+                logger.debug(f"[SERVE] Found video at: {resolved_path}")
+                break
+        except Exception as e:
+            logger.debug(f"[SERVE] Path check failed for {candidate}: {e}")
+            continue
+    
+    if not resolved_path or not resolved_path.exists():
         from fastapi.responses import JSONResponse
+        logger.warning(f"[SERVE] File not found: {file_path}. Tried: {[str(p) for p in search_paths]}")
         return JSONResponse(
             status_code=404,
-            content={"error": f"File not found: {file_path}"},
+            content={
+                "error": f"File not found: {file_path}",
+                "searched_paths": [str(p) for p in search_paths]
+            },
             headers={
                 "Access-Control-Allow-Origin": "*"
             }
@@ -440,6 +460,53 @@ async def serve_public_result(
             "Content-Disposition": f'inline; filename="{filename}"'
         }
     )
+
+
+@app.get("/api/results/{file_path:path}")
+async def serve_api_result(
+    file_path: str,
+    request: Request
+):
+    """
+    Serve processed video files via /api/results path (Mobile App v1 compatibility).
+    
+    This endpoint exists for backward compatibility with mobile apps that use:
+    https://adas-api.aiotlab.edu.vn/api/results/{job_id}/result.mp4
+    
+    Features:
+    - Public access (no auth required)
+    - Range request support (HTTP 206) for streaming
+    - CORS headers for cross-origin access
+    - Mobile-compatible video format (baseline profile, faststart)
+    
+    Example:
+        GET /api/results/22d92fb5-9587-4bc6-99ed-d542210ecaac/result.mp4
+    """
+    return await _serve_result_video(file_path, request)
+
+
+@app.get("/public/results/{file_path:path}")
+
+
+@app.get("/public/results/{file_path:path}")
+async def serve_public_result(
+    file_path: str,
+    request: Request
+):
+    """
+    Serve processed video files via /public/results path.
+    
+    Features:
+    - Public access (no auth required)
+    - Range request support (HTTP 206) for streaming
+    - CORS headers for cross-origin access
+    - Mobile-compatible video format
+    - Supports subdirectory paths: /public/results/{job_id}/result.mp4
+    
+    Example:
+        GET /public/results/22d92fb5-9587-4bc6-99ed-d542210ecaac/result.mp4
+    """
+    return await _serve_result_video(file_path, request)
 
 
 @app.get("/")
