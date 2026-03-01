@@ -369,6 +369,13 @@ class SimpleGPUWorker:
             if not Path(obj_model_path).exists() and 'obj_model_fallback' in prof:
                 logger.warning(f"[GPU] TensorRT engine not found: {obj_model_path}, using fallback .pt model")
                 obj_model_path = prof['obj_model_fallback']
+            
+            # Auto-fallback for pose model: if turbo/fast pose model missing, use cloud profile
+            if not Path(pose_model_path).exists():
+                fallback_pose = self.MODEL_PROFILES['cloud']['pose_model']
+                if Path(fallback_pose).exists():
+                    logger.warning(f"[GPU] Pose model not found: {pose_model_path}, using fallback: {fallback_pose}")
+                    pose_model_path = fallback_pose
 
             logger.info(
                 f"[GPU] Loading pipeline 'in_cabin': DriverMonitor PRO "
