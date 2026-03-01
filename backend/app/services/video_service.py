@@ -43,8 +43,9 @@ class VideoService:
         self.session = session
         
         # Create storage directories
+        # Use same env var as GPU worker for consistency
         self.raw_dir = Path(settings.RAW_VIDEO_DIR)
-        self.processed_dir = Path(settings.PROCESSED_VIDEO_DIR)
+        self.processed_dir = Path(os.getenv('VIDEOS_OUTPUT_DIR', settings.PROCESSED_VIDEO_DIR))
         self.snapshot_dir = Path(settings.SNAPSHOT_DIR)
         
         self.raw_dir.mkdir(parents=True, exist_ok=True)
@@ -394,15 +395,17 @@ class VideoService:
         """
         Generate output path for processed video.
         
+        GPU worker saves result at: storage/result/{job_id}/result.mp4
+        
         Args:
             job_id: Job ID
-            ext: File extension
+            ext: File extension (not used, kept for backwards compatibility)
             
         Returns:
             Output file path
         """
-        output_filename = f"{job_id}_result{ext}"
-        return str(self.processed_dir / output_filename)
+        # Match GPU worker output path: storage/result/{job_id}/result.mp4
+        return str(self.processed_dir / job_id / "result.mp4")
     
     async def analyze_video(
         self,
