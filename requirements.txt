@@ -44,3 +44,6 @@ aiofiles==24.1.0
 # Text-to-speech (Vietnamese support)
 pyttsx3==2.98
 gTTS==2.5.3
+
+# Face Mesh / Driver Monitoring
+mediapipe>=0.10.0

@@ -5,18 +5,20 @@ Phát hiện hành vi nguy hiểm của tài xế với độ chính xác cao:
 - Dùng điện thoại (phone near face/ear)
 - Uống nước/ăn khi lái (cup/bottle near mouth)
 - Hút thuốc (hand near mouth pattern)
-- Buồn ngủ/mệt mỏi (head pose + eye closure)
+- Buồn ngủ/mệt mỏi (head pose + eye closure + EAR)
 - Mất tập trung (looking away, not watching road)
 
 Advanced Features:
+- MediaPipe Face Mesh (468 landmarks)
+- EAR (Eye Aspect Ratio) for drowsiness detection
+- Blink counting and PERCLOS
 - Head Pose Estimation (yaw, pitch, roll)
 - Attention Score (0-100)
 - Distraction Level Tracking
-- Temporal Smoothing với multi-frame analysis
 - Vietnamese voice warnings support
 
 Tác giả: Lead AI Architect
-Version: 2.0 PRO
+Version: 2.1 PRO + Face Mesh
 Ngày: 2026-03-01
 """
 
@@ -33,21 +35,32 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Try to import MediaPipe
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+    logger.info("✅ MediaPipe available for Face Mesh")
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    logger.warning("⚠️ MediaPipe not installed - Face Mesh disabled. Install with: pip install mediapipe")
+
 
 class DriverMonitorV11Pro:
     """
-    Hệ thống giám sát tài xế PRO - Object Detection + Pose + Head Pose Analysis.
+    Hệ thống giám sát tài xế PRO - Object Detection + Pose + Face Mesh + Head Pose Analysis.
     
     Architecture:
-        Frame → YOLO Object → YOLO Pose → Head Pose → Behavior Analysis → Risk Score
+        Frame → YOLO Object → YOLO Pose → MediaPipe Face Mesh → Head Pose → Behavior Analysis → Risk Score
     
     Tính năng NÂNG CAO:
+    - MediaPipe Face Mesh (468 landmarks) với EAR & MAR
+    - Eye Aspect Ratio (EAR) để phát hiện mắt nhắm
+    - Đếm số lần chớp mắt (Blink Counter)
+    - PERCLOS (% mắt nhắm) để phát hiện buồn ngủ
     - Phát hiện điện thoại, ly/chai nước với temporal smoothing
     - Head Pose Estimation (yaw/pitch/roll) từ facial keypoints
     - Attention Score (0-100) - đánh giá mức tập trung
     - Distraction Level Tracking (LOW → CRITICAL)
-    - Phát hiện buồn ngủ đa tiêu chí (head nod, eye closure approximation, head tilt)
-    - Smoking detection via hand-mouth proximity pattern
     - Vietnamese warnings với severity levels
     """
     
@@ -72,6 +85,28 @@ class DriverMonitorV11Pro:
     PITCH_SEVERE = 35            # Severely tilted
     ROLL_THRESHOLD = 25          # Head roll (lateral tilt)
     
+    # ===== EYE ASPECT RATIO (EAR) Configuration =====
+    # MediaPipe Face Mesh eye landmark indices
+    # Left eye: 6 points for EAR calculation
+    LEFT_EYE_IDX = [362, 385, 387, 263, 373, 380]
+    # Right eye: 6 points for EAR calculation  
+    RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]
+    
+    # Mouth landmarks for MAR (Mouth Aspect Ratio)
+    MOUTH_IDX = [61, 291, 0, 17, 269, 405]
+    
+    # EAR thresholds
+    EAR_THRESHOLD = 0.21         # Below this = eyes closed
+    EAR_CONSEC_FRAMES = 3        # Consecutive frames for blink
+    EAR_DROWSY_TIME = 2.0        # Seconds with low EAR = drowsy
+    
+    # PERCLOS threshold (% of time eyes closed in 1 minute)
+    PERCLOS_THRESHOLD = 0.15     # 15% = drowsy
+    
+    # MAR thresholds for yawning
+    MAR_THRESHOLD = 0.6          # Above this = yawning
+    YAWN_FRAMES = 15             # Frames to confirm yawn
+    
     # Temporal thresholds (frames @ 30fps)
     LOOKING_AWAY_FRAMES = 45     # 1.5 seconds
     DROWSY_FRAMES = 60           # 2 seconds
@@ -80,9 +115,9 @@ class DriverMonitorV11Pro:
     
     # Attention Score configuration
     ATTENTION_WEIGHTS = {
-        'head_forward': 35,      # Looking forward (yaw < threshold)
-        'head_level': 20,        # Head not tilted (pitch < threshold)
-        'eyes_open': 25,         # Eyes appear open (EAR-like)
+        'head_forward': 30,      # Looking forward (yaw < threshold)
+        'head_level': 15,        # Head not tilted (pitch < threshold)
+        'eyes_open': 35,         # Eyes open (EAR > threshold)
         'no_objects': 20,        # Not using phone/drinking
     }
     
@@ -111,6 +146,7 @@ class DriverMonitorV11Pro:
         device: str = "cuda",
         enable_attention_score: bool = True,
         enable_head_pose: bool = True,
+        enable_face_mesh: bool = True,
     ):
         """
         Khởi tạo Driver Monitor PRO.
@@ -121,16 +157,28 @@ class DriverMonitorV11Pro:
             device: "cuda" hoặc "cpu"
             enable_attention_score: Bật tính năng Attention Score
             enable_head_pose: Bật tính năng Head Pose Estimation
+            enable_face_mesh: Bật MediaPipe Face Mesh (EAR, Blink detection)
         """
         self.device = device
         self.enable_attention = enable_attention_score
         self.enable_head_pose = enable_head_pose
+        self.enable_face_mesh = enable_face_mesh and MEDIAPIPE_AVAILABLE
         
         # State tracking
         self.frame_count = 0
         self.last_process_time = 0
         self.current_attention_score = 100
         self.current_distraction_level = 'LOW'
+        
+        # EAR and Blink tracking
+        self.current_ear = 0.3
+        self.blink_counter = 0
+        self.total_blinks = 0
+        self.eyes_closed_frames = 0
+        self.eyes_closed_start_time = None
+        self.perclos_buffer = deque(maxlen=1800)  # 60 seconds @ 30fps
+        self.yawn_counter = 0
+        self.current_mar = 0.0
         
         # Reference head pose (calibrated when driver looks forward)
         self.reference_pose = None
@@ -139,7 +187,8 @@ class DriverMonitorV11Pro:
         
         logger.info(f"🚗 Khởi tạo Driver Monitor V11 PRO ({device})")
         logger.info(f"   ├─ Attention Score: {'✅' if enable_attention_score else '❌'}")
-        logger.info(f"   └─ Head Pose: {'✅' if enable_head_pose else '❌'}")
+        logger.info(f"   ├─ Head Pose: {'✅' if enable_head_pose else '❌'}")
+        logger.info(f"   └─ Face Mesh (EAR/Blink): {'✅' if self.enable_face_mesh else '❌'}")
         
         # Check CUDA
         if device == "cuda" and not torch.cuda.is_available():
@@ -154,6 +203,9 @@ class DriverMonitorV11Pro:
         
         # Load models
         self._load_models(object_model_path, pose_model_path)
+        
+        # Initialize MediaPipe Face Mesh
+        self._init_face_mesh()
         
         # Load Vietnamese font
         self._load_font()
@@ -203,6 +255,39 @@ class DriverMonitorV11Pro:
             self.font_medium = None
             self.font_small = None
     
+    def _init_face_mesh(self):
+        """Initialize MediaPipe Face Mesh for EAR detection."""
+        self.face_mesh = None
+        self.mp_face_mesh = None
+        self.mp_drawing = None
+        self.mp_drawing_styles = None
+        
+        if not self.enable_face_mesh:
+            logger.info("⏭️ Face Mesh disabled")
+            return
+        
+        if not MEDIAPIPE_AVAILABLE:
+            logger.warning("⚠️ MediaPipe not available - Face Mesh disabled")
+            self.enable_face_mesh = False
+            return
+        
+        try:
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.mp_drawing = mp.solutions.drawing_utils
+            self.mp_drawing_styles = mp.solutions.drawing_styles
+            
+            # Initialize Face Mesh với refinement cho mắt
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                max_num_faces=1,
+                refine_landmarks=True,  # Bật iris landmarks
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            logger.info("✅ MediaPipe Face Mesh initialized (468 landmarks)")
+        except Exception as e:
+            logger.error(f"❌ Failed to init Face Mesh: {e}")
+            self.enable_face_mesh = False
+    
     def _init_buffers(self):
         """Initialize temporal smoothing buffers."""
         # Behavior buffers (15-60 frames)
@@ -215,6 +300,10 @@ class DriverMonitorV11Pro:
         self.pitch_buffer = deque(maxlen=30)
         self.roll_buffer = deque(maxlen=30)
         
+        # EAR buffers (Eye Aspect Ratio)
+        self.ear_buffer = deque(maxlen=30)
+        self.mar_buffer = deque(maxlen=30)  # Mouth Aspect Ratio
+        
         # Drowsiness indicators
         self.head_nod_buffer = deque(maxlen=60)
         self.head_tilt_buffer = deque(maxlen=60)
@@ -226,6 +315,253 @@ class DriverMonitorV11Pro:
         
         # Performance tracking
         self.fps_buffer = deque(maxlen=30)
+    
+    # ==================== FACE MESH & EAR ====================
+    
+    def _calculate_ear(self, eye_landmarks: List[Tuple[float, float]]) -> float:
+        """
+        Calculate Eye Aspect Ratio (EAR).
+        
+        EAR = (|p2-p6| + |p3-p5|) / (2 * |p1-p4|)
+        
+        Khi mắt mở: EAR ~ 0.25-0.35
+        Khi mắt nhắm: EAR < 0.21
+        
+        Args:
+            eye_landmarks: 6 điểm [p1, p2, p3, p4, p5, p6]
+                          p1: góc mắt ngoài, p4: góc mắt trong
+                          p2, p3: mí trên, p5, p6: mí dưới
+        
+        Returns:
+            EAR value (0.0 - 0.5)
+        """
+        if len(eye_landmarks) != 6:
+            return 0.3
+        
+        # Khoảng cách dọc
+        v1 = self._distance(eye_landmarks[1], eye_landmarks[5])
+        v2 = self._distance(eye_landmarks[2], eye_landmarks[4])
+        
+        # Khoảng cách ngang
+        h = self._distance(eye_landmarks[0], eye_landmarks[3])
+        
+        if h == 0:
+            return 0.3
+        
+        ear = (v1 + v2) / (2.0 * h)
+        return ear
+    
+    def _calculate_mar(self, mouth_landmarks: List[Tuple[float, float]]) -> float:
+        """
+        Calculate Mouth Aspect Ratio (MAR) for yawn detection.
+        
+        MAR = vertical_dist / horizontal_dist
+        
+        Args:
+            mouth_landmarks: 6 điểm miệng
+        
+        Returns:
+            MAR value
+        """
+        if len(mouth_landmarks) < 4:
+            return 0.0
+        
+        # Simplified: top-bottom / left-right
+        v = self._distance(mouth_landmarks[2], mouth_landmarks[3])
+        h = self._distance(mouth_landmarks[0], mouth_landmarks[1])
+        
+        if h == 0:
+            return 0.0
+        
+        return v / h
+    
+    def process_face_mesh(self, frame: np.ndarray) -> Dict:
+        """
+        Process frame with MediaPipe Face Mesh.
+        
+        Returns:
+            Dict with:
+                - ear: Eye Aspect Ratio (average of both eyes)
+                - ear_left, ear_right: Individual EAR
+                - mar: Mouth Aspect Ratio
+                - blink_detected: True if blink detected this frame
+                - eyes_open: True if eyes are open
+                - yawning: True if yawning detected
+                - face_landmarks: All 468 landmarks
+                - face_detected: True if face found
+        """
+        result = {
+            'ear': 0.3,
+            'ear_left': 0.3,
+            'ear_right': 0.3,
+            'mar': 0.0,
+            'blink_detected': False,
+            'eyes_open': True,
+            'yawning': False,
+            'face_landmarks': None,
+            'face_detected': False,
+        }
+        
+        if not self.enable_face_mesh or self.face_mesh is None:
+            return result
+        
+        try:
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            rgb_frame.flags.writeable = False
+            
+            # Process with Face Mesh
+            results = self.face_mesh.process(rgb_frame)
+            
+            if not results.multi_face_landmarks:
+                return result
+            
+            # Get first face
+            face_landmarks = results.multi_face_landmarks[0]
+            result['face_detected'] = True
+            result['face_landmarks'] = face_landmarks
+            
+            h, w = frame.shape[:2]
+            
+            # Extract eye landmarks
+            def get_landmark_coords(idx):
+                lm = face_landmarks.landmark[idx]
+                return (lm.x * w, lm.y * h)
+            
+            # Left eye (from viewer's perspective, right side of image)
+            left_eye = [get_landmark_coords(i) for i in self.LEFT_EYE_IDX]
+            # Right eye
+            right_eye = [get_landmark_coords(i) for i in self.RIGHT_EYE_IDX]
+            
+            # Calculate EAR
+            ear_left = self._calculate_ear(left_eye)
+            ear_right = self._calculate_ear(right_eye)
+            ear_avg = (ear_left + ear_right) / 2.0
+            
+            result['ear_left'] = round(ear_left, 3)
+            result['ear_right'] = round(ear_right, 3)
+            result['ear'] = round(ear_avg, 3)
+            
+            # Update EAR buffer
+            self.ear_buffer.append(ear_avg)
+            self.current_ear = ear_avg
+            
+            # Check if eyes are open
+            result['eyes_open'] = ear_avg >= self.EAR_THRESHOLD
+            
+            # PERCLOS update
+            self.perclos_buffer.append(1 if ear_avg < self.EAR_THRESHOLD else 0)
+            
+            # Blink detection
+            if ear_avg < self.EAR_THRESHOLD:
+                self.blink_counter += 1
+            else:
+                if self.blink_counter >= self.EAR_CONSEC_FRAMES:
+                    self.total_blinks += 1
+                    result['blink_detected'] = True
+                self.blink_counter = 0
+            
+            # Track eyes closed duration
+            if ear_avg < self.EAR_THRESHOLD:
+                if self.eyes_closed_start_time is None:
+                    self.eyes_closed_start_time = time.time()
+                self.eyes_closed_frames += 1
+            else:
+                self.eyes_closed_start_time = None
+                self.eyes_closed_frames = 0
+            
+            # Mouth/Yawn detection
+            try:
+                mouth = [get_landmark_coords(i) for i in self.MOUTH_IDX]
+                mar = self._calculate_mar(mouth)
+                result['mar'] = round(mar, 3)
+                self.mar_buffer.append(mar)
+                self.current_mar = mar
+                
+                if mar > self.MAR_THRESHOLD:
+                    self.yawn_counter += 1
+                    if self.yawn_counter >= self.YAWN_FRAMES:
+                        result['yawning'] = True
+                else:
+                    self.yawn_counter = 0
+            except:
+                pass
+            
+            return result
+            
+        except Exception as e:
+            logger.debug(f"Face mesh error: {e}")
+            return result
+    
+    def get_perclos(self) -> float:
+        """
+        Calculate PERCLOS (Percentage of Eye Closure).
+        
+        Returns:
+            % of time eyes were closed (0.0 - 1.0)
+        """
+        if len(self.perclos_buffer) == 0:
+            return 0.0
+        return sum(self.perclos_buffer) / len(self.perclos_buffer)
+    
+    def draw_face_mesh(
+        self,
+        frame: np.ndarray,
+        face_landmarks,
+        ear: float,
+        eyes_open: bool
+    ) -> np.ndarray:
+        """
+        Vẽ Face Mesh overlay với EAR và trạng thái mắt.
+        """
+        if face_landmarks is None:
+            return frame
+        
+        frame = frame.copy()
+        h, w = frame.shape[:2]
+        
+        # Vẽ mesh connections (tesselation)
+        if self.mp_drawing and self.mp_face_mesh:
+            self.mp_drawing.draw_landmarks(
+                image=frame,
+                landmark_list=face_landmarks,
+                connections=self.mp_face_mesh.FACEMESH_TESSELATION,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
+            )
+            
+            # Vẽ contour mắt
+            self.mp_drawing.draw_landmarks(
+                image=frame,
+                landmark_list=face_landmarks,
+                connections=self.mp_face_mesh.FACEMESH_LEFT_EYE,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=self.mp_drawing.DrawingSpec(
+                    color=(0, 255, 0) if eyes_open else (0, 0, 255),
+                    thickness=2
+                )
+            )
+            self.mp_drawing.draw_landmarks(
+                image=frame,
+                landmark_list=face_landmarks,
+                connections=self.mp_face_mesh.FACEMESH_RIGHT_EYE,
+                landmark_drawing_spec=None,
+                connection_drawing_spec=self.mp_drawing.DrawingSpec(
+                    color=(0, 255, 0) if eyes_open else (0, 0, 255),
+                    thickness=2
+                )
+            )
+        
+        # Vẽ text EAR và Blinks (góc trên trái)
+        eye_status = "MỞ" if eyes_open else "NHẮM"
+        eye_color = (0, 255, 0) if eyes_open else (0, 0, 255)
+        
+        cv2.putText(frame, f"MAT: {eye_status} ({ear:.2f})", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, eye_color, 2)
+        cv2.putText(frame, f"CHOP MAT: {self.total_blinks}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+        
+        return frame
     
     # ==================== HEAD POSE ESTIMATION ====================
     
@@ -892,16 +1228,25 @@ class DriverMonitorV11Pro:
         start_time = time.time()
         self.frame_count += 1
         
-        # Detect
+        # ===== 1. Object Detection (YOLO) =====
         objects = self.detect_objects(frame)
+        
+        # ===== 2. Pose Detection (YOLO Pose) =====
         pose = self.detect_pose(frame)
         
-        # Head pose estimation
+        # ===== 3. Face Mesh + EAR (MediaPipe) =====
+        face_result = self.process_face_mesh(frame)
+        ear = face_result['ear']
+        eyes_open = face_result['eyes_open']
+        yawning = face_result['yawning']
+        face_landmarks = face_result['face_landmarks']
+        
+        # ===== 4. Head Pose Estimation =====
         head_pose = self.estimate_head_pose(pose) if self.enable_head_pose and pose else {
             'yaw': 0, 'pitch': 0, 'roll': 0, 'is_valid': False
         }
         
-        # Behavior checks
+        # ===== 5. Behavior Analysis =====
         warnings = []
         behaviors = {}
         
@@ -923,11 +1268,57 @@ class DriverMonitorV11Pro:
             warnings.append(smoke_msg)
         behaviors['smoking'] = {'detected': smoking, 'confidence': smoke_conf}
         
-        # Drowsiness
-        drowsy, drowsy_msg, drowsy_severity, drowsy_conf = self.check_drowsiness(pose, head_pose)
+        # ===== 6. Drowsiness Detection (EAR + Head Pose) =====
+        drowsy = False
+        drowsy_msg = ""
+        drowsy_severity = "NONE"
+        drowsy_conf = 0.0
+        
+        # Check eye closure duration
+        if not eyes_open and self.eyes_closed_start_time:
+            eyes_closed_duration = time.time() - self.eyes_closed_start_time
+            if eyes_closed_duration >= self.EAR_DROWSY_TIME:
+                drowsy = True
+                drowsy_msg = f"😴 NGUY HIỂM: MẮT NHẮM QUÁ LÂU ({eyes_closed_duration:.1f}s)!"
+                drowsy_severity = "HIGH"
+                drowsy_conf = min(1.0, eyes_closed_duration / 3.0)
+        
+        # Check PERCLOS
+        perclos = self.get_perclos()
+        if perclos > self.PERCLOS_THRESHOLD and not drowsy:
+            drowsy = True
+            drowsy_msg = f"😴 CẢNH BÁO: BUỒN NGỦ (PERCLOS: {perclos*100:.0f}%)!"
+            drowsy_severity = "MEDIUM"
+            drowsy_conf = perclos
+        
+        # Check yawning
+        if yawning and not drowsy:
+            drowsy = True
+            drowsy_msg = "😴 CẢNH BÁO: PHÁT HIỆN NGÁP - DẤU HIỆU MỆT MỎI!"
+            drowsy_severity = "MEDIUM"
+            drowsy_conf = 0.7
+        
+        # Fallback to head-based drowsiness
+        if not drowsy:
+            head_drowsy, head_drowsy_msg, head_severity, head_conf = self.check_drowsiness(pose, head_pose)
+            if head_drowsy:
+                drowsy = True
+                drowsy_msg = head_drowsy_msg
+                drowsy_severity = head_severity
+                drowsy_conf = head_conf
+        
         if drowsy:
             warnings.append(drowsy_msg)
-        behaviors['drowsiness'] = {'detected': drowsy, 'severity': drowsy_severity, 'confidence': drowsy_conf}
+        behaviors['drowsiness'] = {
+            'detected': drowsy,
+            'severity': drowsy_severity,
+            'confidence': drowsy_conf,
+            'ear': ear,
+            'eyes_open': eyes_open,
+            'perclos': perclos,
+            'yawning': yawning,
+            'blinks': self.total_blinks
+        }
         
         # Looking away
         looking_away, away_msg, away_duration = self.check_looking_away(head_pose)
@@ -935,25 +1326,37 @@ class DriverMonitorV11Pro:
             warnings.append(away_msg)
         behaviors['looking_away'] = {'detected': looking_away, 'duration': away_duration}
         
-        # Calculate attention score
-        attention_score = self.calculate_attention_score(head_pose, using_phone, drinking, smoking)
+        # ===== 7. Attention Score =====
+        attention_score = self.calculate_attention_score_v2(
+            head_pose, using_phone, drinking, smoking, eyes_open, ear
+        )
         distraction_level = self.get_distraction_level(attention_score)
         
-        # Draw overlays
+        # ===== 8. Draw Overlays =====
         annotated_frame = frame.copy()
+        
+        # Draw Face Mesh với EAR
+        if face_result['face_detected'] and self.enable_face_mesh:
+            annotated_frame = self.draw_face_mesh(
+                annotated_frame, face_landmarks, ear, eyes_open
+            )
+        
+        # Draw Pose overlay
         if pose:
             annotated_frame = self.draw_pose_overlay(annotated_frame, pose, head_pose)
-        annotated_frame = self.draw_dashboard(
-            annotated_frame, warnings, attention_score, head_pose, distraction_level
+        
+        # Draw Dashboard
+        annotated_frame = self.draw_dashboard_v2(
+            annotated_frame, warnings, attention_score, head_pose,
+            distraction_level, ear, eyes_open, self.total_blinks, perclos
         )
         
-        # FPS tracking
+        # ===== 9. FPS & State =====
         process_time = time.time() - start_time
         self.fps_buffer.append(1.0 / max(process_time, 0.001))
         avg_fps = np.mean(list(self.fps_buffer)[-10:])
         
         # Determine driver state for backward compatibility
-        # Priority: drowsy > distracted (phone/looking_away) > normal
         if drowsy:
             driver_state = 'drowsy'
             driver_confidence = drowsy_conf
@@ -986,6 +1389,13 @@ class DriverMonitorV11Pro:
             'attention_score': attention_score,
             'distraction_level': distraction_level,
             
+            # Face Mesh / EAR data
+            'ear': ear,
+            'eyes_open': eyes_open,
+            'blinks': self.total_blinks,
+            'perclos': round(perclos, 3),
+            'yawning': yawning,
+            
             # Individual flags (backward compat)
             'using_phone': using_phone,
             'drinking': drinking,
@@ -996,18 +1406,184 @@ class DriverMonitorV11Pro:
             # Metadata
             'objects_detected': len(objects),
             'pose_detected': pose is not None,
+            'face_detected': face_result['face_detected'],
             'fps': round(avg_fps, 1),
             'frame_number': self.frame_count,
         }
+    
+    def calculate_attention_score_v2(
+        self,
+        head_pose: Dict,
+        using_phone: bool,
+        drinking: bool,
+        smoking: bool,
+        eyes_open: bool,
+        ear: float
+    ) -> int:
+        """
+        Tính Attention Score V2 với EAR.
+        """
+        score = 0
+        
+        if not self.enable_attention:
+            return 100
+        
+        # 1. Head forward (30 points)
+        if head_pose['is_valid']:
+            yaw = abs(head_pose['yaw'])
+            if yaw < 15:
+                score += 30
+            elif yaw < self.YAW_THRESHOLD:
+                score += int(30 * (1 - (yaw - 15) / (self.YAW_THRESHOLD - 15)))
+        else:
+            score += 15
+        
+        # 2. Head level (15 points)
+        if head_pose['is_valid']:
+            pitch = abs(head_pose['pitch'])
+            if pitch < 10:
+                score += 15
+            elif pitch < self.PITCH_THRESHOLD:
+                score += int(15 * (1 - (pitch - 10) / (self.PITCH_THRESHOLD - 10)))
+        else:
+            score += 7
+        
+        # 3. Eyes open - EAR based (35 points)
+        if eyes_open:
+            # Scale by how open the eyes are
+            if ear >= 0.25:
+                score += 35
+            elif ear >= self.EAR_THRESHOLD:
+                score += int(35 * (ear - self.EAR_THRESHOLD) / (0.25 - self.EAR_THRESHOLD))
+        else:
+            score += 5  # Eyes closed = very low attention
+        
+        # 4. No distractions (20 points)
+        if not using_phone and not drinking and not smoking:
+            score += 20
+        elif not using_phone:
+            score += 10
+        
+        # Clamp and smooth
+        score = max(0, min(100, score))
+        self.attention_history.append(score)
+        if len(self.attention_history) >= 5:
+            score = int(np.mean(list(self.attention_history)[-15:]))
+        
+        self.current_attention_score = score
+        return score
+    
+    def draw_dashboard_v2(
+        self,
+        frame: np.ndarray,
+        warnings: List[str],
+        attention_score: int,
+        head_pose: Dict,
+        distraction_level: str,
+        ear: float,
+        eyes_open: bool,
+        blinks: int,
+        perclos: float
+    ) -> np.ndarray:
+        """
+        Vẽ dashboard V2 với EAR, blinks, PERCLOS.
+        """
+        h, w = frame.shape[:2]
+        frame_pil = Image.fromarray(frame)
+        draw = ImageDraw.Draw(frame_pil)
+        
+        # ===== Warning Banner (top) =====
+        if warnings:
+            banner_height = 60 + 50 * len(warnings)
+            overlay = Image.new('RGBA', (w, banner_height), (200, 0, 0, 200))
+            frame_pil.paste(overlay, (0, 0), overlay)
+            
+            y = 20
+            for warning in warnings:
+                if self.font_large:
+                    draw.text((20, y), warning, fill=(255, 255, 255), font=self.font_large)
+                y += 50
+        
+        # ===== Dashboard Panel (bottom-left) =====
+        panel_w, panel_h = 380, 220
+        panel_x, panel_y = 10, h - panel_h - 10
+        
+        panel_overlay = Image.new('RGBA', (panel_w, panel_h), (0, 0, 0, 180))
+        frame_pil.paste(panel_overlay, (panel_x, panel_y), panel_overlay)
+        
+        level_colors = {
+            'LOW': (0, 255, 0),
+            'MEDIUM': (255, 200, 0),
+            'HIGH': (255, 100, 0),
+            'CRITICAL': (255, 0, 0)
+        }
+        color = level_colors.get(distraction_level, (255, 255, 255))
+        eye_color = (0, 255, 0) if eyes_open else (255, 0, 0)
+        
+        if self.font_medium:
+            # Title
+            draw.text((panel_x + 10, panel_y + 10), "🚗 GIÁM SÁT TÀI XẾ", 
+                      fill=(255, 255, 255), font=self.font_medium)
+            
+            # Attention Score
+            draw.text((panel_x + 10, panel_y + 45), f"Tập trung: {attention_score}%",
+                      fill=color, font=self.font_medium)
+            
+            # Status
+            draw.text((panel_x + 10, panel_y + 75), f"Trạng thái: {distraction_level}",
+                      fill=color, font=self.font_medium)
+            
+            # Eye status (Vietnamese)
+            eye_status_vn = "MỞ" if eyes_open else "NHẮM"
+            draw.text((panel_x + 10, panel_y + 105), f"Mắt: {eye_status_vn} (EAR: {ear:.2f})",
+                      fill=eye_color, font=self.font_medium)
+            
+            # Blinks
+            draw.text((panel_x + 10, panel_y + 135), f"Chớp mắt: {blinks} lần",
+                      fill=(200, 200, 200), font=self.font_medium)
+            
+            # PERCLOS
+            perclos_color = (0, 255, 0) if perclos < self.PERCLOS_THRESHOLD else (255, 0, 0)
+            draw.text((panel_x + 10, panel_y + 165), f"PERCLOS: {perclos*100:.1f}%",
+                      fill=perclos_color, font=self.font_medium)
+            
+            # Head Pose
+            if head_pose['is_valid'] and self.font_small:
+                pose_text = f"Đầu: Y={head_pose['yaw']:+.0f}° P={head_pose['pitch']:+.0f}°"
+                draw.text((panel_x + 10, panel_y + 195), pose_text,
+                          fill=(180, 180, 180), font=self.font_small)
+        
+        # ===== Attention Bar (bottom-right) =====
+        bar_w, bar_h = 30, 150
+        bar_x = w - bar_w - 20
+        bar_y = h - bar_h - 30
+        
+        draw.rectangle([bar_x, bar_y, bar_x + bar_w, bar_y + bar_h],
+                       fill=(50, 50, 50), outline=(100, 100, 100))
+        
+        fill_h = int(bar_h * attention_score / 100)
+        fill_y = bar_y + bar_h - fill_h
+        draw.rectangle([bar_x + 2, fill_y, bar_x + bar_w - 2, bar_y + bar_h - 2],
+                       fill=color)
+        
+        if self.font_medium:
+            draw.text((bar_x - 5, bar_y - 25), f"{attention_score}",
+                      fill=color, font=self.font_medium)
+        
+        return np.array(frame_pil)
     
     def get_status(self) -> Dict:
         """Get current monitor status."""
         return {
             'attention_score': self.current_attention_score,
             'distraction_level': self.current_distraction_level,
+            'ear': self.current_ear,
+            'blinks': self.total_blinks,
+            'perclos': self.get_perclos(),
             'is_calibrated': self.is_calibrated,
             'frame_count': self.frame_count,
             'device': self.device,
+            'face_mesh_enabled': self.enable_face_mesh,
         }
 
 
