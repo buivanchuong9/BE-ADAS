@@ -164,8 +164,9 @@ class VideoService:
             logger.warning(f"Invalid video_type '{video_type}', defaulting to 'dashcam'")
             video_type = "dashcam"
         
-        # Prepare paths
-        input_path = str(self.raw_dir / f"{job_id_uuid}_{filename}")
+        # Prepare paths (MUST match _stream_upload_file format: {job_id}{ext})
+        ext = Path(filename).suffix or ".mp4"
+        input_path = str(self.raw_dir / f"{job_id_uuid}{ext}")
         output_path = str(self.processed_dir / f"{job_id_uuid}_result.mp4")
         
         # Create Video record first (required for foreign key)
