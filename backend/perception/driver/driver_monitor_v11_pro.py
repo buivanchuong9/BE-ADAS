@@ -1738,15 +1738,20 @@ class DriverMonitorV11Pro:
         if warnings:
             banner_height = 60 + 50 * len(warnings)
             
-            # Background
-            overlay = Image.new('RGBA', (w, banner_height), (200, 0, 0, 200))
+            # Background — dark red/black gradient feel, high opacity
+            overlay = Image.new('RGBA', (w, banner_height), (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            # Top portion: solid dark red
+            overlay_draw.rectangle([(0, 0), (w, banner_height)], fill=(40, 0, 0, 230))
+            # Thin red accent line at bottom of banner
+            overlay_draw.rectangle([(0, banner_height - 3), (w, banner_height)], fill=(220, 30, 30, 255))
             frame_pil.paste(overlay, (0, 0), overlay)
             
-            # Warnings
-            y = 20
+            # Warnings — bright white text with red warning icon
+            y = 15
             for warning in warnings:
                 if self.font_large:
-                    draw.text((20, y), warning, fill=(255, 255, 255), font=self.font_large)
+                    draw.text((20, y), f"⚠ {warning}", fill=(255, 60, 60), font=self.font_large)
                 y += 50
         
         # ===== Dashboard Panel (bottom-left) =====
@@ -2426,7 +2431,7 @@ class DriverMonitorV11Pro:
             'LOW': ((80, 200, 120), (120, 255, 150)),       # Green
             'MEDIUM': ((0, 180, 255), (50, 220, 255)),      # Yellow-Orange  
             'HIGH': ((0, 100, 255), (50, 150, 255)),        # Orange
-            'CRITICAL': ((80, 50, 200), (150, 100, 255)),   # Red-Pink
+            'CRITICAL': ((0, 0, 200), (50, 50, 255)),       # Deep Red (BGR)
         }
         
         colors = DASHBOARD_COLORS.get(distraction_level, DASHBOARD_COLORS['LOW'])
@@ -2438,9 +2443,9 @@ class DriverMonitorV11Pro:
             banner_height = 50 + 45 * len(warnings)
             frame = self._draw_gradient_rect(
                 frame, (0, 0), (w, banner_height),
-                (40, 20, 80), (80, 40, 120), 'vertical', alpha=0.9
+                (10, 10, 30), (20, 15, 50), 'vertical', alpha=0.92
             )
-            cv2.line(frame, (0, banner_height), (w, banner_height), (150, 80, 200), 2)
+            cv2.line(frame, (0, banner_height), (w, banner_height), (30, 30, 220), 2)
         
         # ===== Main Dashboard Panel (bottom-left) - LARGER =====
         panel_w, panel_h = 320, 220
