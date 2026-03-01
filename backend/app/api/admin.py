@@ -303,8 +303,9 @@ async def get_accuracy_history(db: AsyncSession = Depends(get_db)):
         
         # Real Logic: Calculate average confidence of driver state detections for this day
         # Note: Using CAST to Date works in PostgreSQL
+        # Fix: Use created_at instead of timestamp (timestamp_sec is REAL, not DateTime)
         query = select(func.avg(DriverState.drowsy_confidence)).where(
-            func.date(DriverState.timestamp) == day
+            func.date(DriverState.created_at) == day
         )
         avg_conf = await db.scalar(query)
         

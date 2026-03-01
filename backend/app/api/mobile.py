@@ -82,7 +82,7 @@ class AnalysisResult(BaseModel):
     lane_departures: int = 0
     warnings_count: int = 0
     safety_score: int = 100
-    duration_seconds: float = 0
+    duration_seconds: Optional[float] = None
     events: List[Dict[str, Any]] = []
     video_type: Optional[str] = None
 
@@ -513,7 +513,7 @@ async def mobile_get_status(
                 lane_departures=lane_departures,
                 warnings_count=warnings,
                 safety_score=calculate_safety_score(events_list),
-                duration_seconds=job.video.duration_seconds if job.video else 0,
+                duration_seconds=job.video.duration_seconds if job.video else None,
                 events=events_list,
                 video_type=job_video_type
             )
@@ -758,6 +758,296 @@ async def mobile_get_history(
 
 
 # ============================================================
+# Driver Monitoring Mobile API
+# ============================================================
+
+class DriverUploadResponse(BaseModel):
+    """Response for driver monitoring video upload"""
+    success: bool
+    job_id: str
+    status: str
+    message: str
+    video_type: str = "in_cabin"
+    estimated_time_seconds: int = 90
+    created_at: datetime
+
+
+class DriverStatusResponse(BaseModel):
+    """Response for driver monitoring status check"""
+    success: bool
+    job_id: str
+    status: str  # pending, processing, completed, failed
+    progress_percent: int
+    video_type: str = "in_cabin"
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[Dict[str, str]] = None
+
+
+@router.post("/driver/upload", response_model=DriverUploadResponse)
+async def mobile_driver_upload(
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Upload driver monitoring (in-cabin) video for analysis.
+    
+    This endpoint accepts:
+    - In-cabin camera videos
+    - Driver face monitoring footage
+    - Videos up to 500MB
+    
+    Returns job_id to track processing status.
+    
+    Example:
+        POST /api/mobile/driver/upload
+        Content-Type: multipart/form-data
+        Body: file=<video.mp4>
+    """
+    try:
+        if not file or not file.filename:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "error": {"code": "NO_FILE", "message": "Vui lòng chọn file video để upload"}
+                }
+            )
+        
+        logger.info(f"📹 [Driver Mobile] Upload started: {file.filename}")
+        
+        # Create video service
+        video_service = VideoService(db)
+        
+        # Validate video
+        await video_service.validate_video(file)
+        
+        # Create job with video_type="in_cabin"
+        job = await video_service.create_job(
+            filename=file.filename,
+            video_type="in_cabin",  # Driver monitoring uses in_cabin type
+            device="cuda",
+            user_id=1  # TODO: Get from authentication
+        )
+        
+        # Save uploaded video
+        await video_service.save_uploaded_video(job.job_id, file)
+        
+        # Also save to DriverMonitoringVideo table
+        try:
+            from app.db.models.driver_video import DriverMonitoringVideo
+            driver_video = DriverMonitoringVideo(
+                job_id=str(job.job_id),
+                title=f"Mobile Driver Video - {file.filename}",
+                description=f"Uploaded via Mobile Driver API",
+                original_video_path=job.video.storage_path,
+                is_sample=False
+            )
+            db.add(driver_video)
+            await db.commit()
+        except Exception as e:
+            logger.warning(f"Could not save to DriverMonitoringVideo: {e}")
+        
+        logger.info(f"✅ [Driver Mobile] Upload complete: {job.job_id}")
+        
+        return DriverUploadResponse(
+            success=True,
+            job_id=str(job.job_id),
+            status=job.status,
+            message="Video đã được upload. Đang chờ xử lý phát hiện mệt mỏi/mất tập trung.",
+            video_type="in_cabin",
+            estimated_time_seconds=90,
+            created_at=job.created_at
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [Driver Mobile] Upload failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "error": {"code": "UPLOAD_FAILED", "message": str(e)}}
+        )
+
+
+@router.get("/driver/status/{job_id}", response_model=DriverStatusResponse)
+async def mobile_driver_status(
+    job_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get driver monitoring video processing status.
+    
+    Poll this endpoint to track analysis progress.
+    
+    Returns:
+        - status: pending, processing, completed, failed
+        - progress_percent: 0-100
+        - result: Analysis results when completed
+    """
+    try:
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(
+                status_code=404,
+                detail={"success": False, "error": {"code": "NOT_FOUND", "message": "Job không tồn tại"}}
+            )
+        
+        result = None
+        error = None
+        
+        if job.status == 'completed':
+            # Build result with download URL
+            duration = job.video.duration_seconds if job.video and job.video.duration_seconds else None
+            
+            result = {
+                "download_url": f"/api/mobile/driver/download/{job_id}/result.mp4",
+                "video_url": f"/api/mobile/driver/download/{job_id}/result.mp4",
+                "duration_seconds": duration,
+                "processing_time_seconds": job.processing_time_seconds,
+                "fatigue_detection": True,
+                "distraction_detection": True
+            }
+        elif job.status == 'failed':
+            error = {
+                "code": "PROCESSING_FAILED",
+                "message": job.error_message or "Xử lý video thất bại"
+            }
+        
+        return DriverStatusResponse(
+            success=True,
+            job_id=job_id,
+            status=job.status,
+            progress_percent=job.progress_percent or 0,
+            video_type="in_cabin",
+            result=result,
+            error=error
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [Driver Mobile] Status check failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "error": {"code": "SERVER_ERROR", "message": str(e)}}
+        )
+
+
+@router.get("/driver/download/{job_id}/result.mp4")
+async def mobile_driver_download_mp4(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Download driver monitoring result video (.mp4 extension for player compatibility)."""
+    return await _mobile_driver_download(job_id, request, db)
+
+
+@router.get("/driver/download/{job_id}")
+async def mobile_driver_download(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """Download driver monitoring result video (legacy endpoint)."""
+    return await _mobile_driver_download(job_id, request, db)
+
+
+async def _mobile_driver_download(
+    job_id: str,
+    request: Request,
+    db: AsyncSession
+):
+    """Internal: Download driver monitoring result with Range request support."""
+    try:
+        from fastapi.responses import StreamingResponse
+        
+        repo = JobQueueRepository(db)
+        job = await repo.get_by_job_id(job_id)
+        
+        if not job:
+            raise HTTPException(
+                status_code=404,
+                detail={"success": False, "error": {"code": "NOT_FOUND", "message": "Job không tồn tại"}}
+            )
+        
+        if job.status != 'completed':
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "success": False,
+                    "error": {"code": "NOT_READY", "message": f"Video chưa xử lý xong. Status: {job.status}"}
+                }
+            )
+        
+        # Find result file
+        video_service = VideoService(db)
+        output_path = Path(video_service.get_output_path(job_id))
+        
+        if not output_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail={"success": False, "error": {"code": "NOT_FOUND", "message": "Video kết quả không tìm thấy"}}
+            )
+        
+        file_size = output_path.stat().st_size
+        result_filename = f"driver_result_{job_id[:8]}.mp4"
+        
+        # Support Range requests for mobile streaming
+        range_header = request.headers.get("range")
+        if range_header:
+            range_spec = range_header.replace("bytes=", "")
+            start_end = range_spec.split("-")
+            start = int(start_end[0]) if start_end[0] else 0
+            end = int(start_end[1]) if len(start_end) > 1 and start_end[1] else file_size - 1
+            start = max(0, start)
+            end = min(end, file_size - 1)
+            chunk_size = end - start + 1
+            
+            def iter_range():
+                with open(output_path, "rb") as f:
+                    f.seek(start)
+                    remaining = chunk_size
+                    while remaining > 0:
+                        data = f.read(min(65536, remaining))
+                        if not data:
+                            break
+                        remaining -= len(data)
+                        yield data
+            
+            return StreamingResponse(
+                iter_range(),
+                status_code=206,
+                media_type="video/mp4",
+                headers={
+                    "Content-Range": f"bytes {start}-{end}/{file_size}",
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(chunk_size),
+                    "Content-Disposition": f'inline; filename="{result_filename}"'
+                }
+            )
+        
+        # Full file response
+        return FileResponse(
+            path=str(output_path),
+            media_type="video/mp4",
+            filename=result_filename,
+            headers={"Content-Disposition": f'inline; filename="{result_filename}"'}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ [Driver Mobile] Download failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"success": False, "error": {"code": "SERVER_ERROR", "message": str(e)}}
+        )
+
+
+# ============================================================
 # Health Check
 # ============================================================
 
@@ -769,11 +1059,18 @@ async def mobile_health_check():
     return {
         "status": "healthy",
         "service": "ADAS Mobile API",
-        "version": "1.0.0",
-        "endpoints": [
-            "POST /api/mobile/video/upload",
-            "GET /api/mobile/video/status/{job_id}",
-            "GET /api/mobile/video/download/{job_id}",
-            "GET /api/mobile/video/history"
-        ]
+        "version": "1.1.0",
+        "endpoints": {
+            "video": [
+                "POST /api/mobile/video/upload",
+                "GET /api/mobile/video/status/{job_id}",
+                "GET /api/mobile/video/download/{job_id}/result.mp4",
+                "GET /api/mobile/video/history"
+            ],
+            "driver_monitoring": [
+                "POST /api/mobile/driver/upload",
+                "GET /api/mobile/driver/status/{job_id}",
+                "GET /api/mobile/driver/download/{job_id}/result.mp4"
+            ]
+        }
     }

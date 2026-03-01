@@ -144,8 +144,8 @@ async def analyze_driver_video(
             "updated_at": job.updated_at,
             "started_at": job.started_at,
             "completed_at": job.completed_at,
-            # Add download URLs for frontend
-            "download_url": f"/api/driver-monitor/download/{job.job_id}",
+            # Add download URLs for frontend (.mp4 extension for video player compatibility)
+            "download_url": f"/api/download/{job.job_id}/result.mp4",
             "result_url": f"/api/video/result/{job.job_id}",
         }
         
@@ -330,13 +330,30 @@ async def get_driver_status_history(
     }
 
 
+@router.get("/download/{job_id}/result.mp4")
+async def download_driver_monitoring_result_mp4(
+    job_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Download processed video (URL ends with .mp4 for mobile/frontend player compatibility)."""
+    return await _download_driver_monitoring_result(job_id, db)
+
+
 @router.get("/download/{job_id}")
 async def download_driver_monitoring_result(
     job_id: str,
     db: AsyncSession = Depends(get_db)
 ):
+    """Download processed video (legacy endpoint without .mp4 suffix)."""
+    return await _download_driver_monitoring_result(job_id, db)
+
+
+async def _download_driver_monitoring_result(
+    job_id: str,
+    db: AsyncSession
+):
     """
-    Download processed driver monitoring video.
+    Internal: Download processed driver monitoring video.
     
     This endpoint downloads the annotated video with:
     - Facial landmarks (468 points)
@@ -352,7 +369,7 @@ async def download_driver_monitoring_result(
         MP4 video file with driver monitoring annotations
         
     Example:
-        GET /api/driver-monitor/download/97924c1d-850f-4905-bce2-5e31f6a8d829
+        GET /api/download/97924c1d-850f-4905-bce2-5e31f6a8d829/result.mp4
     """
     try:
         from pathlib import Path

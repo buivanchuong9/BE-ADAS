@@ -450,15 +450,24 @@ class DriverMonitorV11Pro:
                 logger.info("✅ MediaPipe Face Mesh initialized (478 landmarks, refined)")
             except Exception as e_refined:
                 logger.warning(f"⚠️ Face Mesh refined failed ({e_refined}), trying without refinement...")
-                self.face_mesh = self.mp_face_mesh.FaceMesh(
-                    max_num_faces=1,
-                    refine_landmarks=False,  # Fallback: no iris
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5
-                )
-                logger.info("✅ MediaPipe Face Mesh initialized (468 landmarks, basic)")
+                try:
+                    self.face_mesh = self.mp_face_mesh.FaceMesh(
+                        max_num_faces=1,
+                        refine_landmarks=False,  # Fallback: no iris
+                        min_detection_confidence=0.5,
+                        min_tracking_confidence=0.5
+                    )
+                    logger.info("✅ MediaPipe Face Mesh initialized (468 landmarks, basic)")
+                except Exception as e_basic:
+                    logger.error(f"❌ Face Mesh basic mode also failed: {e_basic}")
+                    raise e_basic
         except Exception as e:
             logger.error(f"❌ Failed to init Face Mesh: {e}")
+            # Check if it's a protobuf error
+            if "protobuf" in str(e).lower() or "parse" in str(e).lower():
+                logger.error("💡 Hint: Try reinstalling mediapipe and protobuf:")
+                logger.error("   pip uninstall mediapipe protobuf -y")
+                logger.error("   pip install mediapipe==0.10.30 'protobuf>=3.20.0,<4.0.0'")
             self.enable_face_mesh = False
     
     def _init_buffers(self):

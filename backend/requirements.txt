@@ -24,6 +24,8 @@ alembic==1.13.1
 opencv-python==4.10.0.84
 numpy==1.26.4
 mediapipe==0.10.30
+# MediaPipe requires specific protobuf version (avoid 4.x which breaks compatibility)
+protobuf>=3.20.0,<4.0.0
 
 # PyTorch CPU
 --extra-index-url https://download.pytorch.org/whl/cpu

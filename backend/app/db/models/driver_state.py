@@ -21,8 +21,8 @@ class DriverState(Base):
     # Foreign keys
     trip_id = Column(Integer, ForeignKey("trips.id", ondelete="CASCADE"), nullable=True, index=True)
     
-    # Timing
-    timestamp = Column(DateTime, nullable=False, index=True)
+    # Timing (seconds from trip start or video start)
+    timestamp_sec = Column(Float, nullable=False, index=True)
     
     # Drowsiness detection
     is_drowsy = Column(Integer, default=0, nullable=False)  # BIT in SQL Server

@@ -179,13 +179,13 @@ async def get_fatigue_over_time(
         
         # Get driver state data
         fatigue_query = select(
-            DriverState.timestamp,
+            DriverState.timestamp_sec,
             DriverState.is_drowsy,
             DriverState.drowsy_confidence,
             DriverState.ear_value
         ).where(
             DriverState.trip_id == trip.id
-        ).order_by(DriverState.timestamp)
+        ).order_by(DriverState.timestamp_sec)
         
         result = await db.execute(fatigue_query)
         fatigue_records = result.all()
