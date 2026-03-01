@@ -19,25 +19,54 @@ import sys
 import torch
 import torch.nn as nn
 import urllib.request
+import subprocess
 import hashlib
 from pathlib import Path
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Official model URLs from UFLD v2 repo (GitHub releases)
+# Official model URLs - multiple mirrors for reliability
 UFLD_MODELS = {
-    'tusimple_res18': {
-        'url': 'https://github.com/cfzd/Ultra-Fast-Lane-Detection-v2/releases/download/v0.1/tusimple_res18.pth',
-        'md5': None,  # Will verify download success
+    # Primary: Google Drive (official from UFLD v2 repo)
+    'tusimple_res18_gdrive': {
+        'gdrive_id': '1WCYyur5ZaWczH15ecmeDowrW30xcLrCn',
         'output': 'backend/models/ufld_tusimple.pth',
     },
-    # Alternative: ONNX version (more reliable, no key mapping needed)
-    'tusimple_res18_onnx': {
-        'url': 'https://huggingface.co/spaces/cfzd/UFLD-v2/resolve/main/tusimple_res18.onnx',
+    # Alternative: Direct download mirrors
+    'tusimple_res18_mirror': {
+        'url': 'https://raw.githubusercontent.com/PINTO0309/PINTO_model_zoo/main/307_Ultra-Fast-Lane-Detection-v2/tusimple_res18.onnx',
         'output': 'backend/models/ufld_tusimple.onnx',
     },
 }
+
+
+def download_from_gdrive(file_id: str, dest: Path) -> bool:
+    """Download file from Google Drive using gdown."""
+    print(f"Downloading from Google Drive: {file_id}")
+    print(f"Destination: {dest}")
+    
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        import gdown
+        url = f"https://drive.google.com/uc?id={file_id}"
+        gdown.download(url, str(dest), quiet=False)
+        return dest.exists() and dest.stat().st_size > 1000
+    except ImportError:
+        print("  gdown not installed, trying pip install...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "gdown", "-q"], check=True)
+            import gdown
+            url = f"https://drive.google.com/uc?id={file_id}"
+            gdown.download(url, str(dest), quiet=False)
+            return dest.exists() and dest.stat().st_size > 1000
+        except Exception as e:
+            print(f"  Failed to install/use gdown: {e}")
+            return False
+    except Exception as e:
+        print(f"  Google Drive download failed: {e}")
+        return False
 
 
 def download_file(url: str, dest: Path, chunk_size: int = 8192) -> bool:
@@ -177,84 +206,91 @@ def main():
     print("UFLD Lane Detection Model Setup")
     print("=" * 60)
     
-    # Prefer ONNX format (most compatible, no key mapping needed)
     output_path_onnx = Path('backend/models/ufld_tusimple.onnx')
     output_path_pth = Path('backend/models/ufld_tusimple.pth')
     
     # Check if already exists
-    if output_path_onnx.exists():
+    if output_path_onnx.exists() and output_path_onnx.stat().st_size > 1000:
         print(f"\n✅ ONNX model already exists: {output_path_onnx}")
         print("   Delete file to re-download.")
         return
     
-    if output_path_pth.exists():
+    if output_path_pth.exists() and output_path_pth.stat().st_size > 1000:
         print(f"\n✅ PyTorch model already exists: {output_path_pth}")
         print("   Delete file to re-download.")
         return
     
-    # First try ONNX (recommended - more reliable)
-    print("\n[1/2] Downloading official UFLD v2 TuSimple ONNX model...")
-    onnx_info = UFLD_MODELS['tusimple_res18_onnx']
+    # Clean up any partial downloads
+    output_path_pth.unlink(missing_ok=True)
+    output_path_onnx.unlink(missing_ok=True)
     
-    if download_file(onnx_info['url'], output_path_onnx):
-        print(f"\n✅ ONNX model saved successfully!")
-        print(f"   Path: {output_path_onnx}")
-        print(f"   Size: {output_path_onnx.stat().st_size / 1024 / 1024:.1f} MB")
-    else:
-        # Fallback to PyTorch model
-        print("\n⚠️  ONNX download failed, trying PyTorch model...")
+    # Method 1: Try Google Drive (official UFLD v2 model)
+    print("\n[1/3] Trying Google Drive (official UFLD v2)...")
+    gdrive_info = UFLD_MODELS['tusimple_res18_gdrive']
+    temp_path = Path('/tmp/ufld_official.pth')
+    
+    if download_from_gdrive(gdrive_info['gdrive_id'], temp_path):
+        print("\n[2/3] Converting to custom architecture format...")
         
-        model_info = UFLD_MODELS['tusimple_res18']
-        temp_path = Path('/tmp/ufld_official.pth')
-        
-        if download_file(model_info['url'], temp_path):
-            print("\n[2/2] Converting to custom architecture format...")
+        try:
+            official_state = torch.load(temp_path, map_location='cpu', weights_only=False)
             
-            try:
-                official_state = torch.load(temp_path, map_location='cpu', weights_only=False)
-                
-                # Extract state dict from wrapper
-                if isinstance(official_state, dict):
-                    if 'model' in official_state:
-                        official_state = official_state['model']
-                    elif 'state_dict' in official_state:
-                        official_state = official_state['state_dict']
-                
-                print(f"  Official model has {len(official_state)} parameters")
-                
-                # Convert keys
-                converted_state = convert_official_to_custom(official_state)
-                
-                # Save converted model
-                output_path_pth.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(converted_state, output_path_pth)
-                
-                print(f"\n✅ Model saved successfully!")
-                print(f"   Path: {output_path_pth}")
-                print(f"   Size: {output_path_pth.stat().st_size / 1024 / 1024:.1f} MB")
-                
-                # Cleanup
-                temp_path.unlink(missing_ok=True)
-                
-            except Exception as e:
-                print(f"\n⚠️  Conversion failed: {e}")
-                print("   Creating random weights as fallback...")
-                
-                random_state = create_random_weights()
-                output_path_pth.parent.mkdir(parents=True, exist_ok=True)
-                torch.save(random_state, output_path_pth)
-                
-                print(f"\n✅ Random weights saved to {output_path_pth}")
-                print("   Note: Model needs training for actual lane detection!")
-        else:
-            print("\n⚠️  Both downloads failed, creating random weights...")
+            # Extract state dict from wrapper
+            if isinstance(official_state, dict):
+                if 'model' in official_state:
+                    official_state = official_state['model']
+                elif 'state_dict' in official_state:
+                    official_state = official_state['state_dict']
             
-            random_state = create_random_weights()
+            print(f"  Official model has {len(official_state)} parameters")
+            
+            # Convert keys
+            converted_state = convert_official_to_custom(official_state)
+            
+            # Save converted model
             output_path_pth.parent.mkdir(parents=True, exist_ok=True)
-            torch.save(random_state, output_path_pth)
+            torch.save(converted_state, output_path_pth)
             
-            print(f"\n✅ Random weights saved to {output_path_pth}")
-            print("   Note: Model needs training for actual lane detection!")
+            print(f"\n✅ Model saved successfully!")
+            print(f"   Path: {output_path_pth}")
+            print(f"   Size: {output_path_pth.stat().st_size / 1024 / 1024:.1f} MB")
+            
+            # Cleanup
+            temp_path.unlink(missing_ok=True)
+            
+            print("\n" + "=" * 60)
+            print("Setup complete! Restart GPU worker to use the new model.")
+            print("=" * 60)
+            return
+            
+        except Exception as e:
+            print(f"\n⚠️  Conversion failed: {e}")
+    
+    # Method 2: Try ONNX mirror
+    print("\n[2/3] Trying ONNX mirror (PINTO model zoo)...")
+    mirror_info = UFLD_MODELS['tusimple_res18_mirror']
+    
+    if download_file(mirror_info['url'], output_path_onnx):
+        if output_path_onnx.exists() and output_path_onnx.stat().st_size > 1000:
+            print(f"\n✅ ONNX model saved successfully!")
+            print(f"   Path: {output_path_onnx}")
+            print(f"   Size: {output_path_onnx.stat().st_size / 1024 / 1024:.1f} MB")
+            
+            print("\n" + "=" * 60)
+            print("Setup complete! Restart GPU worker to use the new model.")
+            print("=" * 60)
+            return
+    
+    # Method 3: Fallback to random weights
+    print("\n[3/3] All downloads failed, creating random weights...")
+    print("   (Model will need training for actual lane detection)")
+    
+    random_state = create_random_weights()
+    output_path_pth.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(random_state, output_path_pth)
+    
+    print(f"\n✅ Random weights saved to {output_path_pth}")
+    print("   Note: Model needs training for actual lane detection!")
     
     print("\n" + "=" * 60)
     print("Setup complete! Restart GPU worker to use the new model.")
