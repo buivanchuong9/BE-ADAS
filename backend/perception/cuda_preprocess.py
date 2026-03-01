@@ -297,31 +297,41 @@ class CUDAPreprocessor:
         h, w = frame.shape[:2]
         crop_y = int(h * crop_ratio)
         
-        # Crop on CPU (slicing is cheap)
-        cropped = frame[crop_y:, :, :]
-        
-        # Upload cropped region to GPU
-        gpu_crop = self.pool.upload('lane_crop', cropped, self._stream_lane)
-        
-        # GPU resize
-        gpu_resized = self.pool.get('lane_resize')
-        cv2.cuda.resize(
-            gpu_crop, (target_w, target_h),
-            gpu_resized,
-            interpolation=cv2.INTER_LINEAR,
-            stream=self._stream_lane
-        )
-        
-        # GPU BGR → RGB
-        gpu_rgb = self.pool.get('lane_rgb')
-        cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB, gpu_rgb, stream=self._stream_lane)
-        
-        # Sync before download (only sync point!)
-        if self._stream_lane:
-            self._stream_lane.waitForCompletion()
-        
-        # Download RGB result
-        rgb = gpu_rgb.download()
+        try:
+            # Crop on CPU (slicing is cheap)
+            cropped = frame[crop_y:, :, :].copy()  # Ensure contiguous
+            
+            # Validate shape
+            if cropped.ndim != 3 or cropped.shape[2] != 3:
+                logger.warning(f"[LANE] Cropped frame has wrong shape: {cropped.shape}")
+                return self._preprocess_lane_cpu(frame, crop_ratio, target_h, target_w)
+            
+            # Upload cropped region to GPU
+            gpu_crop = self.pool.upload('lane_crop', cropped, self._stream_lane)
+            
+            # GPU resize
+            gpu_resized = self.pool.get('lane_resize')
+            cv2.cuda.resize(
+                gpu_crop, (target_w, target_h),
+                gpu_resized,
+                interpolation=cv2.INTER_LINEAR,
+                stream=self._stream_lane
+            )
+            
+            # Sync before cvtColor
+            if self._stream_lane:
+                self._stream_lane.waitForCompletion()
+            
+            # GPU BGR → RGB (without pre-allocated dst to avoid async issues)
+            gpu_rgb = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB)
+            
+            # Download RGB result
+            rgb = gpu_rgb.download()
+            
+        except Exception as e:
+            # Fallback to CPU
+            logger.warning(f"[LANE] GPU preprocessing failed ({e}), using CPU")
+            return self._preprocess_lane_cpu(frame, crop_ratio, target_h, target_w)
         
         # Normalize and convert to tensor (on CPU, then move to GPU tensor)
         rgb_f = rgb.astype(np.float32) / 255.0
@@ -378,31 +388,53 @@ class CUDAPreprocessor:
         if not self.enable_cuda:
             raise RuntimeError("CUDA not available for preprocess_lane_from_gpu")
         
-        h, w, _ = frame_shape
+        h, w, c = frame_shape
         crop_y = int(h * crop_ratio)
         crop_h = h - crop_y
         
-        # GPU crop using ROI (no data copy!)
-        gpu_crop = cv2.cuda_GpuMat(gpu_frame, (0, crop_y, w, crop_h))
-        
-        # GPU resize
-        gpu_resized = self.pool.get('lane_resize')
-        cv2.cuda.resize(
-            gpu_crop, (target_w, target_h),
-            gpu_resized,
-            interpolation=cv2.INTER_LINEAR,
-            stream=self._stream_lane
-        )
-        
-        # GPU BGR → RGB
-        gpu_rgb = self.pool.get('lane_rgb')
-        cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB, gpu_rgb, stream=self._stream_lane)
-        
-        # Sync and download
-        if self._stream_lane:
-            self._stream_lane.waitForCompletion()
-        
-        rgb = gpu_rgb.download()
+        try:
+            # Approach 1: Download, crop on CPU, re-upload cropped region
+            # This is more reliable than GPU ROI extraction which can fail
+            # with non-contiguous memory or BGR format issues
+            frame_cpu = gpu_frame.download()
+            
+            # Validate frame has 3 channels
+            if frame_cpu.ndim != 3 or frame_cpu.shape[2] != 3:
+                logger.warning(f"[LANE] Frame has wrong shape: {frame_cpu.shape}, expected 3 channels")
+                # Create dummy tensor
+                return torch.zeros(1, 3, target_h, target_w, device=self.device)
+            
+            # Crop on CPU (very fast, avoids GPU ROI issues)
+            cropped = frame_cpu[crop_y:, :, :].copy()
+            
+            # Upload cropped region
+            gpu_crop = self.pool.upload('lane_crop', cropped, self._stream_lane)
+            
+            # GPU resize
+            gpu_resized = self.pool.get('lane_resize')
+            cv2.cuda.resize(
+                gpu_crop, (target_w, target_h),
+                gpu_resized,
+                interpolation=cv2.INTER_LINEAR,
+                stream=self._stream_lane
+            )
+            
+            # Sync before cvtColor to ensure resize is complete
+            if self._stream_lane:
+                self._stream_lane.waitForCompletion()
+            
+            # GPU BGR → RGB (without stream to avoid async issues)
+            gpu_rgb = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB)
+            
+            rgb = gpu_rgb.download()
+            
+        except Exception as e:
+            # Fallback to pure CPU path
+            logger.warning(f"[LANE] GPU preprocessing failed ({e}), using CPU fallback")
+            frame_cpu = gpu_frame.download() if gpu_frame.size()[0] > 0 else np.zeros((h, w, 3), dtype=np.uint8)
+            cropped = frame_cpu[crop_y:, :, :]
+            resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
         
         # Normalize and tensorize
         rgb_f = rgb.astype(np.float32) / 255.0
