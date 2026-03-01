@@ -236,7 +236,6 @@ class SimpleGPUWorker:
         if video_type == 'dashcam':
             from backend.perception.object.object_detector_v11  import ObjectDetectorV11
             from backend.perception.distance.distance_estimator import DistanceEstimator
-            from backend.perception.lane.lane_detector_ufld     import UFLDLaneDetector
 
             # --- Model profile selection ---
             prof = self.MODEL_PROFILES.get(self.model_profile, self.MODEL_PROFILES['cloud'])
@@ -320,32 +319,12 @@ class SimpleGPUWorker:
                 imgsz=imgsz,
                 half=prof.get('half', True),  # FP16 for ~2x speedup when TensorRT unavailable
             )
-            # Lane detection: UFLD v2 (Ultra Fast Lane Detection)
-            ufld_path = prof.get('ufld_model')
+            # Lane detection: LaneDetectorV4 (Traditional CV - Canny + Hough + Polynomial)
+            # Works immediately without ML model - stable and fast
+            from backend.perception.lane.lane_detector_v4 import LaneDetectorV4
+            pipeline['lane'] = LaneDetectorV4()
+            logger.info("[GPU] Lane detection: LaneDetectorV4 (Traditional CV - no ML model needed)")
             
-            # Try to find UFLD model (multiple formats supported)
-            if ufld_path and Path(ufld_path).exists():
-                logger.info(f"[GPU] Lane detection: UFLD ({Path(ufld_path).name})")
-            else:
-                # Try alternative formats: .onnx, .pt, .pth
-                ufld_base = Path('backend/models/ufld_tusimple')
-                for ext in ['.onnx', '.pth', '.pt']:
-                    alt_path = ufld_base.with_suffix(ext)
-                    if alt_path.exists():
-                        ufld_path = str(alt_path)
-                        logger.info(f"[GPU] Lane detection: UFLD ({alt_path.name})")
-                        break
-                else:
-                    logger.warning(
-                        "[GPU] Lane detection: UFLD model not found! "
-                        "Run: python scripts/download_ufld_model.py"
-                    )
-                    ufld_path = None
-            pipeline['lane']     = UFLDLaneDetector(
-                model_path=ufld_path,
-                device=self.device,
-                cuda_preprocessor=self._cuda_preprocessor,  # Zero-copy preprocessing
-            )
             pipeline['distance'] = DistanceEstimator(focal_length=700.0, camera_height=1.2)
             
             # Store preprocessor in pipeline for frame processing
