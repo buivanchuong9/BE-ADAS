@@ -1403,10 +1403,18 @@ class SimpleGPUWorker:
         if current_time - self.last_warning_time < self.warning_cooldown:
             return
 
-        critical_warnings = [
-            w for w in results.get('warnings', [])
-            if w.get('severity') == 'critical'
-        ]
+        # Normalize warnings to dict format
+        raw_warnings = results.get('warnings', [])
+        critical_warnings = []
+        for w in raw_warnings:
+            if isinstance(w, dict):
+                if w.get('severity') == 'critical':
+                    critical_warnings.append(w)
+            else:
+                # String warning - check keywords for critical
+                msg_lower = str(w).lower()
+                if any(kw in msg_lower for kw in ['drowsy', 'ngủ gật', 'fatigue', 'mệt mỏi', 'phone', 'điện thoại']):
+                    critical_warnings.append({'message': str(w), 'severity': 'critical'})
 
         if critical_warnings:
             message = critical_warnings[0].get('message', '')
