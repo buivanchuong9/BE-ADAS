@@ -355,10 +355,10 @@ class SimpleGPUWorker:
                 f"CUDA devices={cuda_count}"
             )
 
-            logger.info("[GPU] ✅ dashcam pipeline ready (YOLO + UFLD lane + GPU overlay)")
+            logger.info("[GPU] ✅ dashcam pipeline ready (YOLO + LaneV4 + GPU overlay)")
 
         elif video_type == 'in_cabin':
-            from backend.perception.driver.driver_monitor_v11 import DriverMonitorV11
+            from backend.perception.driver.driver_monitor_v11_pro import DriverMonitorV11Pro
 
             # --- Model profile selection (in_cabin) ---
             prof = self.MODEL_PROFILES.get(self.model_profile, self.MODEL_PROFILES['cloud'])
@@ -366,14 +366,16 @@ class SimpleGPUWorker:
             pose_model_path = prof['pose_model']
 
             logger.info(
-                f"[GPU] Loading pipeline 'in_cabin': DriverMonitor "
+                f"[GPU] Loading pipeline 'in_cabin': DriverMonitor PRO "
                 f"(obj={Path(obj_model_path).name}, pose={Path(pose_model_path).name}, "
                 f"profile={self.model_profile})"
             )
-            pipeline['driver'] = DriverMonitorV11(
+            pipeline['driver'] = DriverMonitorV11Pro(
                 object_model_path=obj_model_path,
                 pose_model_path=pose_model_path,
                 device=self.device,
+                enable_attention_score=True,
+                enable_head_pose=True,
             )
 
             if torch.cuda.is_available():
@@ -787,6 +789,13 @@ class SimpleGPUWorker:
             results['driver_confidence']     = driver_result.get('confidence', 0.0)
             results['driver_warnings']       = driver_result.get('warnings', [])
             results['warnings'].extend(results['driver_warnings'])
+            
+            # PRO features
+            results['attention_score']       = driver_result.get('attention_score', 100)
+            results['distraction_level']     = driver_result.get('distraction_level', 'LOW')
+            results['head_pose']             = driver_result.get('head_pose', {})
+            results['behaviors']             = driver_result.get('behaviors', {})
+            
             results['objects_with_distance'] = []
             results['traffic_signs']         = []
 
