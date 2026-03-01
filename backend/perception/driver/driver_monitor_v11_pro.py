@@ -180,17 +180,36 @@ class DriverMonitorV11Pro:
     # Mouth landmarks for MAR (Mouth Aspect Ratio)
     MOUTH_IDX = [61, 291, 0, 17, 269, 405]
     
-    # EAR thresholds
+    # EAR thresholds - REALISTIC DETECTION
     EAR_THRESHOLD = 0.21         # Below this = eyes closed
-    EAR_CONSEC_FRAMES = 3        # Consecutive frames for blink
-    EAR_DROWSY_TIME = 2.0        # Seconds with low EAR = drowsy
+    EAR_DROWSY_THRESHOLD = 0.20  # Below this for extended time = drowsy/lờ đờ
+    EAR_CONSEC_FRAMES = 3        # Consecutive frames for normal blink
+    EAR_DROWSY_TIME = 2.0        # Seconds with EAR < 0.20 = lờ đờ
+    
+    # BLINK DURATION thresholds (realistic)
+    # Normal blink: 100-400ms
+    # Long blink: 400-800ms (suspicious)
+    # Microsleep: > 800ms (dangerous!)
+    BLINK_NORMAL_MAX_MS = 400    # Normal blink up to 400ms
+    BLINK_LONG_MS = 800          # Long blink = drowsy indicator
+    MICROSLEEP_MS = 800          # > 800ms = microsleep warning!
+    MICROSLEEP_DANGER_MS = 1500  # > 1.5s = critical danger
     
     # PERCLOS threshold (% of time eyes closed in 1 minute)
     PERCLOS_THRESHOLD = 0.15     # 15% = drowsy
+    PERCLOS_DANGER = 0.25        # 25% = severe drowsiness
     
-    # MAR thresholds for yawning
-    MAR_THRESHOLD = 0.6          # Above this = yawning
-    YAWN_FRAMES = 15             # Frames to confirm yawn
+    # MAR thresholds for yawning - MORE REALISTIC
+    MAR_THRESHOLD = 0.55         # Above this = mouth wide open (yawn candidate)
+    MAR_YAWN_CONFIRM = 0.65      # Above this for extended time = confirmed yawn
+    YAWN_FRAMES = 20             # ~0.67s at 30fps to confirm yawn
+    YAWN_DURATION_MS = 2000      # Typical yawn lasts 2-4 seconds
+    
+    # STROKE DETECTION - Facial Asymmetry
+    # If one side of face drops significantly vs other = possible stroke
+    STROKE_EAR_ASYMMETRY = 0.15  # |left_ear - right_ear| > 0.15 = asymmetry
+    STROKE_MOUTH_DROOP = 0.2    # One side of mouth significantly lower
+    STROKE_CONFIRM_FRAMES = 60  # 2 seconds to confirm (not just expression)
     
     # Temporal thresholds (frames @ 30fps)
     LOOKING_AWAY_FRAMES = 45     # 1.5 seconds
@@ -265,8 +284,32 @@ class DriverMonitorV11Pro:
         self.yawn_counter = 0
         self.current_mar = 0.0
         
-        # Seatbelt tracking
-        self.seatbelt_detected = True  # Assume wearing seatbelt initially
+        # ===== NEW: Advanced Drowsiness Detection =====
+        # Microsleep tracking (blink duration > 800ms)
+        self.blink_start_time = None  # When current blink started
+        self.last_blink_duration_ms = 0  # Duration of last completed blink
+        self.microsleep_detected = False
+        self.microsleep_count = 0
+        self.long_blink_count = 0  # Blinks > 400ms but < 800ms
+        
+        # Drowsy eyes tracking (EAR < 0.2 continuously)
+        self.drowsy_eyes_start_time = None  # When EAR dropped below threshold
+        self.drowsy_eyes_detected = False  # Mắt lờ đờ
+        self.drowsy_eyes_duration = 0.0
+        
+        # Yawn tracking (improved)
+        self.yawn_start_time = None
+        self.yawns_in_last_5min = deque(maxlen=10)  # Track yawn timestamps
+        self.current_yawn_duration = 0.0
+        
+        # Stroke detection (facial asymmetry)
+        self.ear_asymmetry_frames = 0
+        self.mouth_asymmetry_frames = 0
+        self.stroke_warning_active = False
+        
+        # Seatbelt tracking - REALISTIC: Start with unknown state
+        self.seatbelt_detected = False  # Don't assume - wait for actual detection
+        self.seatbelt_status = 'unknown'  # 'wearing', 'not_wearing', 'checking', 'unknown'
         self.seatbelt_warning_sent = False
         self.no_seatbelt_frames = 0
         
@@ -665,18 +708,16 @@ class DriverMonitorV11Pro:
     
     def process_face_mesh(self, frame: np.ndarray) -> Dict:
         """
-        Process frame with MediaPipe Face Mesh.
+        Process frame with MediaPipe Face Mesh - ENHANCED VERSION.
+        
+        NEW Features:
+        - Microsleep detection (blink > 800ms)
+        - Drowsy eyes detection (EAR < 0.2 continuously for 2s)
+        - Improved yawn detection with duration tracking
+        - Stroke detection (facial asymmetry)
         
         Returns:
-            Dict with:
-                - ear: Eye Aspect Ratio (average of both eyes)
-                - ear_left, ear_right: Individual EAR
-                - mar: Mouth Aspect Ratio
-                - blink_detected: True if blink detected this frame
-                - eyes_open: True if eyes are open
-                - yawning: True if yawning detected
-                - face_landmarks: All 468 landmarks
-                - face_detected: True if face found
+            Dict with all face analysis results
         """
         result = {
             'ear': 0.3,
@@ -688,6 +729,16 @@ class DriverMonitorV11Pro:
             'yawning': False,
             'face_landmarks': None,
             'face_detected': False,
+            # NEW fields
+            'microsleep': False,
+            'microsleep_duration_ms': 0,
+            'long_blink': False,
+            'blink_duration_ms': 0,
+            'drowsy_eyes': False,  # Mắt lờ đờ
+            'drowsy_eyes_duration': 0.0,
+            'ear_asymmetry': 0.0,
+            'stroke_warning': False,
+            'yawn_duration': 0.0,
         }
         
         if not self.enable_face_mesh or self.face_mesh is None:
@@ -702,6 +753,8 @@ class DriverMonitorV11Pro:
             results = self.face_mesh.process(rgb_frame)
             
             if not results.multi_face_landmarks:
+                # No face - reset tracking states
+                self._reset_blink_tracking()
                 return result
             
             # Get first face
@@ -721,7 +774,7 @@ class DriverMonitorV11Pro:
             # Right eye
             right_eye = [get_landmark_coords(i) for i in self.RIGHT_EYE_IDX]
             
-            # Calculate EAR
+            # Calculate EAR for each eye
             ear_left = self._calculate_ear(left_eye)
             ear_right = self._calculate_ear(right_eye)
             ear_avg = (ear_left + ear_right) / 2.0
@@ -734,31 +787,102 @@ class DriverMonitorV11Pro:
             self.ear_buffer.append(ear_avg)
             self.current_ear = ear_avg
             
-            # Check if eyes are open
-            result['eyes_open'] = ear_avg >= self.EAR_THRESHOLD
+            # ===== 1. STROKE DETECTION - Facial Asymmetry =====
+            ear_asymmetry = abs(ear_left - ear_right)
+            result['ear_asymmetry'] = round(ear_asymmetry, 3)
             
-            # PERCLOS update
-            self.perclos_buffer.append(1 if ear_avg < self.EAR_THRESHOLD else 0)
+            if ear_asymmetry > self.STROKE_EAR_ASYMMETRY:
+                self.ear_asymmetry_frames += 1
+                if self.ear_asymmetry_frames >= self.STROKE_CONFIRM_FRAMES:
+                    result['stroke_warning'] = True
+                    self.stroke_warning_active = True
+            else:
+                self.ear_asymmetry_frames = max(0, self.ear_asymmetry_frames - 1)
             
-            # Blink detection
-            if ear_avg < self.EAR_THRESHOLD:
+            # ===== 2. MICROSLEEP & BLINK DURATION Detection =====
+            current_time = time.time()
+            eyes_currently_closed = ear_avg < self.EAR_THRESHOLD
+            
+            if eyes_currently_closed:
+                # Eyes just closed - start timing
+                if self.blink_start_time is None:
+                    self.blink_start_time = current_time
+                
+                # Calculate current closure duration
+                closure_duration_ms = (current_time - self.blink_start_time) * 1000
+                result['blink_duration_ms'] = int(closure_duration_ms)
+                
+                # Check for microsleep (> 800ms)
+                if closure_duration_ms >= self.MICROSLEEP_MS:
+                    result['microsleep'] = True
+                    result['microsleep_duration_ms'] = int(closure_duration_ms)
+                    self.microsleep_detected = True
+                # Long blink (400-800ms) - warning sign
+                elif closure_duration_ms >= self.BLINK_NORMAL_MAX_MS:
+                    result['long_blink'] = True
+                
                 self.blink_counter += 1
             else:
-                if self.blink_counter >= self.EAR_CONSEC_FRAMES:
-                    self.total_blinks += 1
-                    result['blink_detected'] = True
+                # Eyes just opened - calculate blink duration
+                if self.blink_start_time is not None:
+                    blink_duration_ms = (current_time - self.blink_start_time) * 1000
+                    self.last_blink_duration_ms = blink_duration_ms
+                    
+                    # Count blink types
+                    if blink_duration_ms >= self.MICROSLEEP_MS:
+                        self.microsleep_count += 1
+                    elif blink_duration_ms >= self.BLINK_NORMAL_MAX_MS:
+                        self.long_blink_count += 1
+                    
+                    # Normal blink completed
+                    if self.blink_counter >= self.EAR_CONSEC_FRAMES:
+                        self.total_blinks += 1
+                        result['blink_detected'] = True
+                
+                # Reset blink tracking
+                self.blink_start_time = None
                 self.blink_counter = 0
+                self.microsleep_detected = False
             
-            # Track eyes closed duration
-            if ear_avg < self.EAR_THRESHOLD:
+            # Check if eyes are open
+            result['eyes_open'] = not eyes_currently_closed
+            
+            # PERCLOS update
+            self.perclos_buffer.append(1 if eyes_currently_closed else 0)
+            
+            # ===== 3. DROWSY EYES Detection (EAR < 0.20 continuously) =====
+            # Different from closed eyes - this is "half-closed" drowsy look
+            drowsy_ear_threshold = getattr(self, 'EAR_DROWSY_THRESHOLD', 0.20)
+            is_drowsy_looking = ear_avg < drowsy_ear_threshold and ear_avg >= (self.EAR_THRESHOLD - 0.05)
+            
+            # Or just very low EAR for extended time
+            if ear_avg < drowsy_ear_threshold:
+                if self.drowsy_eyes_start_time is None:
+                    self.drowsy_eyes_start_time = current_time
+                
+                drowsy_duration = current_time - self.drowsy_eyes_start_time
+                result['drowsy_eyes_duration'] = round(drowsy_duration, 2)
+                self.drowsy_eyes_duration = drowsy_duration
+                
+                # 2 seconds of low EAR = drowsy eyes / lờ đờ
+                if drowsy_duration >= self.EAR_DROWSY_TIME:
+                    result['drowsy_eyes'] = True
+                    self.drowsy_eyes_detected = True
+            else:
+                self.drowsy_eyes_start_time = None
+                self.drowsy_eyes_detected = False
+                self.drowsy_eyes_duration = 0.0
+            
+            # Track eyes closed duration (original logic)
+            if eyes_currently_closed:
                 if self.eyes_closed_start_time is None:
-                    self.eyes_closed_start_time = time.time()
+                    self.eyes_closed_start_time = current_time
                 self.eyes_closed_frames += 1
             else:
                 self.eyes_closed_start_time = None
                 self.eyes_closed_frames = 0
             
-            # Mouth/Yawn detection
+            # ===== 4. IMPROVED YAWN Detection =====
             try:
                 mouth = [get_landmark_coords(i) for i in self.MOUTH_IDX]
                 mar = self._calculate_mar(mouth)
@@ -766,20 +890,46 @@ class DriverMonitorV11Pro:
                 self.mar_buffer.append(mar)
                 self.current_mar = mar
                 
+                # Yawn detection with duration tracking
+                mar_confirm = getattr(self, 'MAR_YAWN_CONFIRM', 0.65)
+                
                 if mar > self.MAR_THRESHOLD:
+                    # Mouth is open wide
+                    if self.yawn_start_time is None:
+                        self.yawn_start_time = current_time
+                    
+                    yawn_duration = current_time - self.yawn_start_time
+                    result['yawn_duration'] = round(yawn_duration, 2)
+                    self.current_yawn_duration = yawn_duration
+                    
                     self.yawn_counter += 1
-                    if self.yawn_counter >= self.YAWN_FRAMES:
+                    
+                    # Confirm yawn: mouth very wide OR sustained open mouth
+                    if mar > mar_confirm or self.yawn_counter >= self.YAWN_FRAMES:
                         result['yawning'] = True
+                        
+                        # Track yawns for frequency analysis
+                        if self.yawn_counter == self.YAWN_FRAMES:  # Only count once per yawn
+                            self.yawns_in_last_5min.append(current_time)
                 else:
+                    # Mouth closed - reset yawn tracking
                     self.yawn_counter = 0
-            except:
-                pass
+                    self.yawn_start_time = None
+                    self.current_yawn_duration = 0.0
+            except Exception as e:
+                logger.debug(f"Yawn detection error: {e}")
             
             return result
             
         except Exception as e:
             logger.debug(f"Face mesh error: {e}")
             return result
+    
+    def _reset_blink_tracking(self):
+        """Reset blink tracking when face is lost."""
+        self.blink_start_time = None
+        self.blink_counter = 0
+        self.microsleep_detected = False
     
     def get_perclos(self) -> float:
         """
@@ -1342,10 +1492,13 @@ class DriverMonitorV11Pro:
         
         Returns:
             (is_wearing_seatbelt, warning_message, confidence)
+            - confidence > 0.5: Phát hiện có/không dây an toàn
+            - confidence = 0: Không thể xác định (không có pose, không rõ)
         """
         if pose is None:
-            # Không có pose → không thể kiểm tra
-            return True, "", 0.0
+            # Không có pose → không thể kiểm tra, trả về unknown state
+            self.seatbelt_status = 'unknown'
+            return False, "", 0.0  # confidence = 0 means unknown
         
         try:
             h, w = frame.shape[:2]
@@ -1356,13 +1509,15 @@ class DriverMonitorV11Pro:
             
             # Check if we have shoulder keypoints
             if left_shoulder is None or right_shoulder is None:
-                return True, "", 0.0
+                self.seatbelt_status = 'unknown'
+                return False, "", 0.0  # Cannot determine
             
             # COCO Pose: 11: left_hip, 12: right_hip
             # But our pose dict might have different keys
             keypoints = pose.get('keypoints')
             if keypoints is None or len(keypoints) < 13:
-                return True, "", 0.0
+                self.seatbelt_status = 'unknown'
+                return False, "", 0.0  # Cannot determine
             
             left_hip = keypoints[11][:2]
             right_hip = keypoints[12][:2]
@@ -1444,13 +1599,17 @@ class DriverMonitorV11Pro:
             recent = list(self.seatbelt_buffer)[-self.SEATBELT_CONFIRM_FRAMES:]
             avg_score = np.mean(recent) if recent else 0
             
-            # Thresholds
+            # Thresholds - REALISTIC detection
+            # Need significant diagonal edges to confirm seatbelt presence
             if avg_score >= self.SEATBELT_MIN_EDGE_RATIO:
-                # Có dây an toàn
+                # Có dây an toàn - detected with high confidence
                 self.seatbelt_detected = True
+                self.seatbelt_status = 'wearing'
                 self.no_seatbelt_frames = 0
                 self.seatbelt_warning_sent = False
-                return True, "", avg_score
+                # Confidence > 0.5 indicates reliable detection
+                confidence = min(1.0, 0.5 + avg_score * 2)
+                return True, "", confidence
             else:
                 # Không phát hiện dây an toàn
                 self.no_seatbelt_frames += 1
@@ -1458,23 +1617,33 @@ class DriverMonitorV11Pro:
                 # Chỉ cảnh báo sau khi confirm nhiều frames
                 if self.no_seatbelt_frames >= self.SEATBELT_CONFIRM_FRAMES:
                     self.seatbelt_detected = False
-                    confidence = 1.0 - avg_score / self.SEATBELT_MIN_EDGE_RATIO
-                    return False, "🚨 CẢNH BÁO: KHÔNG THẮT DÂY AN TOÀN!", min(1.0, confidence)
+                    self.seatbelt_status = 'not_wearing'
+                    # High confidence that NO seatbelt
+                    confidence = min(1.0, 0.7 + (1.0 - avg_score / self.SEATBELT_MIN_EDGE_RATIO) * 0.3)
+                    return False, "🚨 CẢNH BÁO: KHÔNG THẮT DÂY AN TOÀN!", confidence
                 
-                return True, "", avg_score  # Chưa đủ frames để confirm
+                # Chưa đủ frames để confirm - state is uncertain
+                self.seatbelt_status = 'checking'
+                return False, "", 0.3  # Low confidence, still checking
                 
         except Exception as e:
             logger.debug(f"Seatbelt detection error: {e}")
-            return True, "", 0.0
+            self.seatbelt_status = 'unknown'
+            return False, "", 0.0  # Unknown state
 
     def draw_seatbelt_status(
         self,
         frame: np.ndarray,
         pose: Optional[Dict],
-        seatbelt_detected: bool
+        seatbelt_detected: bool,
+        confidence: float = 0.0
     ) -> np.ndarray:
         """
         Vẽ bounding box vùng ngực và trạng thái dây an toàn.
+        
+        REALISTIC - Chỉ vẽ những gì thực sự phát hiện được:
+        - Nếu confidence thấp (<0.5): Không vẽ đường dây an toàn giả
+        - Nếu không phát hiện được: Hiển thị rõ ràng "KHÔNG PHÁT HIỆN"
         """
         if pose is None:
             return frame
@@ -1505,24 +1674,54 @@ class DriverMonitorV11Pro:
             y_min = int(min(y_coords)) - 5
             y_max = int(max(y_coords)) + 5
             
-            # Color based on seatbelt status
-            if seatbelt_detected:
-                color = (0, 255, 0)  # Green
-                label = "DÂY AN TOÀN: ĐÃ THẮT"
-            else:
-                color = (0, 0, 255)  # Red
-                label = "DÂY AN TOÀN: CHƯA THẮT"
+            # Get actual seatbelt status from instance variable
+            seatbelt_status = getattr(self, 'seatbelt_status', 'unknown')
             
-            # Draw bounding box
-            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 2)
+            # Color and label based on ACTUAL detection status
+            if seatbelt_status == 'wearing' and confidence >= 0.5:
+                # Chỉ khi thực sự phát hiện được dây an toàn
+                color = (0, 255, 0)  # Green
+                label = "DÂY AN TOÀN: ĐÃ THẮT ✓"
+                box_style = 'solid'
+            elif seatbelt_status == 'not_wearing' and confidence >= 0.5:
+                # Xác nhận KHÔNG có dây an toàn
+                color = (0, 0, 255)  # Red
+                label = "⚠ KHÔNG CÓ DÂY AN TOÀN!"
+                box_style = 'alert'
+            elif seatbelt_status == 'checking':
+                # Đang kiểm tra
+                color = (0, 200, 255)  # Yellow-Orange
+                label = "DÂY AN TOÀN: ĐANG KIỂM TRA..."
+                box_style = 'checking'
+            else:
+                # Unknown - không thể xác định (video TikTok, không phải cảnh lái xe)
+                color = (128, 128, 128)  # Gray
+                label = "DÂY AN TOÀN: KHÔNG PHÁT HIỆN"
+                box_style = 'unknown'
+            
+            # Draw bounding box based on style
+            if box_style == 'alert':
+                # Animated alert border for no seatbelt
+                thickness = 3 if (self.frame_count // 5) % 2 == 0 else 2
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, thickness)
+            elif box_style == 'checking':
+                # Dashed-style for checking
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 1)
+            elif box_style == 'solid':
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 2)
+            else:
+                # Unknown - dotted/light border
+                cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 1)
             
             # Draw label — PIL for Vietnamese Unicode
             label_y = max(5, y_min - 28)
             frame = self._put_text_pil(frame, label, (x_min, label_y), color, self.font_medium)
             
-            # Draw diagonal line indicator if seatbelt detected
-            if seatbelt_detected:
+            # REALISTIC: Chỉ vẽ đường dây an toàn khi THỰC SỰ phát hiện với confidence cao
+            # KHÔNG vẽ đường giả khi không có dây an toàn!
+            if seatbelt_status == 'wearing' and confidence >= 0.6:
                 # Draw approximate seatbelt line (shoulder to opposite hip)
+                # Chỉ khi confidence >= 0.6 mới vẽ
                 cv2.line(frame,
                         (int(left_shoulder[0]), int(left_shoulder[1])),
                         (int(right_hip[0]), int(right_hip[1])),
@@ -1795,25 +1994,26 @@ class DriverMonitorV11Pro:
         frame_pil = Image.fromarray(frame)
         draw = ImageDraw.Draw(frame_pil)
         
-        # ===== Warning Banner (top) =====
+        # ===== Warning Banner (top) - CLEAN & SIMPLE =====
         if warnings:
-            banner_height = 60 + 50 * len(warnings)
+            banner_height = 45 + 40 * len(warnings)
             
-            # Background — dark red/black gradient feel, high opacity
+            # Background — simple dark with slight transparency
             overlay = Image.new('RGBA', (w, banner_height), (0, 0, 0, 0))
             overlay_draw = ImageDraw.Draw(overlay)
-            # Top portion: solid dark red
-            overlay_draw.rectangle([(0, 0), (w, banner_height)], fill=(40, 0, 0, 230))
-            # Thin red accent line at bottom of banner
-            overlay_draw.rectangle([(0, banner_height - 3), (w, banner_height)], fill=(220, 30, 30, 255))
+            # Clean dark background
+            overlay_draw.rectangle([(0, 0), (w, banner_height)], fill=(20, 20, 30, 220))
+            # Thin bottom line for separation
+            overlay_draw.rectangle([(0, banner_height - 2), (w, banner_height)], fill=(255, 100, 100, 200))
             frame_pil.paste(overlay, (0, 0), overlay)
             
-            # Warnings — bright white text with red warning icon
-            y = 15
+            # Warnings — clean white text, easy to read
+            y = 10
             for warning in warnings:
                 if self.font_large:
-                    draw.text((20, y), f"⚠ {warning}", fill=(255, 60, 60), font=self.font_large)
-                y += 50
+                    # White text for better readability
+                    draw.text((15, y), warning, fill=(255, 255, 255), font=self.font_large)
+                y += 40
         
         # ===== Dashboard Panel (bottom-left) =====
         panel_w, panel_h = 350, 180
@@ -1994,19 +2194,38 @@ class DriverMonitorV11Pro:
             cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), color, 2)
             pending_texts.append((label, (box[0], box[1] - 22), color, self.font_small))
         
-        # ===== Draw status indicators (top-right) - CLEANER =====
+        # ===== Draw status indicators (top-right) - ENHANCED =====
         active_behaviors = []
         
         if behaviors.get('phone', {}).get('detected'):
             active_behaviors.append(('ĐANG DÙNG ĐIỆN THOẠI', COLORS['phone']))
         if behaviors.get('drinking', {}).get('detected'):
             active_behaviors.append(('ĐANG UỐNG NƯỚC', COLORS['drink']))
-        if behaviors.get('drowsiness', {}).get('detected'):
-            severity = behaviors['drowsiness'].get('severity', 'MEDIUM')
-            if severity == 'HIGH':
-                active_behaviors.append(('NGỦ GẬT NGUY HIỂM', (0, 0, 255)))
+        
+        # Enhanced drowsiness indicators
+        drowsiness_data = behaviors.get('drowsiness', {})
+        if drowsiness_data.get('detected'):
+            severity = drowsiness_data.get('severity', 'MEDIUM')
+            
+            # Show specific type of drowsiness
+            if drowsiness_data.get('microsleep'):
+                duration_ms = drowsiness_data.get('microsleep_duration_ms', 0)
+                active_behaviors.append((f'⚠️ MICROSLEEP {duration_ms}ms', (0, 0, 255)))
+            elif drowsiness_data.get('drowsy_eyes'):
+                active_behaviors.append(('😴 MẮT LỜ ĐỜ', (0, 80, 255)))
+            elif drowsiness_data.get('yawning'):
+                active_behaviors.append(('😴 ĐANG NGÁP', (0, 180, 255)))
+            elif severity == 'CRITICAL':
+                active_behaviors.append(('🚨 NGỦ GẬT NGUY HIỂM', (0, 0, 255)))
+            elif severity == 'HIGH':
+                active_behaviors.append(('⚠️ RẤT BUỒN NGỦ', (0, 50, 255)))
             else:
-                active_behaviors.append(('DẤU HIỆU BUỒN NGỦ', (0, 180, 255)))
+                active_behaviors.append(('😴 DẤU HIỆU BUỒN NGỦ', (0, 180, 255)))
+        
+        # Stroke warning (critical)
+        if drowsiness_data.get('stroke_warning'):
+            active_behaviors.append(('🚨 BẤT ĐỐI XỨNG MẶT', (255, 0, 255)))
+        
         if behaviors.get('looking_away', {}).get('detected'):
             active_behaviors.append(('KHÔNG NHÌN ĐƯỜNG', (0, 150, 255)))
         
@@ -2067,7 +2286,7 @@ class DriverMonitorV11Pro:
         w = warning.lower()
         if 'điện thoại' in w or 'gọi điện' in w:
             return 'phone'
-        elif 'ngủ gật' in w or 'mắt nhắm' in w or 'perclos' in w or 'buồn ngủ' in w:
+        elif 'ngủ gật' in w or 'mắt nhắm' in w or 'perclos' in w or 'buồn ngủ' in w or 'microsleep' in w or 'lờ đờ' in w:
             return 'drowsy'
         elif 'ngáp' in w or 'mệt mỏi' in w:
             return 'yawn'
@@ -2079,6 +2298,8 @@ class DriverMonitorV11Pro:
             return 'drinking'
         elif 'thuốc' in w or 'hút' in w:
             return 'smoking'
+        elif 'bất đối xứng' in w or 'stroke' in w:
+            return 'stroke'
         return warning[:30]  # fallback: first 30 chars as key
     
     def prioritize_warnings(self, warnings: List[str], behaviors: Dict) -> List[Dict]:
@@ -2089,13 +2310,34 @@ class DriverMonitorV11Pro:
             List of warnings sorted by priority with metadata
         """
         prioritized = []
+        drowsiness_data = behaviors.get('drowsiness', {})
+        severity = drowsiness_data.get('severity', 'NONE')
         
-        # Check P0 - Critical (ngủ gục, pitch extreme)
-        if behaviors.get('drowsiness', {}).get('severity') == 'HIGH':
+        # Check P0 - CRITICAL (microsleep, severe drowsiness, stroke)
+        if severity == 'CRITICAL' or drowsiness_data.get('microsleep'):
             prioritized.append({
                 'priority': 0,
                 'level': 'P0_CRITICAL',
-                'message': behaviors['drowsiness'].get('message', '😴 NGỦ GẬT NGUY HIỂM!'),
+                'message': '🚨 NGUY HIỂM: NGỦ GẬT!',
+                'sound': 'alarm_critical',
+                'behavior': 'microsleep'
+            })
+        
+        if drowsiness_data.get('stroke_warning'):
+            prioritized.append({
+                'priority': 0,
+                'level': 'P0_CRITICAL',
+                'message': '🚨 BẤT ĐỐI XỨNG MẶT - KIỂM TRA SỨC KHỎE!',
+                'sound': 'alarm_critical',
+                'behavior': 'stroke'
+            })
+        
+        # Check P0/P1 - HIGH severity drowsiness
+        if severity == 'HIGH' and not drowsiness_data.get('microsleep'):
+            prioritized.append({
+                'priority': 0,
+                'level': 'P0_CRITICAL',
+                'message': '😴 RẤT BUỒN NGỦ - HÃY NGHỈ NGƠI!',
                 'sound': 'alarm_critical',
                 'behavior': 'drowsy_severe'
             })
@@ -2239,37 +2481,86 @@ class DriverMonitorV11Pro:
             warnings.append(smoke_msg)
         behaviors['smoking'] = {'detected': smoking, 'confidence': smoke_conf}
         
-        # ===== 6. Drowsiness Detection (EAR + Head Pose) =====
+        # ===== 6. ENHANCED Drowsiness Detection =====
+        # Priority: Microsleep > Drowsy Eyes > Yawning > PERCLOS > Head-based
         drowsy = False
         drowsy_msg = ""
         drowsy_severity = "NONE"
         drowsy_conf = 0.0
         
-        # Check eye closure duration
-        if not eyes_open and self.eyes_closed_start_time:
+        # Get new signals from face_result
+        microsleep = face_result.get('microsleep', False)
+        microsleep_duration = face_result.get('microsleep_duration_ms', 0)
+        drowsy_eyes = face_result.get('drowsy_eyes', False)
+        drowsy_eyes_duration = face_result.get('drowsy_eyes_duration', 0.0)
+        long_blink = face_result.get('long_blink', False)
+        stroke_warning = face_result.get('stroke_warning', False)
+        yawn_duration = face_result.get('yawn_duration', 0.0)
+        
+        # ===== P0: MICROSLEEP - Most dangerous! =====
+        if microsleep:
+            drowsy = True
+            if microsleep_duration >= getattr(self, 'MICROSLEEP_DANGER_MS', 1500):
+                drowsy_msg = f"🚨 NGUY HIỂM: NGỦ GẬT {microsleep_duration/1000:.1f}s!"
+                drowsy_severity = "CRITICAL"
+            else:
+                drowsy_msg = f"⚠️ MICRO-SLEEP: Mắt nhắm {microsleep_duration}ms!"
+                drowsy_severity = "HIGH"
+            drowsy_conf = min(1.0, microsleep_duration / 2000)
+        
+        # ===== P1: DROWSY EYES (Mắt lờ đờ) =====
+        elif drowsy_eyes:
+            drowsy = True
+            drowsy_msg = f"😴 MẮT LỜ ĐỜ: EAR thấp trong {drowsy_eyes_duration:.1f}s"
+            drowsy_severity = "HIGH"
+            drowsy_conf = min(1.0, drowsy_eyes_duration / 3.0)
+        
+        # ===== P2: Long blink warning =====
+        elif long_blink and not drowsy:
+            # Long blinks (400-800ms) are warning signs
+            drowsy = True
+            drowsy_msg = "⚠️ CHỚP MẮT DÀI - Dấu hiệu mệt mỏi"
+            drowsy_severity = "MEDIUM"
+            drowsy_conf = 0.6
+        
+        # ===== P2: YAWNING Detection =====
+        if yawning and not drowsy:
+            drowsy = True
+            if yawn_duration > 2.0:
+                drowsy_msg = f"😴 NGÁP DÀI {yawn_duration:.1f}s - Rất mệt mỏi!"
+                drowsy_severity = "HIGH"
+                drowsy_conf = 0.85
+            else:
+                drowsy_msg = "😴 PHÁT HIỆN NGÁP - Dấu hiệu mệt mỏi"
+                drowsy_severity = "MEDIUM"
+                drowsy_conf = 0.7
+        
+        # ===== P3: PERCLOS Check =====
+        perclos = self.get_perclos()
+        perclos_danger = getattr(self, 'PERCLOS_DANGER', 0.25)
+        
+        if not drowsy:
+            if perclos > perclos_danger:
+                drowsy = True
+                drowsy_msg = f"🚨 PERCLOS CAO: {perclos*100:.0f}% - Rất buồn ngủ!"
+                drowsy_severity = "HIGH"
+                drowsy_conf = min(1.0, perclos * 2)
+            elif perclos > self.PERCLOS_THRESHOLD:
+                drowsy = True
+                drowsy_msg = f"😴 PERCLOS: {perclos*100:.0f}% - Dấu hiệu buồn ngủ"
+                drowsy_severity = "MEDIUM"
+                drowsy_conf = perclos
+        
+        # ===== P3: Eye closure duration (fallback) =====
+        if not drowsy and not eyes_open and self.eyes_closed_start_time:
             eyes_closed_duration = time.time() - self.eyes_closed_start_time
             if eyes_closed_duration >= self.EAR_DROWSY_TIME:
                 drowsy = True
-                drowsy_msg = f"😴 NGUY HIỂM: MẮT NHẮM QUÁ LÂU ({eyes_closed_duration:.1f}s)!"
+                drowsy_msg = f"😴 MẮT NHẮM QUÁ LÂU ({eyes_closed_duration:.1f}s)!"
                 drowsy_severity = "HIGH"
                 drowsy_conf = min(1.0, eyes_closed_duration / 3.0)
         
-        # Check PERCLOS
-        perclos = self.get_perclos()
-        if perclos > self.PERCLOS_THRESHOLD and not drowsy:
-            drowsy = True
-            drowsy_msg = f"😴 CẢNH BÁO: BUỒN NGỦ (PERCLOS: {perclos*100:.0f}%)!"
-            drowsy_severity = "MEDIUM"
-            drowsy_conf = perclos
-        
-        # Check yawning
-        if yawning and not drowsy:
-            drowsy = True
-            drowsy_msg = "😴 CẢNH BÁO: PHÁT HIỆN NGÁP - DẤU HIỆU MỆT MỎI!"
-            drowsy_severity = "MEDIUM"
-            drowsy_conf = 0.7
-        
-        # Fallback to head-based drowsiness
+        # ===== P4: Head-based drowsiness (fallback) =====
         if not drowsy:
             head_drowsy, head_drowsy_msg, head_severity, head_conf = self.check_drowsiness(pose, head_pose)
             if head_drowsy:
@@ -2277,6 +2568,10 @@ class DriverMonitorV11Pro:
                 drowsy_msg = head_drowsy_msg
                 drowsy_severity = head_severity
                 drowsy_conf = head_conf
+        
+        # ===== STROKE Warning (separate from drowsiness) =====
+        if stroke_warning:
+            warnings.append("🚨 CẢNH BÁO: Bất đối xứng khuôn mặt - Kiểm tra sức khỏe!")
         
         if drowsy:
             warnings.append(drowsy_msg)
@@ -2288,7 +2583,17 @@ class DriverMonitorV11Pro:
             'eyes_open': eyes_open,
             'perclos': perclos,
             'yawning': yawning,
-            'blinks': self.total_blinks
+            'blinks': self.total_blinks,
+            # NEW: Enhanced drowsiness signals
+            'microsleep': microsleep,
+            'microsleep_duration_ms': microsleep_duration,
+            'drowsy_eyes': drowsy_eyes,
+            'drowsy_eyes_duration': drowsy_eyes_duration,
+            'long_blink': long_blink,
+            'stroke_warning': stroke_warning,
+            'yawn_duration': yawn_duration,
+            'microsleep_count': getattr(self, 'microsleep_count', 0),
+            'long_blink_count': getattr(self, 'long_blink_count', 0),
         }
         
         # Looking away
@@ -2301,10 +2606,15 @@ class DriverMonitorV11Pro:
         seatbelt_on, seatbelt_msg, seatbelt_conf = self.check_seatbelt(frame, pose)
         if not seatbelt_on and seatbelt_msg:
             warnings.append(seatbelt_msg)
+        
+        # Get actual seatbelt status for behaviors dict
+        seatbelt_status = getattr(self, 'seatbelt_status', 'unknown')
         behaviors['seatbelt'] = {
             'detected': seatbelt_on,
+            'wearing': seatbelt_on and seatbelt_conf >= 0.5,  # Only if confident
+            'status': seatbelt_status,  # 'wearing', 'not_wearing', 'checking', 'unknown'
             'confidence': seatbelt_conf,
-            'warning_active': not seatbelt_on
+            'warning_active': not seatbelt_on and seatbelt_conf >= 0.5
         }
         
         # ===== 7. Attention Score =====
@@ -2351,13 +2661,13 @@ class DriverMonitorV11Pro:
         if do_full_overlay:
             # FULL RENDER: Seatbelt + Pose + Dashboard (heavy PIL ops)
             if pose:
-                annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, seatbelt_on)
+                annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, seatbelt_on, seatbelt_conf)
             if pose:
                 annotated_frame = self.draw_pose_overlay(annotated_frame, pose, head_pose)
             annotated_frame = self.draw_dashboard_v2(
                 annotated_frame, warnings, attention_score, head_pose,
                 distraction_level, ear, eyes_open, self.total_blinks, perclos,
-                seatbelt_on
+                seatbelt_on, seatbelt_conf
             )
             # Cache the overlay portion for reuse
             self._cached_overlay_results = {
@@ -2368,12 +2678,13 @@ class DriverMonitorV11Pro:
                 'ear': ear,
                 'eyes_open': eyes_open,
                 'seatbelt_on': seatbelt_on,
+                'seatbelt_conf': seatbelt_conf,
             }
         else:
             # FAST PATH: Reuse cached dashboard — only draw lightweight cv2 overlays
             cr = self._cached_overlay_results
             if cr and pose:
-                annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, cr.get('seatbelt_on', True))
+                annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, cr.get('seatbelt_on', False), cr.get('seatbelt_conf', 0.0))
                 annotated_frame = self.draw_pose_overlay(annotated_frame, pose, cr.get('head_pose', {}))
             annotated_frame = self.draw_dashboard_v2(
                 annotated_frame, 
@@ -2385,7 +2696,8 @@ class DriverMonitorV11Pro:
                 cr.get('eyes_open', True) if cr else eyes_open,
                 self.total_blinks,
                 perclos,
-                cr.get('seatbelt_on', True) if cr else seatbelt_on
+                cr.get('seatbelt_on', False) if cr else seatbelt_on,
+                cr.get('seatbelt_conf', 0.0) if cr else seatbelt_conf
             )
         
         # ===== 10. FPS & State =====
@@ -2533,7 +2845,8 @@ class DriverMonitorV11Pro:
         eyes_open: bool,
         blinks: int,
         perclos: float,
-        seatbelt_on: bool = True
+        seatbelt_on: bool = False,
+        seatbelt_conf: float = 0.0
     ) -> np.ndarray:
         """
         Vẽ dashboard V2 PRO - Layout rõ ràng, đầy đủ thông số.
@@ -2646,11 +2959,33 @@ class DriverMonitorV11Pro:
             draw.text((left_x, row3_y), f"Chớp mắt: {blinks}", fill=(200, 200, 200), font=self.font_small)
             draw.text((right_x, row3_y), f"PERCLOS: {perclos*100:.1f}%", fill=perclos_color, font=self.font_small)
         
-        # Row 4: Seatbelt
+        # Row 4: Seatbelt - REALISTIC display based on confidence
         row4_y = start_y + row_h * 3
-        seatbelt_text = "ĐÃ THẮT" if seatbelt_on else "CHƯA THẮT!"
-        seatbelt_color = (150, 255, 150) if seatbelt_on else (255, 100, 100)
-        indicator = "✓" if seatbelt_on else "✗"
+        
+        # Get actual seatbelt status from instance
+        seatbelt_status = getattr(self, 'seatbelt_status', 'unknown')
+        
+        # Determine display text and color based on ACTUAL detection
+        if seatbelt_status == 'wearing' and seatbelt_conf >= 0.5:
+            # Confirmed detection of seatbelt
+            seatbelt_text = "ĐÃ THẮT"
+            seatbelt_color = (150, 255, 150)  # Green
+            indicator = "✓"
+        elif seatbelt_status == 'not_wearing' and seatbelt_conf >= 0.5:
+            # Confirmed NO seatbelt
+            seatbelt_text = "KHÔNG CÓ!"
+            seatbelt_color = (255, 100, 100)  # Red
+            indicator = "✗"
+        elif seatbelt_status == 'checking':
+            # Still checking
+            seatbelt_text = "ĐANG KIỂM TRA..."
+            seatbelt_color = (255, 200, 100)  # Yellow
+            indicator = "○"
+        else:
+            # Unknown / Not in driving scenario (e.g., TikTok video)
+            seatbelt_text = "KHÔNG PHÁT HIỆN"
+            seatbelt_color = (150, 150, 150)  # Gray
+            indicator = "?"
         if self.font_small:
             draw.text((left_x, row4_y), f"Dây an toàn: {indicator} {seatbelt_text}",
                      fill=seatbelt_color, font=self.font_small)

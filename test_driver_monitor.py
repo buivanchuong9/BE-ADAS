@@ -147,10 +147,17 @@ def test_driver_monitor(image_path: str = None):
     behaviors = result.get('behaviors', {})
     print(f"\n⚠️ BEHAVIOR DETECTION:")
     
-    # Seatbelt
+    # Seatbelt - Updated for realistic detection
     seatbelt = behaviors.get('seatbelt', {})
-    seatbelt_status = "✅ CÓ" if seatbelt.get('wearing', True) else "❌ KHÔNG"
-    print(f"   🚗 Dây an toàn: {seatbelt_status} (conf: {seatbelt.get('confidence', 0):.2f})")
+    seatbelt_status_code = seatbelt.get('status', 'unknown')
+    status_display = {
+        'wearing': "✅ ĐÃ THẮT",
+        'not_wearing': "❌ KHÔNG CÓ",
+        'checking': "⏳ ĐANG KIỂM TRA",
+        'unknown': "❓ KHÔNG PHÁT HIỆN"
+    }
+    seatbelt_display = status_display.get(seatbelt_status_code, "❓ KHÔNG RÕ")
+    print(f"   🚗 Dây an toàn: {seatbelt_display} (conf: {seatbelt.get('confidence', 0):.2f})")
     
     # Phone
     phone = behaviors.get('phone', {})
@@ -167,10 +174,26 @@ def test_driver_monitor(image_path: str = None):
     smoking_status = "❌ CÓ" if smoking.get('detected', False) else "✅ KHÔNG"
     print(f"   🚬 Hút thuốc: {smoking_status}")
     
-    # Drowsiness
+    # Drowsiness - Enhanced display
     drowsy = behaviors.get('drowsiness', {})
     drowsy_status = "❌ CÓ" if drowsy.get('detected', False) else "✅ KHÔNG"
     print(f"   😴 Buồn ngủ: {drowsy_status} (severity: {drowsy.get('severity', 'NONE')})")
+    
+    # Enhanced drowsiness details
+    if drowsy.get('microsleep'):
+        print(f"      ⚠️ MICROSLEEP: {drowsy.get('microsleep_duration_ms', 0)}ms")
+    if drowsy.get('drowsy_eyes'):
+        print(f"      😴 MẮT LỜ ĐỜ: {drowsy.get('drowsy_eyes_duration', 0):.1f}s")
+    if drowsy.get('yawning'):
+        print(f"      😴 ĐANG NGÁP: {drowsy.get('yawn_duration', 0):.1f}s")
+    if drowsy.get('long_blink'):
+        print(f"      ⚠️ CHỚP MẮT DÀI")
+    if drowsy.get('stroke_warning'):
+        print(f"      🚨 CẢNH BÁO: Bất đối xứng khuôn mặt!")
+    
+    # Drowsiness stats
+    print(f"      📊 Microsleep count: {drowsy.get('microsleep_count', 0)}")
+    print(f"      📊 Long blink count: {drowsy.get('long_blink_count', 0)}")
     
     # Looking away
     away = behaviors.get('looking_away', {})
