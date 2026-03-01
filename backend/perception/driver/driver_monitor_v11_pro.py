@@ -57,6 +57,7 @@ class DriverMonitorV11Pro:
     - Eye Aspect Ratio (EAR) để phát hiện mắt nhắm
     - Đếm số lần chớp mắt (Blink Counter)
     - PERCLOS (% mắt nhắm) để phát hiện buồn ngủ
+    - Seatbelt Detection - Phát hiện dây an toàn
     - Phát hiện điện thoại, ly/chai nước với temporal smoothing
     - Head Pose Estimation (yaw/pitch/roll) từ facial keypoints
     - Attention Score (0-100) - đánh giá mức tập trung
@@ -84,6 +85,15 @@ class DriverMonitorV11Pro:
     PITCH_THRESHOLD = 20         # Head tilt up/down
     PITCH_SEVERE = 35            # Severely tilted
     ROLL_THRESHOLD = 25          # Head roll (lateral tilt)
+    
+    # ===== SEATBELT DETECTION Configuration =====
+    # COCO Pose keypoints for seatbelt region
+    # 5: left_shoulder, 6: right_shoulder, 11: left_hip, 12: right_hip
+    SEATBELT_MIN_EDGE_RATIO = 0.15   # Min ratio of diagonal edges to detect seatbelt
+    SEATBELT_CANNY_LOW = 50          # Canny edge detection thresholds
+    SEATBELT_CANNY_HIGH = 150
+    SEATBELT_HOUGH_THRESHOLD = 30    # Hough line detection threshold
+    SEATBELT_CONFIRM_FRAMES = 30     # 1 second to confirm no seatbelt
     
     # ===== EYE ASPECT RATIO (EAR) Configuration =====
     # MediaPipe Face Mesh eye landmark indices
@@ -179,6 +189,11 @@ class DriverMonitorV11Pro:
         self.perclos_buffer = deque(maxlen=1800)  # 60 seconds @ 30fps
         self.yawn_counter = 0
         self.current_mar = 0.0
+        
+        # Seatbelt tracking
+        self.seatbelt_detected = True  # Assume wearing seatbelt initially
+        self.seatbelt_warning_sent = False
+        self.no_seatbelt_frames = 0
         
         # Reference head pose (calibrated when driver looks forward)
         self.reference_pose = None
@@ -294,6 +309,9 @@ class DriverMonitorV11Pro:
         self.phone_buffer = deque(maxlen=30)
         self.drink_buffer = deque(maxlen=30)
         self.smoke_buffer = deque(maxlen=30)
+        
+        # Seatbelt buffer
+        self.seatbelt_buffer = deque(maxlen=60)  # 2 seconds @ 30fps
         
         # Head pose buffers
         self.yaw_buffer = deque(maxlen=30)
@@ -858,9 +876,14 @@ class DriverMonitorV11Pro:
             logger.error(f"❌ Pose detection error: {e}")
             return None
     
-    def check_phone_use(self, objects: List[Dict], pose: Optional[Dict]) -> Tuple[bool, str, float]:
+    def check_phone_use(self, objects: List[Dict], pose: Optional[Dict], frame_shape: Tuple[int, int] = (720, 1280)) -> Tuple[bool, str, float]:
         """
         Kiểm tra dùng điện thoại với confidence score.
+        
+        Args:
+            objects: List of detected objects
+            pose: Pose detection result
+            frame_shape: (height, width) of frame for adaptive threshold
         
         Returns:
             (is_using, warning_message, confidence)
@@ -879,37 +902,69 @@ class DriverMonitorV11Pro:
         nose = pose['nose']
         left_ear = pose['left_ear']
         right_ear = pose['right_ear']
+        left_wrist = pose.get('left_wrist', nose)
+        right_wrist = pose.get('right_wrist', nose)
+        
+        # Adaptive threshold based on frame size (scale from 720p baseline)
+        h, w = frame_shape
+        scale = max(h, w) / 1280.0
+        phone_threshold = self.PHONE_DISTANCE_THRESHOLD * scale  # Scale threshold
+        wrist_threshold = phone_threshold * 1.5  # Larger threshold for wrist check
         
         for phone in phones:
             pc = phone['center']
             
+            # Check distances to face and hands
             dist_nose = self._distance(pc, nose)
             dist_left_ear = self._distance(pc, left_ear)
             dist_right_ear = self._distance(pc, right_ear)
+            dist_left_wrist = self._distance(pc, left_wrist)
+            dist_right_wrist = self._distance(pc, right_wrist)
             
-            min_dist = min(dist_nose, dist_left_ear, dist_right_ear)
+            min_face_dist = min(dist_nose, dist_left_ear, dist_right_ear)
+            min_wrist_dist = min(dist_left_wrist, dist_right_wrist)
             
-            # Calculate confidence based on distance
-            if min_dist < self.PHONE_DISTANCE_THRESHOLD:
-                conf = 1.0 - (min_dist / self.PHONE_DISTANCE_THRESHOLD)
+            # HIGH CONFIDENCE PHONE: Warn immediately if phone detected clearly
+            # In a car cabin, if YOLO sees a phone with high confidence, driver is likely using it
+            if phone['confidence'] >= 0.5:
+                self.phone_buffer.append(phone['confidence'])
+                
+                # Phone near face => calling or looking at phone
+                if min_face_dist < phone_threshold:
+                    if min_face_dist == dist_nose:
+                        msg = "📱 CẢNH BÁO: ĐANG NHÌN ĐIỆN THOẠI!"
+                    else:
+                        msg = "📱 CẢNH BÁO: ĐANG GỌI ĐIỆN KHI LÁI XE!"
+                    return True, msg, phone['confidence']
+                
+                # Phone near hand => holding phone
+                if min_wrist_dist < wrist_threshold:
+                    msg = "📱 CẢNH BÁO: ĐANG DÙNG ĐIỆN THOẠI KHI LÁI XE!"
+                    return True, msg, phone['confidence']
+            
+            # LOWER CONFIDENCE: Check distance to face
+            min_dist = min(min_face_dist, min_wrist_dist / 1.5)
+            
+            if min_dist < phone_threshold:
+                conf = 1.0 - (min_dist / phone_threshold)
                 conf = min(1.0, conf * phone['confidence'])
                 self.phone_buffer.append(conf)
                 
-                # Temporal confirmation
+                # Temporal confirmation for lower confidence
                 recent = list(self.phone_buffer)[-self.PHONE_CONFIRM_FRAMES:]
                 if len(recent) >= self.PHONE_CONFIRM_FRAMES // 2:
                     avg_conf = np.mean([x for x in recent if x > 0])
                     if avg_conf > 0.3 and sum(1 for x in recent if x > 0) >= len(recent) // 2:
-                        if min_dist == dist_nose:
+                        if min_face_dist < min_wrist_dist:
                             msg = "📱 CẢNH BÁO: ĐANG NHÌN ĐIỆN THOẠI!"
                         else:
-                            msg = "📱 CẢNH BÁO: ĐANG GỌI ĐIỆN KHI LÁI XE!"
+                            msg = "📱 CẢNH BÁO: ĐANG DÙNG ĐIỆN THOẠI KHI LÁI XE!"
                         return True, msg, avg_conf
         
         self.phone_buffer.append(0)
         return False, "", 0.0
     
-    def check_drinking(self, objects: List[Dict], pose: Optional[Dict]) -> Tuple[bool, str, float]:
+    def check_drinking(self, objects: List[Dict], pose: Optional[Dict], frame_shape: Tuple[int, int] = (720, 1280)) -> Tuple[bool, str, float]:
         """Kiểm tra đang uống nước."""
         if pose is None:
             self.drink_buffer.append(0)
@@ -923,13 +978,23 @@ class DriverMonitorV11Pro:
         
         nose = pose['nose']
         
+        # Adaptive threshold based on frame size
+        h, w = frame_shape
+        scale = max(h, w) / 1280.0
+        drink_threshold = self.DRINK_DISTANCE_THRESHOLD * scale
+        
         for drink in drinks:
             dist = self._distance(drink['center'], nose)
             
-            if dist < self.DRINK_DISTANCE_THRESHOLD:
-                conf = (1.0 - dist / self.DRINK_DISTANCE_THRESHOLD) * drink['confidence']
+            if dist < drink_threshold:
+                conf = (1.0 - dist / drink_threshold) * drink['confidence']
                 self.drink_buffer.append(conf)
                 
+                # HIGH CONFIDENCE: Warn immediately
+                if drink['confidence'] >= 0.5 and dist < drink_threshold * 0.8:
+                    return True, "🥤 CẢNH BÁO: ĐANG UỐNG NƯỚC KHI LÁI XE!", conf
+                
+                # LOWER CONFIDENCE: Require temporal confirmation
                 recent = list(self.drink_buffer)[-self.DRINK_CONFIRM_FRAMES:]
                 if len(recent) >= self.DRINK_CONFIRM_FRAMES // 2:
                     avg_conf = np.mean([x for x in recent if x > 0])
@@ -973,6 +1038,210 @@ class DriverMonitorV11Pro:
         
         return False, "", 0.0
     
+    def check_seatbelt(self, frame: np.ndarray, pose: Optional[Dict]) -> Tuple[bool, str, float]:
+        """
+        Phát hiện dây an toàn (Seatbelt Detection).
+        
+        Approach:
+        1. Lấy vùng từ vai xuống hông (torso region)
+        2. Phát hiện cạnh bằng Canny
+        3. Tìm đường thẳng chéo bằng Hough Transform
+        4. Nếu có đường chéo từ vai này sang hông kia → có dây an toàn
+        
+        Returns:
+            (is_wearing_seatbelt, warning_message, confidence)
+        """
+        if pose is None:
+            # Không có pose → không thể kiểm tra
+            return True, "", 0.0
+        
+        try:
+            h, w = frame.shape[:2]
+            
+            # Lấy keypoints
+            left_shoulder = pose.get('left_shoulder')
+            right_shoulder = pose.get('right_shoulder')
+            
+            # Check if we have shoulder keypoints
+            if left_shoulder is None or right_shoulder is None:
+                return True, "", 0.0
+            
+            # COCO Pose: 11: left_hip, 12: right_hip
+            # But our pose dict might have different keys
+            keypoints = pose.get('keypoints')
+            if keypoints is None or len(keypoints) < 13:
+                return True, "", 0.0
+            
+            left_hip = keypoints[11][:2]
+            right_hip = keypoints[12][:2]
+            
+            # Tính bounding box cho vùng ngực (torso)
+            x_coords = [left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]]
+            y_coords = [left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]]
+            
+            x_min = max(0, int(min(x_coords)) - 20)
+            x_max = min(w, int(max(x_coords)) + 20)
+            y_min = max(0, int(min(y_coords)) - 10)
+            y_max = min(h, int(max(y_coords)) + 10)
+            
+            # Kiểm tra vùng hợp lệ
+            if x_max - x_min < 50 or y_max - y_min < 50:
+                return True, "", 0.0
+            
+            # Crop vùng ngực
+            torso_roi = frame[y_min:y_max, x_min:x_max]
+            
+            # Chuyển sang grayscale
+            gray = cv2.cvtColor(torso_roi, cv2.COLOR_BGR2GRAY)
+            
+            # Cải thiện contrast (CLAHE)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            gray = clahe.apply(gray)
+            
+            # Gaussian blur để giảm noise
+            gray = cv2.GaussianBlur(gray, (5, 5), 0)
+            
+            # Canny edge detection
+            edges = cv2.Canny(gray, self.SEATBELT_CANNY_LOW, self.SEATBELT_CANNY_HIGH)
+            
+            # Hough Line Transform để tìm đường thẳng
+            lines = cv2.HoughLinesP(
+                edges,
+                rho=1,
+                theta=np.pi / 180,
+                threshold=self.SEATBELT_HOUGH_THRESHOLD,
+                minLineLength=30,
+                maxLineGap=10
+            )
+            
+            # Kiểm tra có đường chéo (diagonal line) không
+            # Dây an toàn thường tạo góc 20-70 độ với phương ngang
+            diagonal_lines = 0
+            total_diagonal_length = 0
+            
+            if lines is not None:
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    
+                    # Tính góc của đường thẳng
+                    dx = abs(x2 - x1)
+                    dy = abs(y2 - y1)
+                    
+                    if dx == 0:
+                        continue
+                    
+                    angle = math.degrees(math.atan2(dy, dx))
+                    
+                    # Dây an toàn: góc 20-70 độ (không quá ngang, không quá dọc)
+                    if 20 <= angle <= 70:
+                        line_length = math.sqrt(dx**2 + dy**2)
+                        if line_length > 30:  # Đường đủ dài
+                            diagonal_lines += 1
+                            total_diagonal_length += line_length
+            
+            # Tính confidence dựa trên số lượng và độ dài đường chéo
+            roi_diagonal = math.sqrt((x_max - x_min)**2 + (y_max - y_min)**2)
+            
+            # Normalize by ROI size
+            seatbelt_score = total_diagonal_length / max(roi_diagonal, 1)
+            
+            # Update buffer
+            self.seatbelt_buffer.append(seatbelt_score)
+            
+            # Evaluate seatbelt status với temporal smoothing
+            recent = list(self.seatbelt_buffer)[-self.SEATBELT_CONFIRM_FRAMES:]
+            avg_score = np.mean(recent) if recent else 0
+            
+            # Thresholds
+            if avg_score >= self.SEATBELT_MIN_EDGE_RATIO:
+                # Có dây an toàn
+                self.seatbelt_detected = True
+                self.no_seatbelt_frames = 0
+                self.seatbelt_warning_sent = False
+                return True, "", avg_score
+            else:
+                # Không phát hiện dây an toàn
+                self.no_seatbelt_frames += 1
+                
+                # Chỉ cảnh báo sau khi confirm nhiều frames
+                if self.no_seatbelt_frames >= self.SEATBELT_CONFIRM_FRAMES:
+                    self.seatbelt_detected = False
+                    confidence = 1.0 - avg_score / self.SEATBELT_MIN_EDGE_RATIO
+                    return False, "🚨 CẢNH BÁO: KHÔNG THẮT DÂY AN TOÀN!", min(1.0, confidence)
+                
+                return True, "", avg_score  # Chưa đủ frames để confirm
+                
+        except Exception as e:
+            logger.debug(f"Seatbelt detection error: {e}")
+            return True, "", 0.0
+
+    def draw_seatbelt_status(
+        self,
+        frame: np.ndarray,
+        pose: Optional[Dict],
+        seatbelt_detected: bool
+    ) -> np.ndarray:
+        """
+        Vẽ bounding box vùng ngực và trạng thái dây an toàn.
+        """
+        if pose is None:
+            return frame
+        
+        frame = frame.copy()
+        h, w = frame.shape[:2]
+        
+        try:
+            left_shoulder = pose.get('left_shoulder')
+            right_shoulder = pose.get('right_shoulder')
+            keypoints = pose.get('keypoints')
+            
+            if left_shoulder is None or right_shoulder is None or keypoints is None:
+                return frame
+            
+            if len(keypoints) < 13:
+                return frame
+            
+            left_hip = keypoints[11][:2]
+            right_hip = keypoints[12][:2]
+            
+            # Draw torso bounding box
+            x_coords = [left_shoulder[0], right_shoulder[0], left_hip[0], right_hip[0]]
+            y_coords = [left_shoulder[1], right_shoulder[1], left_hip[1], right_hip[1]]
+            
+            x_min = int(min(x_coords)) - 10
+            x_max = int(max(x_coords)) + 10
+            y_min = int(min(y_coords)) - 5
+            y_max = int(max(y_coords)) + 5
+            
+            # Color based on seatbelt status
+            if seatbelt_detected:
+                color = (0, 255, 0)  # Green
+                label = "DÂY AN TOÀN: ĐÃ THẮT"
+            else:
+                color = (0, 0, 255)  # Red
+                label = "DÂY AN TOÀN: CHƯA THẮT"
+            
+            # Draw bounding box
+            cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), color, 2)
+            
+            # Draw label
+            label_y = max(20, y_min - 10)
+            cv2.putText(frame, label, (x_min, label_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+            
+            # Draw diagonal line indicator if seatbelt detected
+            if seatbelt_detected:
+                # Draw approximate seatbelt line (shoulder to opposite hip)
+                cv2.line(frame,
+                        (int(left_shoulder[0]), int(left_shoulder[1])),
+                        (int(right_hip[0]), int(right_hip[1])),
+                        (255, 0, 255), 2)  # Magenta
+            
+        except Exception as e:
+            logger.debug(f"Draw seatbelt error: {e}")
+        
+        return frame
+
     def check_drowsiness(self, pose: Optional[Dict], head_pose: Dict) -> Tuple[bool, str, str, float]:
         """
         Phát hiện buồn ngủ đa tiêu chí.
@@ -1227,6 +1496,7 @@ class DriverMonitorV11Pro:
         """
         start_time = time.time()
         self.frame_count += 1
+        h, w = frame.shape[:2]  # Get frame dimensions for adaptive thresholds
         
         # ===== 1. Object Detection (YOLO) =====
         objects = self.detect_objects(frame)
@@ -1251,13 +1521,13 @@ class DriverMonitorV11Pro:
         behaviors = {}
         
         # Phone
-        using_phone, phone_msg, phone_conf = self.check_phone_use(objects, pose)
+        using_phone, phone_msg, phone_conf = self.check_phone_use(objects, pose, (h, w))
         if using_phone:
             warnings.append(phone_msg)
         behaviors['phone'] = {'detected': using_phone, 'confidence': phone_conf}
         
         # Drinking
-        drinking, drink_msg, drink_conf = self.check_drinking(objects, pose)
+        drinking, drink_msg, drink_conf = self.check_drinking(objects, pose, (h, w))
         if drinking:
             warnings.append(drink_msg)
         behaviors['drinking'] = {'detected': drinking, 'confidence': drink_conf}
@@ -1326,6 +1596,16 @@ class DriverMonitorV11Pro:
             warnings.append(away_msg)
         behaviors['looking_away'] = {'detected': looking_away, 'duration': away_duration}
         
+        # ===== 6b. Seatbelt Detection =====
+        seatbelt_on, seatbelt_msg, seatbelt_conf = self.check_seatbelt(frame, pose)
+        if not seatbelt_on and seatbelt_msg:
+            warnings.append(seatbelt_msg)
+        behaviors['seatbelt'] = {
+            'detected': seatbelt_on,
+            'confidence': seatbelt_conf,
+            'warning_active': not seatbelt_on
+        }
+        
         # ===== 7. Attention Score =====
         attention_score = self.calculate_attention_score_v2(
             head_pose, using_phone, drinking, smoking, eyes_open, ear
@@ -1341,6 +1621,10 @@ class DriverMonitorV11Pro:
                 annotated_frame, face_landmarks, ear, eyes_open
             )
         
+        # Draw Seatbelt status
+        if pose:
+            annotated_frame = self.draw_seatbelt_status(annotated_frame, pose, seatbelt_on)
+        
         # Draw Pose overlay
         if pose:
             annotated_frame = self.draw_pose_overlay(annotated_frame, pose, head_pose)
@@ -1348,7 +1632,8 @@ class DriverMonitorV11Pro:
         # Draw Dashboard
         annotated_frame = self.draw_dashboard_v2(
             annotated_frame, warnings, attention_score, head_pose,
-            distraction_level, ear, eyes_open, self.total_blinks, perclos
+            distraction_level, ear, eyes_open, self.total_blinks, perclos,
+            seatbelt_on
         )
         
         # ===== 9. FPS & State =====
@@ -1395,6 +1680,9 @@ class DriverMonitorV11Pro:
             'blinks': self.total_blinks,
             'perclos': round(perclos, 3),
             'yawning': yawning,
+            
+            # Seatbelt
+            'seatbelt': seatbelt_on,
             
             # Individual flags (backward compat)
             'using_phone': using_phone,
@@ -1483,10 +1771,11 @@ class DriverMonitorV11Pro:
         ear: float,
         eyes_open: bool,
         blinks: int,
-        perclos: float
+        perclos: float,
+        seatbelt_on: bool = True
     ) -> np.ndarray:
         """
-        Vẽ dashboard V2 với EAR, blinks, PERCLOS.
+        Vẽ dashboard V2 với EAR, blinks, PERCLOS, seatbelt.
         """
         h, w = frame.shape[:2]
         frame_pil = Image.fromarray(frame)
@@ -1505,7 +1794,7 @@ class DriverMonitorV11Pro:
                 y += 50
         
         # ===== Dashboard Panel (bottom-left) =====
-        panel_w, panel_h = 380, 220
+        panel_w, panel_h = 380, 260  # Increased height for seatbelt
         panel_x, panel_y = 10, h - panel_h - 10
         
         panel_overlay = Image.new('RGBA', (panel_w, panel_h), (0, 0, 0, 180))
@@ -1519,6 +1808,7 @@ class DriverMonitorV11Pro:
         }
         color = level_colors.get(distraction_level, (255, 255, 255))
         eye_color = (0, 255, 0) if eyes_open else (255, 0, 0)
+        seatbelt_color = (0, 255, 0) if seatbelt_on else (255, 0, 0)
         
         if self.font_medium:
             # Title
@@ -1547,10 +1837,15 @@ class DriverMonitorV11Pro:
             draw.text((panel_x + 10, panel_y + 165), f"PERCLOS: {perclos*100:.1f}%",
                       fill=perclos_color, font=self.font_medium)
             
+            # Seatbelt status (NEW)
+            seatbelt_text = "ĐÃ THẮT ✓" if seatbelt_on else "CHƯA THẮT ✗"
+            draw.text((panel_x + 10, panel_y + 195), f"Dây an toàn: {seatbelt_text}",
+                      fill=seatbelt_color, font=self.font_medium)
+            
             # Head Pose
             if head_pose['is_valid'] and self.font_small:
                 pose_text = f"Đầu: Y={head_pose['yaw']:+.0f}° P={head_pose['pitch']:+.0f}°"
-                draw.text((panel_x + 10, panel_y + 195), pose_text,
+                draw.text((panel_x + 10, panel_y + 230), pose_text,
                           fill=(180, 180, 180), font=self.font_small)
         
         # ===== Attention Bar (bottom-right) =====
