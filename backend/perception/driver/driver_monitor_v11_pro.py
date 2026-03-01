@@ -317,15 +317,9 @@ class DriverMonitorV11Pro:
         self._cached_overlay_results = None
         
         # ===== PERFORMANCE: FP16 inference for YOLO models =====
-        if self.device == 'cuda' and torch.cuda.is_available():
-            try:
-                self.object_model.model.model.half()
-                self.object_model.overrides['half'] = True
-                self.pose_model.model.model.half()
-                self.pose_model.overrides['half'] = True
-                logger.info("🚀 FP16 enabled for both YOLO models")
-            except Exception as e:
-                logger.warning(f"FP16 failed (non-fatal): {e}")
+        self.use_fp16 = self.device == 'cuda' and torch.cuda.is_available()
+        if self.use_fp16:
+            logger.info("🚀 FP16 enabled (half=True in predict calls)")
         
         # ===== PERFORMANCE: Downscale for face mesh (CPU bound) =====
         self.FACE_MESH_SCALE = 0.5  # Process face mesh at half resolution
@@ -396,14 +390,24 @@ class DriverMonitorV11Pro:
             self.mp_drawing = mp.solutions.drawing_utils
             self.mp_drawing_styles = mp.solutions.drawing_styles
             
-            # Initialize Face Mesh với refinement cho mắt
-            self.face_mesh = self.mp_face_mesh.FaceMesh(
-                max_num_faces=1,
-                refine_landmarks=True,  # Bật iris landmarks
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            logger.info("✅ MediaPipe Face Mesh initialized (468 landmarks)")
+            # Initialize Face Mesh — try with refinement first, fallback without
+            try:
+                self.face_mesh = self.mp_face_mesh.FaceMesh(
+                    max_num_faces=1,
+                    refine_landmarks=True,  # Bật iris landmarks
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+                logger.info("✅ MediaPipe Face Mesh initialized (478 landmarks, refined)")
+            except Exception as e_refined:
+                logger.warning(f"⚠️ Face Mesh refined failed ({e_refined}), trying without refinement...")
+                self.face_mesh = self.mp_face_mesh.FaceMesh(
+                    max_num_faces=1,
+                    refine_landmarks=False,  # Fallback: no iris
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+                logger.info("✅ MediaPipe Face Mesh initialized (468 landmarks, basic)")
         except Exception as e:
             logger.error(f"❌ Failed to init Face Mesh: {e}")
             self.enable_face_mesh = False
@@ -1015,6 +1019,7 @@ class DriverMonitorV11Pro:
                 frame, 
                 device=self.device, 
                 verbose=False,
+                half=self.use_fp16,
                 conf=self.OBJ_CONF_THRESHOLD  # Dùng threshold thấp hơn
             )
             objects = []
@@ -1062,7 +1067,7 @@ class DriverMonitorV11Pro:
     def detect_pose(self, frame: np.ndarray) -> Optional[Dict]:
         """Phát hiện pose của tài xế."""
         try:
-            results = self.pose_model(frame, device=self.device, verbose=False)
+            results = self.pose_model(frame, device=self.device, verbose=False, half=self.use_fp16)
             
             for result in results:
                 if result.keypoints is None:
