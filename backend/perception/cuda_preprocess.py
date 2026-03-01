@@ -309,20 +309,22 @@ class CUDAPreprocessor:
             # Upload cropped region to GPU
             gpu_crop = self.pool.upload('lane_crop', cropped, self._stream_lane)
             
-            # GPU resize
-            gpu_resized = self.pool.get('lane_resize')
-            cv2.cuda.resize(
-                gpu_crop, (target_w, target_h),
-                gpu_resized,
-                interpolation=cv2.INTER_LINEAR,
-                stream=self._stream_lane
-            )
-            
-            # Sync before cvtColor
+            # Sync before resize to ensure upload is complete
             if self._stream_lane:
                 self._stream_lane.waitForCompletion()
             
-            # GPU BGR → RGB (without pre-allocated dst to avoid async issues)
+            # GPU resize - let OpenCV create output GpuMat (safer than pre-allocated)
+            gpu_resized = cv2.cuda.resize(
+                gpu_crop, (target_w, target_h),
+                interpolation=cv2.INTER_LINEAR
+            )
+            
+            # Validate resize output has 3 channels
+            if gpu_resized.channels() != 3:
+                logger.warning(f"[LANE] GPU resize output has {gpu_resized.channels()} channels, expected 3")
+                return self._preprocess_lane_cpu(frame, crop_ratio, target_h, target_w)
+            
+            # GPU BGR → RGB
             gpu_rgb = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB)
             
             # Download RGB result
@@ -410,23 +412,27 @@ class CUDAPreprocessor:
             # Upload cropped region
             gpu_crop = self.pool.upload('lane_crop', cropped, self._stream_lane)
             
-            # GPU resize
-            gpu_resized = self.pool.get('lane_resize')
-            cv2.cuda.resize(
-                gpu_crop, (target_w, target_h),
-                gpu_resized,
-                interpolation=cv2.INTER_LINEAR,
-                stream=self._stream_lane
-            )
-            
-            # Sync before cvtColor to ensure resize is complete
+            # Sync before resize to ensure upload is complete
             if self._stream_lane:
                 self._stream_lane.waitForCompletion()
             
-            # GPU BGR → RGB (without stream to avoid async issues)
-            gpu_rgb = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB)
+            # GPU resize - let OpenCV create output GpuMat (safer than pre-allocated)
+            gpu_resized = cv2.cuda.resize(
+                gpu_crop, (target_w, target_h),
+                interpolation=cv2.INTER_LINEAR
+            )
             
-            rgb = gpu_rgb.download()
+            # Validate resize output has 3 channels
+            if gpu_resized.channels() != 3:
+                logger.warning(f"[LANE] GPU resize output has {gpu_resized.channels()} channels, expected 3")
+                frame_cpu = gpu_frame.download() if gpu_frame.size()[0] > 0 else np.zeros((h, w, 3), dtype=np.uint8)
+                cropped = frame_cpu[crop_y:, :, :]
+                resized = cv2.resize(cropped, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            else:
+                # GPU BGR → RGB
+                gpu_rgb = cv2.cuda.cvtColor(gpu_resized, cv2.COLOR_BGR2RGB)
+                rgb = gpu_rgb.download()
             
         except Exception as e:
             # Fallback to pure CPU path

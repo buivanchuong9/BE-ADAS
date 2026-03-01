@@ -322,11 +322,25 @@ class SimpleGPUWorker:
             )
             # Lane detection: UFLD v2 (Ultra Fast Lane Detection)
             ufld_path = prof.get('ufld_model')
+            
+            # Try to find UFLD model (multiple formats supported)
             if ufld_path and Path(ufld_path).exists():
                 logger.info(f"[GPU] Lane detection: UFLD ({Path(ufld_path).name})")
             else:
-                logger.info("[GPU] Lane detection: UFLD (untrained — no model file, will use random weights)")
-                ufld_path = None
+                # Try alternative formats: .onnx, .pt, .pth
+                ufld_base = Path('backend/models/ufld_tusimple')
+                for ext in ['.onnx', '.pth', '.pt']:
+                    alt_path = ufld_base.with_suffix(ext)
+                    if alt_path.exists():
+                        ufld_path = str(alt_path)
+                        logger.info(f"[GPU] Lane detection: UFLD ({alt_path.name})")
+                        break
+                else:
+                    logger.warning(
+                        "[GPU] Lane detection: UFLD model not found! "
+                        "Run: python scripts/download_ufld_model.py"
+                    )
+                    ufld_path = None
             pipeline['lane']     = UFLDLaneDetector(
                 model_path=ufld_path,
                 device=self.device,
