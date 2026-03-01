@@ -1254,9 +1254,25 @@ class SimpleGPUWorker:
     def _draw_warnings_pil(self, draw: ImageDraw.ImageDraw,
                            results: Dict, w: int):
         """Vẽ cảnh báo chuyên nghiệp (top-center) — tiếng Việt có dấu."""
-        warnings = results.get('warnings', [])
-        if not warnings:
+        raw_warnings = results.get('warnings', [])
+        if not raw_warnings:
             return
+
+        # Normalize warnings to dict format
+        warnings = []
+        for w_item in raw_warnings:
+            if isinstance(w_item, dict):
+                warnings.append(w_item)
+            else:
+                # String warning from driver_monitor - infer severity from message
+                msg_lower = str(w_item).lower()
+                if any(kw in msg_lower for kw in ['drowsy', 'ngủ gật', 'fatigue', 'mệt mỏi', 'phone', 'điện thoại']):
+                    sev = 'critical'
+                elif any(kw in msg_lower for kw in ['distract', 'mất tập trung', 'yawn', 'ngáp', 'seatbelt', 'dây an toàn']):
+                    sev = 'high'
+                else:
+                    sev = 'medium'
+                warnings.append({'message': str(w_item), 'severity': sev})
 
         severity_order = {'critical': 0, 'high': 1, 'medium': 2}
         warnings = sorted(
