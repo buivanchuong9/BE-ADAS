@@ -83,9 +83,11 @@ def optimize_model(
     precision: str = 'fp16',
     prune_ratio: float = 0.0,
     imgsz: int = 640,
-    calibration_dir: str = None
+    calibration_dir: str = None,
+    output_dir: str = None
 ):
     """Optimize a single model."""
+    output_dir = output_dir or OUTPUT_DIR
     
     if not Path(model_path).exists():
         logger.error(f"Model not found: {model_path}")
@@ -93,7 +95,7 @@ def optimize_model(
     
     optimizer = ModelOptimizer(
         model_path=model_path,
-        output_dir=OUTPUT_DIR,
+        output_dir=output_dir,
         input_size=(imgsz, imgsz),
         calibration_dir=calibration_dir
     )
@@ -109,7 +111,7 @@ def optimize_model(
         return optimizer.quantize(precision=precision)
 
 
-def optimize_profile(profile: str, precision: str = 'fp16'):
+def optimize_profile(profile: str, precision: str = 'fp16', output_dir: str = None):
     """Optimize all models in a profile."""
     
     if profile not in MODEL_PROFILES:
@@ -127,7 +129,8 @@ def optimize_profile(profile: str, precision: str = 'fp16'):
     result = optimize_model(
         model_path=model_path,
         precision=precision,
-        imgsz=imgsz
+        imgsz=imgsz,
+        output_dir=output_dir
     )
     
     if result:
@@ -176,12 +179,11 @@ Examples:
     
     # Create output directory
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    global OUTPUT_DIR
-    OUTPUT_DIR = args.output_dir
+    output_dir = args.output_dir
     
     if args.profile:
         # Optimize entire profile
-        optimize_profile(args.profile, args.precision)
+        optimize_profile(args.profile, args.precision, output_dir)
     elif args.model or args.model_path:
         # Optimize single model
         model_path = args.model_path or MODEL_PATHS.get(args.model)
@@ -195,7 +197,8 @@ Examples:
             precision=args.precision,
             prune_ratio=args.prune,
             imgsz=args.imgsz,
-            calibration_dir=args.calibration_dir
+            calibration_dir=args.calibration_dir,
+            output_dir=output_dir
         )
         
         if result:
