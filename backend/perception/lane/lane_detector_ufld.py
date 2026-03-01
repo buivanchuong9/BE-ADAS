@@ -98,18 +98,31 @@ class UFLDHead(torch.nn.Module):
         feat_channels: int = 512,
         input_h: int = 320,
         input_w: int = 800,
+        use_official_arch: bool = False,
     ):
         super().__init__()
         self.num_lanes = num_lanes
         self.num_rows = num_rows
         self.num_cols = num_cols
+        self.use_official_arch = use_official_arch
         
         # Feature map size at 1/32
         feat_h = input_h // 32
         feat_w = input_w // 32
-        feat_dim = feat_channels * feat_h * feat_w
         
-        self.pool = torch.nn.AdaptiveAvgPool2d((feat_h, feat_w))
+        if use_official_arch:
+            # Official UFLD v2 architecture: 512 -> 8 channels, then flatten
+            # input_dim = 8 * feat_h * feat_w = 8 * 9 * 25 = 1800 (for 288x800)
+            # For 320x800: 8 * 10 * 25 = 2000
+            self.pool = torch.nn.AdaptiveAvgPool2d((feat_h, feat_w))
+            self.reduce = torch.nn.Conv2d(feat_channels, 8, 1, bias=False)
+            feat_dim = 8 * feat_h * feat_w
+        else:
+            # Our original architecture
+            feat_dim = feat_channels * feat_h * feat_w
+            self.pool = torch.nn.AdaptiveAvgPool2d((feat_h, feat_w))
+            self.reduce = None
+        
         self.cls = torch.nn.Sequential(
             torch.nn.Linear(feat_dim, 2048),
             torch.nn.ReLU(inplace=True),
@@ -120,6 +133,8 @@ class UFLDHead(torch.nn.Module):
     def forward(self, feat):
         b = feat.shape[0]
         x = self.pool(feat)
+        if self.reduce is not None:
+            x = self.reduce(x)
         x = x.view(b, -1)
         x = self.cls(x)
         x = x.view(b, self.num_lanes, self.num_rows, self.num_cols + 1)
@@ -137,6 +152,7 @@ class UFLDNet(torch.nn.Module):
         num_cols: int = 200,
         input_h: int = 320,
         input_w: int = 800,
+        use_official_arch: bool = False,
     ):
         super().__init__()
         self.input_h = input_h
@@ -153,6 +169,7 @@ class UFLDNet(torch.nn.Module):
             feat_channels=512,
             input_h=input_h,
             input_w=input_w,
+            use_official_arch=use_official_arch,
         )
     
     def forward(self, x):
@@ -387,24 +404,59 @@ class UFLDLaneDetector:
             self._load_state_dict(model_path)
     
     def _load_state_dict(self, model_path: str):
-        """Load PyTorch state dict (.pth)."""
+        """Load PyTorch state dict (.pth) - auto-detect architecture."""
         try:
-            self.model = UFLDNet(
-                num_lanes=self.num_lanes, num_rows=self.num_rows,
-                num_cols=self.num_cols, input_h=self.input_h, input_w=self.input_w,
-            ).to(self.device)
-            
-            state = torch.load(model_path, map_location=self.device, weights_only=True)
+            state = torch.load(model_path, map_location=self.device, weights_only=False)
             # Handle both raw state dict and wrapped format
             if 'model' in state:
                 state = state['model']
             elif 'state_dict' in state:
                 state = state['state_dict']
             
-            self.model.load_state_dict(state, strict=False)
+            # Detect official UFLD v2 architecture from checkpoint shape
+            # Official TuSimple: cls.0.weight = [2048, 1800] → input 288x800, 56 rows, 100 cols
+            # Official CULane: different dims
+            cls_weight_key = None
+            for key in state.keys():
+                if 'cls.0.weight' in key or key == 'cls.0.weight':
+                    cls_weight_key = key
+                    break
+            
+            if cls_weight_key and state[cls_weight_key].shape[1] == 1800:
+                # Official UFLD v2 TuSimple format detected!
+                logger.info("[UFLD] Detected official UFLD v2 TuSimple checkpoint")
+                # Use official TuSimple settings
+                self.input_h = 288
+                self.input_w = 800
+                self.num_rows = 56
+                self.num_cols = 100
+                self.num_lanes = 4
+                # Update row anchors for TuSimple 56 rows
+                self._row_anchors = _generate_row_anchors(self.num_rows, start=0.42, end=1.0)
+                
+                # Create model with official architecture
+                self.model = UFLDNet(
+                    num_lanes=self.num_lanes, num_rows=self.num_rows,
+                    num_cols=self.num_cols, input_h=self.input_h, input_w=self.input_w,
+                    use_official_arch=True,
+                ).to(self.device)
+                
+                # Map official keys to our architecture
+                new_state = self._convert_official_state_dict(state)
+                self.model.load_state_dict(new_state, strict=False)
+                logger.info(f"[UFLD] ✅ Loaded official TuSimple model: {Path(model_path).name}")
+            else:
+                # Our custom format
+                self.model = UFLDNet(
+                    num_lanes=self.num_lanes, num_rows=self.num_rows,
+                    num_cols=self.num_cols, input_h=self.input_h, input_w=self.input_w,
+                ).to(self.device)
+                self.model.load_state_dict(state, strict=False)
+                logger.info(f"[UFLD] ✅ Loaded custom state dict: {Path(model_path).name}")
+            
             self.model.eval()
             self._model_format = 'pytorch'
-            logger.info(f"[UFLD] ✅ Loaded state dict: {Path(model_path).name}")
+            
         except Exception as e:
             logger.warning(f"[UFLD] State dict load failed ({e}), using untrained")
             self.model = UFLDNet(
@@ -412,6 +464,74 @@ class UFLDLaneDetector:
                 num_cols=self.num_cols, input_h=self.input_h, input_w=self.input_w,
             ).to(self.device).eval()
             self._model_format = 'pytorch'
+    
+    def _convert_official_state_dict(self, state: dict) -> dict:
+        """Convert official UFLD v2 state dict to our architecture."""
+        new_state = {}
+        
+        # Official UFLD v2 key mapping:
+        # model.features.* -> backbone.*
+        # model.pool -> head.pool (we don't use this)
+        # model.cls.* -> head.cls.*
+        # aux_* -> ignored (auxiliary segmentation head)
+        
+        key_mapping = {
+            'model.features.0': 'backbone.stem.0',  # conv1
+            'model.features.1': 'backbone.stem.1',  # bn1
+            # layer1: features.4.0, features.4.1
+            # layer2: features.5.0, features.5.1
+            # layer3: features.6.0, features.6.1  
+            # layer4: features.7.0, features.7.1
+        }
+        
+        for old_key, value in state.items():
+            new_key = None
+            
+            # Skip auxiliary head
+            if old_key.startswith('aux_'):
+                continue
+            
+            # Direct backbone mapping for ResNet structure
+            if old_key.startswith('model.features.'):
+                # Parse: model.features.X.Y.layer_name
+                parts = old_key.replace('model.features.', '').split('.')
+                if len(parts) >= 1:
+                    feat_idx = int(parts[0])
+                    rest = '.'.join(parts[1:])
+                    
+                    # Map feature indices to our layer names
+                    # features.0 = conv1, features.1 = bn1, features.3 = maxpool
+                    # features.4 = layer1, features.5 = layer2, etc.
+                    if feat_idx == 0:
+                        new_key = f'backbone.stem.0.{rest}' if rest else 'backbone.stem.0.weight'
+                    elif feat_idx == 1:
+                        new_key = f'backbone.stem.1.{rest}'
+                    elif feat_idx >= 4 and feat_idx <= 7:
+                        layer_idx = feat_idx - 3  # 4->1, 5->2, 6->3, 7->4
+                        new_key = f'backbone.layer{layer_idx}.{rest}'
+            
+            # Classifier head
+            elif old_key.startswith('model.cls.') or old_key.startswith('cls.'):
+                suffix = old_key.replace('model.cls.', '').replace('cls.', '')
+                new_key = f'head.cls.{suffix}'
+            
+            # Pool (if exists)
+            elif 'pool' in old_key:
+                continue  # Skip, we use AdaptiveAvgPool2d
+            
+            # Reduction conv (if exists)
+            elif old_key.startswith('model.reduce') or old_key.startswith('reduce'):
+                suffix = old_key.replace('model.reduce.', '').replace('reduce.', '')
+                new_key = f'head.reduce.{suffix}' if suffix else 'head.reduce.weight'
+            
+            if new_key:
+                new_state[new_key] = value
+            elif not old_key.startswith('aux_'):
+                # Keep as-is for any unmatched keys
+                new_state[old_key] = value
+        
+        logger.info(f"[UFLD] Converted {len(new_state)}/{len(state)} keys from official format")
+        return new_state
     
     # ------------------------------------------------------------------
     # Preprocessing — GPU-accelerated (cv2.cuda)
