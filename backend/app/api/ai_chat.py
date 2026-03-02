@@ -79,6 +79,18 @@ Would you like more detailed analytics?"""
     else:
         response = f"I understand you're asking about: '{request.message}'. Let me help you with that. Could you provide more specific details about what you'd like to know?"
     
+    # Determine message type (Driving Support or Other)
+    driving_keywords = [
+        "fatigue", "tired", "drowsy", "collision", "crash", 
+        "accident", "lane", "departure", "ldw", "model", 
+        "yolo", "ai", "statistic", "stats", "dashboard",
+        "video", "detect", "warning", "support", "help",
+        "mệt mỏi", "buồn ngủ", "va chạm", "tai nạn", "lệch làn",
+        "cảnh báo", "nhận diện", "phân tích", "hỗ trợ"
+    ]
+    
+    msg_type = "Driving Support" if any(w in message_lower for w in driving_keywords) else "Other"
+    
     # Store in chat history
     timestamp = datetime.now().isoformat()
     
@@ -88,7 +100,8 @@ Would you like more detailed analytics?"""
         "session_id": session_id,
         "role": "user",
         "content": request.message,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        "message_type": msg_type
     })
     
     # Add assistant response
@@ -97,7 +110,8 @@ Would you like more detailed analytics?"""
         "session_id": session_id,
         "role": "assistant",
         "content": response,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        "message_type": msg_type
     })
     
     # Keep only last 500 messages
@@ -109,7 +123,8 @@ Would you like more detailed analytics?"""
         "message": request.message,
         "response": response,
         "timestamp": timestamp,
-        "session_id": session_id
+        "session_id": session_id,
+        "message_type": msg_type
     }
 
 
@@ -137,9 +152,42 @@ async def get_chat_history(
     # Limit results
     messages = messages[-limit:] if len(messages) > limit else messages
     
+    # Calculate statistics based on user messages
+    user_messages = [m for m in storage.chat_history if m.get("role") == "user"]
+    total_user_msgs = len(user_messages)
+    
+    driving_support_count = sum(1 for m in user_messages if m.get("message_type") == "Driving Support")
+    other_count = sum(1 for m in user_messages if m.get("message_type") == "Other")
+    
+    # Fallback categories if legacy messages exist without message_type
+    legacy_count = total_user_msgs - (driving_support_count + other_count)
+    if legacy_count > 0:
+        other_count += legacy_count
+        
+    statistics = []
+    if total_user_msgs > 0:
+        statistics = [
+            {
+                "category": "Driving Support",
+                "count": driving_support_count,
+                "percentage": round((driving_support_count / total_user_msgs) * 100, 1)
+            },
+            {
+                "category": "Other",
+                "count": other_count,
+                "percentage": round((other_count / total_user_msgs) * 100, 1)
+            }
+        ]
+    else:
+        statistics = [
+            {"category": "Driving Support", "count": 0, "percentage": 0.0},
+            {"category": "Other", "count": 0, "percentage": 0.0}
+        ]
+    
     return {
         "success": True,
-        "messages": messages
+        "messages": messages,
+        "statistics": statistics
     }
 
 

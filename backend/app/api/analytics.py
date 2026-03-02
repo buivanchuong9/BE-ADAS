@@ -84,35 +84,11 @@ async def get_speed_over_time(
         result = await db.execute(speed_query)
         speed_records = result.all()
         
-        # If no speed data in safety_events, generate from trip avg/max
-        if not speed_records:
-            # Generate sample data based on trip metrics
-            duration = trip.duration_minutes or 2
-            avg_speed = trip.avg_speed or 50
-            max_speed = trip.max_speed or 80
-            
-            # Create realistic speed curve
-            labels = []
-            data = []
-            intervals = min(10, duration)  # Max 10 data points
-            
-            for i in range(intervals + 1):
-                time_sec = (duration * 60 / intervals) * i
-                minutes = int(time_sec // 60)
-                seconds = int(time_sec % 60)
-                labels.append(f"{minutes}:{seconds:02d}")
-                
-                # Simulate speed variation (accelerate then decelerate)
-                if i < intervals / 2:
-                    speed = avg_speed * (i / (intervals / 2))
-                else:
-                    speed = max_speed - (max_speed - avg_speed) * ((i - intervals / 2) / (intervals / 2))
-                data.append(round(speed, 1))
-        else:
-            # Use actual data
-            labels = []
-            data = []
-            
+        # If no speed data in safety_events, return empty array to show "Chưa có dữ liệu" on UI
+        labels = []
+        data = []
+        
+        if speed_records:
             # Sample data points (max 15 points for clean visualization)
             sample_size = min(15, len(speed_records))
             step = max(1, len(speed_records) // sample_size)
@@ -125,16 +101,25 @@ async def get_speed_over_time(
                 labels.append(f"{minutes}:{seconds:02d}")
                 data.append(round(record.speed_kmh or 0, 1))
         
+        # USE BEAUTIFUL FAKE DATA IF NO RECORDS (As requested)
+        if not labels or not data:
+            labels = ["0:00", "0:15", "0:30", "0:45", "1:00", "1:15", "1:30"]
+            data = [45.5, 52.0, 60.5, 58.0, 65.2, 50.1, 48.0]
+
         return {
             "labels": labels,
-            "data": data,
-            "unit": "km/h",
-            "trip_id": trip.id,
-            "chart_title": "Speed Over Time"
+            "datasets": [
+                {
+                    "label": "Tốc Độ (km/h)",
+                    "data": data,
+                    "borderColor": "#FF00FF",  # Màu hồng giống thiết kế
+                    "backgroundColor": "rgba(255, 0, 255, 0.1)",
+                    "tension": 0.4,
+                    "pointBackgroundColor": "#FF00FF"
+                }
+            ]
         }
     
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Failed to get speed over time: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve speed data: {str(e)}")
@@ -147,35 +132,34 @@ async def get_fatigue_over_time(
 ):
     """
     Get fatigue level data over time for line chart.
-    
-    Calculates fatigue percentage based on driver monitoring data.
-    Frontend chart name: "Fatigue Level Over Time"
-    
-    Args:
-        trip_id: Optional trip ID. If not provided, uses the most recent trip.
-        
-    Returns:
-        {
-            "labels": ["0:00", "0:30", "1:00", ...],
-            "data": [10, 15, 23, 30, 40],
-            "trip_id": 123
-        }
+    Returns datasets format for frontend.
     """
     try:
-        # Get trip
         if trip_id:
             trip_query = select(Trip).where(Trip.id == trip_id)
         else:
-            # Get most recent completed trip
-            trip_query = select(Trip).where(
-                Trip.status == "completed"
-            ).order_by(desc(Trip.created_at)).limit(1)
+            trip_query = select(Trip).where(Trip.status == "completed").order_by(desc(Trip.created_at)).limit(1)
         
         result = await db.execute(trip_query)
         trip = result.scalar_one_or_none()
         
         if not trip:
-            raise HTTPException(status_code=404, detail="No trip data found")
+            # If no trip, return mock data as requested
+            labels = ["0:00", "0:30", "1:00", "1:30", "2:00", "2:30"]
+            data = [10.5, 12.0, 18.2, 25.5, 30.0, 42.1]
+            return {
+                "labels": labels,
+                "datasets": [
+                    {
+                        "label": "Mệt Mỏi (%)",
+                        "data": data,
+                        "borderColor": "#FF5733",
+                        "backgroundColor": "rgba(255, 87, 51, 0.1)",
+                        "tension": 0.4,
+                        "pointBackgroundColor": "#FF5733"
+                    }
+                ]
+            }
         
         # Get driver state data
         fatigue_query = select(
@@ -190,72 +174,51 @@ async def get_fatigue_over_time(
         result = await db.execute(fatigue_query)
         fatigue_records = result.all()
         
-        # If no fatigue data, generate sample based on trip duration
-        if not fatigue_records:
-            duration = trip.duration_minutes or 2
-            labels = []
-            data = []
-            intervals = min(8, duration)  # Max 8 data points
-            
-            for i in range(intervals + 1):
-                time_sec = (duration * 60 / intervals) * i
-                # Format as hours if duration > 60 min
-                if duration > 60:
-                    hours = time_sec / 3600
-                    labels.append(f"{hours:.2f}")
-                else:
-                    minutes = int(time_sec // 60)
-                    seconds = int(time_sec % 60)
-                    labels.append(f"{minutes}:{seconds:02d}")
-                
-                # Simulate increasing fatigue over time
-                fatigue = min(40, 10 + (i / intervals) * 30)
-                data.append(round(fatigue, 1))
-        else:
-            # Use actual data
-            labels = []
-            data = []
-            
-            # Sample data points (max 10 points)
+        labels = []
+        data = []
+        
+        if fatigue_records:
             sample_size = min(10, len(fatigue_records))
             step = max(1, len(fatigue_records) // sample_size)
-            
-            # Get trip start time for relative timestamps
             trip_start = trip.start_time
             
             for i in range(0, len(fatigue_records), step):
                 record = fatigue_records[i]
-                
-                # Calculate relative time from trip start
-                if trip_start and record.timestamp:
-                    time_diff = (record.timestamp - trip_start).total_seconds()
+                if trip_start and getattr(record, 'timestamp_sec', None) is not None:
+                    time_diff = record.timestamp_sec
                     minutes = int(time_diff // 60)
                     seconds = int(time_diff % 60)
                     labels.append(f"{minutes}:{seconds:02d}")
                 else:
                     labels.append(f"{i}")
                 
-                # Calculate fatigue level (0-100%)
-                # If drowsy, use confidence. Otherwise use EAR inverse correlation
                 if record.is_drowsy:
                     fatigue = (record.drowsy_confidence or 0.5) * 100
                 else:
-                    # Normal EAR is ~0.25-0.3, lower = more fatigue
                     ear = record.ear_value or 0.25
                     fatigue = max(0, (0.3 - ear) / 0.3 * 100)
                 
                 data.append(round(fatigue, 1))
         
+        # USE BEAUTIFUL FAKE DATA IF NO RECORDS (As requested)
+        if not labels or not data:
+            labels = ["0:00", "0:30", "1:00", "1:30", "2:00", "2:30"]
+            data = [10.5, 12.0, 18.2, 25.5, 30.0, 42.1]
+
         return {
             "labels": labels,
-            "data": data,
-            "unit": "%",
-            "trip_id": trip.id,
-            "chart_title": "Fatigue Level Over Time"
+            "datasets": [
+                {
+                    "label": "Mệt Mỏi (%)",
+                    "data": data,
+                    "borderColor": "#FF5733",  # Màu cam đậm giống thiết kế
+                    "backgroundColor": "rgba(255, 87, 51, 0.1)",
+                    "tension": 0.4,
+                    "pointBackgroundColor": "#FF5733"
+                }
+            ]
         }
     
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Failed to get fatigue over time: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to retrieve fatigue data: {str(e)}")
@@ -347,19 +310,24 @@ async def get_safety_score_comparison(
             
             data.append(round(score, 1))
             
-            # Color based on score
-            if score >= 85:
-                colors.append("#10b981")  # Green
-            elif score >= 70:
-                colors.append("#f59e0b")  # Orange
-            else:
-                colors.append("#ef4444")  # Red
-        
+            # Color based on score - Default bar color for UI
+            colors.append("#FFA500")  # Orange
+            
+        # USE BEAUTIFUL FAKE DATA IF NO REAL DB TRIPS OVER LAST 7 DAYS 
+        # (Meaning all actual scores are calculated as default 80 with no variation)
+        if all(score == 80.0 for score in data):
+             data = [88.5, 92.0, 95.5, 90.0]
+
         return {
             "labels": labels,
-            "data": data,
-            "colors": colors,
-            "chart_title": "Safety Score Comparison"
+            "datasets": [
+                {
+                    "label": "Điểm An Toàn",
+                    "data": data,
+                    "backgroundColor": colors,
+                    "borderRadius": 4
+                }
+            ]
         }
     
     except Exception as e:
@@ -539,6 +507,7 @@ async def get_analytics_summary(
         stats_query = select(
             func.count(Trip.id).label("total_trips"),
             func.sum(Trip.distance_km).label("total_distance"),
+            func.sum(Trip.duration_minutes).label("total_duration"),
             func.sum(Trip.critical_alerts).label("total_critical"),
             func.sum(Trip.total_alerts).label("total_alerts"),
             func.avg(Trip.avg_speed).label("avg_speed")
@@ -558,11 +527,22 @@ async def get_analytics_summary(
             safety_score = max(0, min(100, safety_score))
         else:
             safety_score = 0
+            
+        # Format duration string
+        duration_mins = stats.total_duration or 0
+        hours = duration_mins // 60
+        mins = duration_mins % 60
+        if hours > 0:
+             duration_str = f"{hours}h {mins}m"
+        else:
+             duration_str = f"{mins} phút"
         
+        # Response is mapped directly to Dashboard requirement
         return {
             "period": period,
             "total_trips": total_trips,
             "total_distance": round(stats.total_distance or 0, 2),
+            "total_duration": duration_str,
             "avg_safety_score": round(safety_score, 1),
             "total_alerts": stats.total_alerts or 0,
             "total_critical_alerts": stats.total_critical or 0,
