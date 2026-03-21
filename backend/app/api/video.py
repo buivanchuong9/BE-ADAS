@@ -84,7 +84,7 @@ async def upload_video(
             filename=file.filename,
             video_type=video_type,
             device=device,
-            user_id=1  # TODO: Get from authentication - Currently using default user for MVP
+            user_id=None  # Avoid FK violation when local users table does not have seed user id=1
         )
         logger.info(f"[Upload] ✓ Job created: {job.job_id} ({time.time() - start_time:.1f}s)")
         
@@ -782,7 +782,7 @@ async def upload_and_analyze_sync(
             filename=file.filename,
             video_type=video_type,
             device="cuda",
-            user_id=1  # Default user for MVP
+            user_id=None  # Optional uploader; keep sync upload working without seeded user row
         )
         job_id = str(job.job_id)
         

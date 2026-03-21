@@ -316,7 +316,7 @@ async def mobile_upload_video(
             filename=file.filename,
             video_type=video_type,
             device=device,
-            user_id=1  # TODO: Get from auth token
+            user_id=None  # Optional uploader until authenticated user mapping is implemented
         )
         job_id = str(job.job_id)
         
@@ -860,7 +860,7 @@ async def mobile_driver_upload(
             filename=file.filename,
             video_type="in_cabin",  # Driver monitoring uses in_cabin type
             device="cuda",
-            user_id=1  # TODO: Get from authentication
+            user_id=None  # Optional uploader until authenticated user mapping is implemented
         )
         
         # Save uploaded video

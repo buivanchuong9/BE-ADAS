@@ -93,7 +93,7 @@ async def analyze_driver_video(
             filename=file.filename,
             video_type="in_cabin",  # Driver monitoring uses in_cabin type
             device=device,
-            user_id=1  # TODO: Get from authentication
+            user_id=None  # Optional uploader until authenticated user mapping is implemented
         )
         logger.info(f"[Driver Monitor] ✓ Job created: {job.job_id} ({time.time() - start_time:.1f}s)")
         
