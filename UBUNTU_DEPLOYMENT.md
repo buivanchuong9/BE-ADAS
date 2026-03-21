@@ -41,6 +41,21 @@ export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=/home/phonglv/opencv_cuda/lib/python3.12/site-packages:$(pwd):$PYTHONPATH
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
 
+# 6b. BAT BUOC dung model da train (khong fallback model cu)
+mkdir -p backend/models/trained_models
+if [ -f backend/models/trained_models/adas_model_package.zip ]; then
+  unzip -o backend/models/trained_models/adas_model_package.zip -d backend/models/trained_models/
+fi
+# Chon file model object da train moi nhat
+export ADAS_OBJ_MODEL_PATH="$(find backend/models/trained_models -type f \( -name '*.pt' -o -name '*.engine' \) | sort | tail -1)"
+export ADAS_REQUIRE_TRAINED_MODELS=1
+if [ -z "$ADAS_OBJ_MODEL_PATH" ]; then
+  echo "❌ Khong tim thay model da train trong backend/models/trained_models"
+  echo "   Hay giai nen dung file zip hoac set ADAS_OBJ_MODEL_PATH thu cong"
+  exit 1
+fi
+echo "✅ Using trained model: $ADAS_OBJ_MODEL_PATH"
+
 # 7. Start API (Backend)
 echo "🚀 Starting API Server..."
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
@@ -217,6 +232,16 @@ sleep 2
 export $(grep -v '^#' .env | xargs)
 export PYTHONPATH=/home/phonglv/opencv_cuda/lib/python3.12/site-packages:$(pwd):$PYTHONPATH
 export LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libstdc++.so.6
+
+# BAT BUOC dung model da train (khong fallback model cu)
+mkdir -p backend/models/trained_models
+if [ -f backend/models/trained_models/adas_model_package.zip ]; then
+  unzip -o backend/models/trained_models/adas_model_package.zip -d backend/models/trained_models/
+fi
+export ADAS_OBJ_MODEL_PATH="$(find backend/models/trained_models -type f \( -name '*.pt' -o -name '*.engine' \) | sort | tail -1)"
+export ADAS_REQUIRE_TRAINED_MODELS=1
+[ -z "$ADAS_OBJ_MODEL_PATH" ] && echo "❌ Missing trained model" && exit 1
+echo "✅ Using trained model: $ADAS_OBJ_MODEL_PATH"
 
 # Start API
 nohup python3 -m uvicorn backend.app.main:app --host 0.0.0.0 --port 52000 --workers 4 --proxy-headers > api.log 2>&1 &
