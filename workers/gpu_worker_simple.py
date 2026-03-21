@@ -114,6 +114,102 @@ class SimpleGPUWorker:
         },
     }
 
+    @staticmethod
+    def _resolve_trained_model(kind: str) -> Optional[str]:
+        """
+        Resolve trained model path for a specific kind.
+
+        kind: one of obj | pose | seg | lane
+        """
+        kind = kind.lower().strip()
+        env_map = {
+            'obj': ["ADAS_OBJ_MODEL_PATH", "YOLO_MODEL_PATH"],
+            'pose': ["ADAS_POSE_MODEL_PATH"],
+            'seg': ["ADAS_SEG_MODEL_PATH"],
+            'lane': ["ADAS_LANE_MODEL_PATH"],
+        }
+        if kind not in env_map:
+            return None
+
+        for env_key in env_map[kind]:
+            cand = os.getenv(env_key)
+            if cand:
+                p = Path(cand)
+                if p.exists():
+                    return str(p.resolve())
+
+        trained_dir = PROJECT_ROOT / "backend" / "models" / "trained_models"
+        if not trained_dir.exists():
+            return None
+
+        # Kind-specific discovery patterns.
+        patterns = {
+            'obj': ["best_training.pt", "best.pt", "*obj*.pt", "*detect*.pt", "*.pt"],
+            'pose': ["*pose*.pt", "*.pt"],
+            'seg': ["*seg*.pt", "*.pt"],
+            'lane': ["*ufld*.pth", "*lane*.pth", "*lane*.pt", "*.pth", "*.pt"],
+        }
+        for pat in patterns[kind]:
+            matches = list(trained_dir.glob(pat))
+            if matches:
+                newest = max(matches, key=lambda x: x.stat().st_mtime)
+                return str(newest.resolve())
+
+        return None
+
+    def _apply_trained_model_override(self) -> None:
+        """
+        Override model paths to trained weights.
+
+        By default strict mode is ON: if trained object model is missing,
+        worker exits instead of silently falling back to old default weights.
+        """
+        strict_mode = os.getenv("ADAS_REQUIRE_TRAINED_MODELS", "1").lower() not in {
+            "0", "false", "no", "off"
+        }
+
+        trained_obj = self._resolve_trained_model('obj')
+        trained_pose = self._resolve_trained_model('pose')
+        trained_seg = self._resolve_trained_model('seg')
+        trained_lane = self._resolve_trained_model('lane')
+
+        # Object model is mandatory in strict mode.
+        if strict_mode and not trained_obj:
+            trained_dir = PROJECT_ROOT / "backend" / "models" / "trained_models"
+            zip_hint = trained_dir / "adas_model_package.zip"
+            extra = ""
+            if zip_hint.exists():
+                extra = (
+                    f" Found backup zip at {zip_hint}; extract it first or set ADAS_OBJ_MODEL_PATH."
+                )
+            raise RuntimeError(
+                "[MODEL] Strict trained-model mode enabled but no trained object model found."
+                + extra
+            )
+
+        if trained_obj:
+            for _, profile in self.MODEL_PROFILES.items():
+                if 'obj_model_fallback' in profile:
+                    profile['obj_model_fallback'] = trained_obj
+                else:
+                    profile['obj_model'] = trained_obj
+            logger.info(f"[MODEL] Using trained OBJ model: {trained_obj}")
+
+        if trained_pose:
+            for _, profile in self.MODEL_PROFILES.items():
+                profile['pose_model'] = trained_pose
+            logger.info(f"[MODEL] Using trained POSE model: {trained_pose}")
+
+        if trained_seg:
+            for _, profile in self.MODEL_PROFILES.items():
+                profile['seg_model'] = trained_seg
+            logger.info(f"[MODEL] Using trained SEG model: {trained_seg}")
+
+        if trained_lane:
+            for _, profile in self.MODEL_PROFILES.items():
+                profile['ufld_model'] = trained_lane
+            logger.info(f"[MODEL] Using trained LANE model: {trained_lane}")
+
     def __init__(
         self,
         worker_id: str,
@@ -129,6 +225,9 @@ class SimpleGPUWorker:
         self.model_profile = model_profile
         self.enable_tensorrt = enable_tensorrt
         self._auto_optimize = auto_optimize
+
+        # Apply trained model override before pipelines are loaded.
+        self._apply_trained_model_override()
 
         # State
         self.running = True
